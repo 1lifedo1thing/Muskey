@@ -1,5 +1,5 @@
 <p align="center">
-    <a href="https://lowtechguys.com/muskey"><img width="128" height="128" src="muskey.icon/Assets/icon.png" style="filter: drop-shadow(0px 2px 4px rgba(120, 10, 30, 0.2));"></a>
+    <a href="https://lowtechguys.com/muskey"><img width="128" height="128" src=".github/icon.png"></a>
     <h1 align="center"><code style="text-shadow: 0px 3px 10px rgba(8, 0, 6, 0.35); font-size: 3rem; font-family: ui-monospace, Menlo, monospace; font-weight: 800; background: transparent; color: #b8243a; padding: 0.2rem 0.2rem; border-radius: 6px">Muskey</code></h1>
     <h4 align="center">Find the key of any song</h4>
     <h6 align="center">Change it with one click</h6>
