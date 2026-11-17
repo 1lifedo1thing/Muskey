@@ -1,0 +1,8 @@
+.DS_Store
+docs/
+vendor/
+*.dmg
+*.delta
+Releases/*.html
+Releases/old_updates/
+build/
