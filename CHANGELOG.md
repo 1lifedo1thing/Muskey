@@ -1,3 +1,13 @@
+# 1.0.1
+
+**[Download Muskey 1.0.1 →](https://files.lowtechguys.com/releases/Muskey-1.0.1.dmg)**
+## Improvements
+
+- Make **Online key lookup** opt-in, for key detection that stays on the Mac (Settings > Listening)
+
+# 1.0.0
+
+**[Download Muskey 1.0.0 →](https://files.lowtechguys.com/releases/Muskey-1.0.0.dmg)**
 ## Features
 
 - **Find the key** of the song that plays on the Mac with `Control` `Command` `M`

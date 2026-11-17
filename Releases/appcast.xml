@@ -3,6 +3,21 @@
     <channel>
         <title>Muskey</title>
         <item>
+            <title>1.0.1</title>
+            <pubDate>Wed, 18 Nov 2026 01:37:58 +0200</pubDate>
+            <link>https://lowtechguys.com/muskey</link>
+            <sparkle:fullReleaseNotesLink>https://files.lowtechguys.com/muskey/changelog.html</sparkle:fullReleaseNotesLink>
+            <sparkle:version>1.0.1</sparkle:version>
+            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <sparkle:releaseNotesLink>https://files.lowtechguys.com/ReleaseNotes/Muskey-1.0.1.html</sparkle:releaseNotesLink>
+            <enclosure url="https://files.lowtechguys.com/releases/Muskey-1.0.1.dmg" length="8309243" type="application/octet-stream" sparkle:edSignature="C8/cuNlkFAwn+uCsFIdf/Wr8UedfV1nupiutJcsAt1Bs8CRlFJHvJnTbwwafTFIDthjQo3uk0nYoy/y/QVkABA=="/>
+            <sparkle:deltas>
+                <enclosure url="https://files.lowtechguys.com/releases/Muskey1.0.1-1.0.0.delta" sparkle:deltaFrom="1.0.0" length="14186" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="oGIo99M9XTIwiHD7GBjtUnZN3F62hf4k6/v0cNb+zDqkPeGI1JOYbtQw+kcN2ycZRmLPIpPpNtbRpwQXNFkaDg=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>1.0.0</title>
             <pubDate>Wed, 18 Nov 2026 01:22:10 +0200</pubDate>
             <link>https://lowtechguys.com/muskey</link>
