@@ -4,21 +4,21 @@
 
 ### Listening
 
-Muskey hears the Mac's audio through a Core Audio tap of every process. The tap needs the **System Audio Recording** permission, and no loopback driver.
+Muskey listens through a Core Audio process tap on the whole system mix. The tap needs the **System Audio Recording** permission, and no loopback driver.
 
 ### Finding the key
 
-Muskey finds the key with the KeyExtractor of [Essentia](https://essentia.upf.edu) and its `shaath` profile. It runs the extractor once a second over everything that it heard so far.
+Muskey finds the key with [Essentia](https://essentia.upf.edu)'s KeyExtractor and the `shaath` profile. It runs the KeyExtractor once a second over everything that it heard so far.
 
 ### Changing the key
 
-A second tap mutes every app except Muskey. Muskey sends that audio through the R3 engine of [Rubber Band](https://breakfastquay.com/rubberband/) and a limiter, then plays the result on the default output.
+A second process tap mutes every app except Muskey. Muskey sends that audio through [Rubber Band](https://breakfastquay.com/rubberband/)'s R3 engine and a limiter, then plays the result on the default output.
 
-The tap belongs to Muskey. When Muskey quits or crashes, the Mac plays its audio unchanged again.
+The tap is private to Muskey. When Muskey quits or crashes, the Mac plays its audio unchanged again.
 
-### The song that plays
+### Now Playing
 
-macOS has no public API for the song that plays. Muskey reads it from the private MediaRemote framework, through a small helper.
+macOS has no public API for Now Playing. Muskey reads it from the private MediaRemote framework, through a small helper.
 
 Since macOS 15.4, only code signed with an Apple identifier can read MediaRemote. For that reason, the helper is signed as `com.apple.controlcenter.Muskey`.
 
@@ -38,13 +38,13 @@ The setting is off by default, for people who want every key found on their own 
 
 While the lyrics show, Muskey sends the title, artist, album and length of the song to [LRCLIB](https://lrclib.net), once for each song.
 
-### Instruments and vocals
+### Stems
 
 Muskey separates the song into six stems with [BS-RoFormer](https://arxiv.org/abs/2309.02612). It uses the BS-Roformer-SW checkpoint, converted to Core ML and run on the GPU.
 
 Muskey separates the song in windows of 4.5 seconds that overlap by a second, and crossfades the windows. It plays the mix of the stems that are on, with the same pitch change as the song.
 
-The Winds stem comes from a second model: the woodwind and brass heads of the 53-stem BS-RoFormer by [MVSep](https://mvsep.com). Muskey runs it on the same windows, and takes the winds that it finds out of the Other stem.
+The Winds stem comes from a second model: the woodwind and brass heads of [MVSep](https://mvsep.com)'s 53-stem BS-RoFormer. Muskey runs it on the same windows, and takes the winds that it finds out of the Other stem.
 
 Muskey downloads both models from lowtechguys.com into `~/Library/Application Support/Muskey/Models`. The commands `make stems-model` and `make winds-model` make them from the checkpoints.
 
@@ -56,7 +56,7 @@ A server receives the audio of the song. Use only a server that you trust.
 
 ### Timing lyrics by ear
 
-Muskey transcribes the song on the Mac with Apple's speech model, through `SpeechTranscriber` from the Speech framework. macOS downloads the model from Apple the first time.
+Muskey transcribes the song on the Mac with Apple's speech model, through the Speech framework's `SpeechTranscriber`. macOS downloads the model from Apple the first time.
 
 Some languages work only with `DictationTranscriber`. For those, Muskey times the lyrics with Whisper when it is set up in Settings, and with `DictationTranscriber` when it isn't.
 
@@ -67,7 +67,7 @@ Muskey matches the heard words to the lyrics in order, so a chorus that repeats 
 ## Limitations
 
 - A pitch change moves every note by the same amount, so a major song stays major. Muskey reaches a key in the other mode through its relative, which has the same notes: from A major, C minor plays as E♭ major.
-- A screen recording that includes system audio records both the original song and the shifted one. To record only the shifted song, use a recorder that captures the audio of each app, and leave out the app that plays the song.
+- A screen recording that includes system audio records both the original song and the shifted one. To record only the shifted song, use a recorder that captures per-app audio, and leave out the app that plays the song.
 
 ## Flags for testing
 
