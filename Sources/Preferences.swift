@@ -92,7 +92,8 @@ final class Preferences: ObservableObject {
     @Published var rememberKeys: Bool {
         didSet { defaults.set(rememberKeys, forKey: "rememberKeys") }
     }
-    /// Asks noiseblend.com for the key of a song that a listen starts on, by its title, artist, album and length.
+    /// Asks noiseblend.com for the key of a song that a listen starts on, by its title, artist, album and length. Off
+    /// by default, so that a new install finds keys only on the Mac until Online key lookup is turned on.
     @Published var onlineKeys: Bool {
         didSet { defaults.set(onlineKeys, forKey: "onlineKeys") }
     }
@@ -125,7 +126,7 @@ final class Preferences: ObservableObject {
     }
 
     private init() {
-        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": true, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeBackdrop": true, "karaokeRecord": true])
+        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeBackdrop": true, "karaokeRecord": true])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always

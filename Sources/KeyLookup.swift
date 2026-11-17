@@ -1,20 +1,20 @@
 import Foundation
 
 /// Keys looked up on noiseblend.com by the title, artist, album and length that macOS's Now Playing info reports.
-/// NoiseBlend answers with the key that Spotify lists for the song, so a song that Muskey hasn't heard before can
+/// Noiseblend answers with the key that Spotify lists for the song, so a song that Muskey hasn't heard before can
 /// start on its key before the first estimate of a listen. The listen still runs, and a key that a full listen found
 /// counts over a looked-up one.
 ///
 /// A song is asked for once. Answers are kept in `~/Library/Application Support/Muskey/online-keys.json`, and a song
-/// that NoiseBlend doesn't know is asked for again after 30 days. A failed request is kept nowhere, so the song is
+/// that Noiseblend doesn't know is asked for again after 30 days. A failed request is kept nowhere, so the song is
 /// asked for again the next time that it needs a key. Main thread only, apart from the requests.
 final class KeyLookup: @unchecked Sendable {
     struct Entry: Codable {
-        /// Nil for a song that NoiseBlend didn't find, or found without a key.
+        /// Nil for a song that Noiseblend didn't find, or found without a key.
         var pitchClass: Int?
         var minor: Bool?
         var date: Date
-        /// A full listen found another key, so NoiseBlend's key is not used again.
+        /// A full listen found another key, so Noiseblend's key is not used again.
         var overruled: Bool?
 
         var key: DetectedKey? {
@@ -25,7 +25,7 @@ final class KeyLookup: @unchecked Sendable {
 
     enum Answer: Equatable {
         case found(DetectedKey)
-        /// NoiseBlend doesn't know the song, or knows it without a key.
+        /// Noiseblend doesn't know the song, or knows it without a key.
         case unknown
         /// Too many requests: none until the delay is over.
         case wait(TimeInterval)
@@ -42,7 +42,7 @@ final class KeyLookup: @unchecked Sendable {
     private let url: URL
     private var entries: [String: Entry]?
     private var waiting: [String: [(DetectedKey?) -> Void]] = [:]
-    /// No request goes out before this date, once NoiseBlend asked for a pause.
+    /// No request goes out before this date, once Noiseblend asked for a pause.
     private var pausedUntil = Date.distantPast
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -58,12 +58,12 @@ final class KeyLookup: @unchecked Sendable {
         self.url = url
     }
 
-    /// The key that NoiseBlend gave for the song before, if it knew one.
+    /// The key that Noiseblend gave for the song before, if it knew one.
     func key(for song: [String?]) -> DetectedKey? {
         KeyCache.id(song).flatMap { load()[$0]?.key }
     }
 
-    /// Calls `done` with the song's key, from an earlier answer or from a request, or with nil when NoiseBlend doesn't
+    /// Calls `done` with the song's key, from an earlier answer or from a request, or with nil when Noiseblend doesn't
     /// know it or the request failed. A song that is asked for while its request runs waits for the same answer.
     func find(_ track: NowPlaying.Track, done: @escaping (DetectedKey?) -> Void) {
         // A title alone matches too many songs, so a song without an artist is never asked for.
@@ -101,7 +101,7 @@ final class KeyLookup: @unchecked Sendable {
         }
     }
 
-    /// A full listen of the song found `heard`. When NoiseBlend gave another key, that key isn't used for the song
+    /// A full listen of the song found `heard`. When Noiseblend gave another key, that key isn't used for the song
     /// again, even with Remember song keys off.
     func heard(_ heard: DetectedKey, for song: [String?]) {
         guard let id = KeyCache.id(song), var entry = load()[id], let key = entry.key, key != heard else { return }
@@ -142,10 +142,10 @@ final class KeyLookup: @unchecked Sendable {
         }
     }
 
-    /// NoiseBlend drops the parts of a title that name a version of the same recording, like `- Remastered 2009` or
+    /// Noiseblend drops the parts of a title that name a version of the same recording, like `- Remastered 2009` or
     /// `(feat. X)`, and keeps the ones like `- Club Mix` that name another recording, whose key can differ. Titles of
     /// video sites, like `Artist - Song (Official Video)` from a channel named `Artist Official`, are cleaned the way
-    /// the lyrics search cleans them, since NoiseBlend matches none of them.
+    /// the lyrics search cleans them, since Noiseblend matches none of them.
     static func clean(_ title: String, artist: String) -> (title: String, artist: String) {
         let cleaned = LyricsFinder.clean(title, artist: artist)
         let video = ["official", "video", "lyric", "visualizer"].contains { title.localizedCaseInsensitiveContains($0) }
@@ -158,7 +158,7 @@ final class KeyLookup: @unchecked Sendable {
         let minor: Bool?
     }
 
-    /// What an answer of NoiseBlend means. Only a 404 says that the song is unknown: any other failure is asked
+    /// What an answer of Noiseblend means. Only a 404 says that the song is unknown: any other failure is asked
     /// again later.
     static func answer(status: Int, retryAfter: String?, body: Data) -> Answer {
         switch status {

@@ -615,7 +615,7 @@ enum PitchSelfTest {
 
         LyricsSelfTest.run(report: report)
 
-        // NoiseBlend's answers: every Camelot code back to its key, and which failures count as an unknown song.
+        // Noiseblend's answers: every Camelot code back to its key, and which failures count as an unknown song.
         let keys = (0 ..< 24).map { DetectedKey(pitchClass: $0 % 12, minor: $0 >= 12) }
         let misread = keys.filter { DetectedKey(camelot: $0.camelot) != $0 }.map(\.name)
         report(misread.isEmpty, "camelot codes    24 keys read back\(misread.isEmpty ? "" : ", wrong: " + misread.joined(separator: ", "))")

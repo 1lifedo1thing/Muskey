@@ -901,9 +901,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The key the running pitch change starts from, kept for the menu bar item after the HUD shows another listen.
     private var shiftBase: DetectedKey?
     /// The key of the song that plays, in the song's own key, for the menu bar: from a listen, from the keys
-    /// remembered by song, from Always listening, or from NoiseBlend. `song` is the song that Now Playing named, nil
+    /// remembered by song, from Always listening, or from Noiseblend. `song` is the song that Now Playing named, nil
     /// when it named none, `final` is false for an estimate that the end of the listen can still change, and `online`
-    /// is true for a key that NoiseBlend gave and no listen confirmed yet.
+    /// is true for a key that Noiseblend gave and no listen confirmed yet.
     private var songKey: (song: [String?]?, key: DetectedKey, final: Bool, online: Bool)? {
         didSet {
             if songKey?.key != oldValue?.key { log("menu bar: \(songKey.map(\.key.name) ?? "turntable")") }
@@ -1107,7 +1107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoListenIfNeeded()
     }
 
-    /// The key known for a song without a listen: the one that a full listen found, or else the one that NoiseBlend
+    /// The key known for a song without a listen: the one that a full listen found, or else the one that Noiseblend
     /// gave before.
     private func knownKey(for song: [String?]) -> (key: DetectedKey, online: Bool)? {
         if prefs.rememberKeys, let key = keyCache.key(for: song) { return (key, false) }
@@ -1115,9 +1115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    /// Asks NoiseBlend for the key of a song that a listen starts on. The answer shows in the menu bar unless a listen
+    /// Asks Noiseblend for the key of a song that a listen starts on. The answer shows in the menu bar unless a listen
     /// found the song's key first, and a listen in the HUD starts on it if no estimate came before it. The listen goes
-    /// on either way, and its key counts over NoiseBlend's.
+    /// on either way, and its key counts over Noiseblend's.
     private func lookUpKey(_ track: NowPlaying.Track) {
         guard prefs.onlineKeys, Self.lyricsTest == nil else { return }
         let song = track.song
@@ -1130,7 +1130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Always listening: a song that plays with no key heard yet gets a listen of the usual length, without the HUD.
     /// Its key shows in the menu bar and is remembered like the key of any listen. Each song gets two tries, for one
-    /// that was paused or quiet through the first. A key from NoiseBlend shows during the listen, which confirms it.
+    /// that was paused or quiet through the first. A key from Noiseblend shows during the listen, which confirms it.
     private func autoListenIfNeeded() {
         guard prefs.alwaysListen, state == .idle, keptKey == nil, autoAnalyzer == nil, Self.lyricsTest == nil,
               AudioCapturePermission.status == .granted, let track = nowPlaying.track, track.playing,
@@ -1199,7 +1199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// A listen in the HUD found a key for the song that it heard, or started on the song's remembered key or on
-    /// NoiseBlend's. A song that changed during the listen keeps the key that it has.
+    /// Noiseblend's. A song that changed during the listen keeps the key that it has.
     private func noteKey(_ key: DetectedKey, final: Bool, online: Bool = false) {
         let song = listenSong ?? nowPlaying.track?.song
         if let playing = nowPlaying.track, playing.title?.isEmpty == false, let song, song != playing.song { return }
@@ -1265,10 +1265,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The song that Now Playing named when the listen started. Its key is remembered only if it still plays at the
     /// end of the listen.
     private var listenSong: [String?]?
-    /// The listen started on the key that an earlier full listen found for the song, or on NoiseBlend's. Estimates
+    /// The listen started on the key that an earlier full listen found for the song, or on Noiseblend's. Estimates
     /// don't change it, and only the final estimate can.
     private var remembered: DetectedKey?
-    /// The song that this listen asked NoiseBlend about, so that it asks once.
+    /// The song that this listen asked Noiseblend about, so that it asks once.
     private var lookedUp: [String?]?
     private let keyLookup = KeyLookup()
     private var keyMonitor: Any?
@@ -1341,7 +1341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }.store(in: &prefChanges)
         // A key forgotten in Settings stops showing in the menu bar for the song that plays, and Always listening
-        // listens to that song again. NoiseBlend's key for the song is forgotten too, so the song starts over.
+        // listens to that song again. Noiseblend's key for the song is forgotten too, so the song starts over.
         keyLookup.log = { [weak self] in self?.log($0) }
         keyCache.onForget = { [weak self] id in
             guard let self else { return }
@@ -1680,10 +1680,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startOnKnownKey()
     }
 
-    /// A song whose key a full listen found before, or NoiseBlend gave, starts on that key: the HUD shows it with its
+    /// A song whose key a full listen found before, or Noiseblend gave, starts on that key: the HUD shows it with its
     /// row right away, and Lock Key moves the song once it has played in its own key for a moment. The listen still
     /// runs, and only its final estimate can change the key. Runs again on each Now Playing update until the first
-    /// estimate, since the helper that reads the song starts with the HUD, and once more when NoiseBlend answers.
+    /// estimate, since the helper that reads the song starts with the HUD, and once more when Noiseblend answers.
     private func startOnKnownKey() {
         guard state == .listening, !estimated, remembered == nil, let track = nowPlaying.track, track.playing else { return }
         // A paused player that Now Playing still names may not be what the Mac plays.
@@ -1698,7 +1698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let key = known.key
         remembered = key
-        log("starting on \(known.online ? "NoiseBlend's" : "the remembered") \(key.name)")
+        log("starting on \(known.online ? "Noiseblend's" : "the remembered") \(key.name)")
         model.key = key
         noteKey(key, final: true, online: known.online)
         if let follow {
@@ -2442,7 +2442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// `--key-lookup "Title|Artist|Album|Seconds"` asks NoiseBlend for the key of that song, with an empty cache, and
+    /// `--key-lookup "Title|Artist|Album|Seconds"` asks Noiseblend for the key of that song, with an empty cache, and
     /// prints the answer.
     private func lookUpKeyForTesting(_ spec: String) {
         let parts = spec.split(separator: "|", omittingEmptySubsequences: false).map { $0.isEmpty ? nil : String($0) }
