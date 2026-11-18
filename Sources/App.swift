@@ -1084,9 +1084,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var karaokeRestart: KaraokeRestart?
     private var karaokeRestartTimeout: DispatchWorkItem?
 
-    /// Karaoke starts the song over (Settings > Lyrics > Restart song in karaoke). While the stems play, the output
-    /// stays silent from here: the player moves the song to its start, the stems of the start are separated, and the
-    /// countdown shows meanwhile. Without the stems, the song only moves to its start.
+    /// Karaoke starts the song over (Settings > Lyrics > Restart song in karaoke). While the stems play, the output dips
+    /// while the player moves the song to its start, and the song plays from there with its vocals while the stems of
+    /// the start are separated, under the countdown. Then it rewinds to the start without them. Without the stems, the
+    /// song only moves to its start.
     private func restartForKaraoke() {
         guard let track = nowPlaying.track, track.title?.isEmpty == false, track.playing else {
             return log("karaoke: no song plays, nothing to start over")
@@ -1097,8 +1098,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("karaoke: the song starts over")
             return nowPlaying.seek(to: 0)
         }
-        // Core ML prepares the model for an unknown time, which the Mac would spend silent, so the song plays on and
-        // starts over once the model is ready.
+        // Core ML prepares the model for an unknown time, and the stems separated meanwhile would be wasted, so the song
+        // plays on and starts over once the model is ready.
         guard StemModel.prepared else {
             log("karaoke: the song starts over once the model is ready")
             karaokeRestart = .waitingForModel
@@ -1108,16 +1109,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func beginKaraokeRestart() {
-        log("karaoke: the song starts over, silent until its vocals are separated")
+        log("karaoke: the song starts over")
         karaokeRestart = .seeking(Date())
-        pitch.quietLead = true
+        pitch.awaitingSeek = true
         nowPlaying.seek(to: 0)
-        // A player that ignores the move: the song plays again, and rewinds to where karaoke opened.
+        // A player that ignores the move: the song plays on, and rewinds to where karaoke opened.
         let timeout = DispatchWorkItem { [weak self] in
             guard let self, case .seeking = karaokeRestart else { return }
             log("karaoke: the player didn't move the song to its start")
             karaokeRestart = nil
-            pitch.quietLead = false
+            pitch.awaitingSeek = false
         }
         karaokeRestartTimeout?.cancel()
         karaokeRestartTimeout = timeout
@@ -1143,7 +1144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         karaokeRestartTimeout?.cancel()
         karaokeRestartTimeout = nil
         karaokeRestart = nil
-        pitch.quietLead = false
+        pitch.awaitingSeek = false
     }
 
     /// The seconds that the stems take to start once the model is ready: the first window, the margin after it, and
@@ -1418,6 +1419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefs.$launchAtLogin.sink { [weak self] in self?.updateLoginItem($0) }.store(in: &prefChanges)
         prefs.$relativeKeys.sink { [weak self] in self?.model.relativeKeys = $0 }.store(in: &prefChanges)
         prefs.$karaokeRecord.sink { [weak self] in self?.model.karaokeRecord = $0 }.store(in: &prefChanges)
+        prefs.$rewindEffect.sink { [weak self] in self?.pitch.fadeSteps = $0 == .fade }.store(in: &prefChanges)
         prefs.$menuBarIcon.combineLatest(prefs.$hotkey).sink { [weak self] _ in
             DispatchQueue.main.async { self?.refreshStatus() }
         }.store(in: &prefChanges)
@@ -2213,7 +2215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard spins != spinsSeen else { return }
         // A new shifter counts from 0 again.
         if spins > spinsSeen {
-            log("backspin: the output stepped back in the song")
+            log("the output stepped back in the song")
             if model.shown { model.rewinds += 1 }
         }
         spinsSeen = spins
@@ -2885,7 +2887,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -2932,6 +2934,8 @@ extension EnvironmentValues {
                 case "-lyrics-focus-rewind": KaraokeCountdown(seconds: 4, total: 6, restart: false, rewind: 6)
                 case "-lyrics-focus-restart": KaraokeCountdown(seconds: 4, total: 6, restart: true, rewind: 6)
                 case "-lyrics-focus-loading": KaraokeCountdown(seconds: nil, total: 6, restart: false, rewind: nil)
+                // The last second, with the ring at its reddest.
+                case "-lyrics-focus-ending": KaraokeCountdown(seconds: 1, total: 6, restart: true, rewind: 6)
                 default: nil
                 }
             }

@@ -57,6 +57,14 @@ enum MenuBarIcon: String, CaseIterable {
 }
 
 /// What listens to the song to time its lyrics, and to write lyrics that LRCLIB doesn't have.
+/// How the song steps back in itself when the separated stems take over, or the lyrics delay starts.
+enum RewindEffect: String, CaseIterable {
+    /// A backspin, like a record pulled back by hand.
+    case scratch
+    /// A fade out of what plays, then a fade in of the earlier moment.
+    case fade
+}
+
 enum LyricsTranscription: String, CaseIterable {
     /// Apple's speech model on the Mac. It only times lyrics, and writes none.
     case apple
@@ -112,10 +120,14 @@ final class Preferences: ObservableObject {
     @Published var karaokeMutesVocals: Bool {
         didSet { defaults.set(karaokeMutesVocals, forKey: "karaokeMutesVocals") }
     }
-    /// Karaoke starts the song over from its beginning, after a countdown while the vocals are separated. Without it,
-    /// karaoke goes back only to the moment it opened, once the vocals are separated.
+    /// Karaoke starts the song over from its beginning, which plays with the vocals while they are separated, and
+    /// rewinds to the beginning once they are. Without it, karaoke rewinds only to the moment it opened.
     @Published var karaokeRestarts: Bool {
         didSet { defaults.set(karaokeRestarts, forKey: "karaokeRestarts") }
+    }
+    /// How the song steps back in itself (Settings > Instruments and vocals > Rewind effect).
+    @Published var rewindEffect: RewindEffect {
+        didSet { defaults.set(rewindEffect.rawValue, forKey: "rewindEffect") }
     }
     /// Karaoke blurs and dims the rest of the screen around the glass.
     @Published var karaokeBackdrop: Bool {
@@ -145,6 +157,7 @@ final class Preferences: ObservableObject {
         whisperServer = defaults.string(forKey: "whisperServer") ?? ""
         karaokeMutesVocals = defaults.bool(forKey: "karaokeMutesVocals")
         karaokeRestarts = defaults.bool(forKey: "karaokeRestarts")
+        rewindEffect = defaults.string(forKey: "rewindEffect").flatMap(RewindEffect.init) ?? .scratch
         karaokeBackdrop = defaults.bool(forKey: "karaokeBackdrop")
         karaokeRecord = defaults.bool(forKey: "karaokeRecord")
     }

@@ -160,7 +160,7 @@ struct SettingsView: View {
                 case .hud: HUDPane(prefs: prefs, hud: hud, setLayout: setLayout)
                 case .listening: ListeningPane(prefs: prefs, keyCache: keyCache)
                 case .lyrics: LyricsPane(prefs: prefs)
-                case .stems: StemsPane()
+                case .stems: StemsPane(prefs: prefs)
                 case .permissions: PermissionsPane()
                 case .updates: UpdatesPane()
                 }
@@ -411,6 +411,7 @@ private struct LyricsPane: View {
 }
 
 private struct StemsPane: View {
+    @ObservedObject var prefs: Preferences
     @ObservedObject private var stemDownload = ModelDownload.stems
     @ObservedObject private var windsDownload = ModelDownload.winds
 
@@ -422,6 +423,14 @@ private struct StemsPane: View {
                 // first.
                 if stemDownload.installed || windsDownload.installed {
                     ModelRow(title: "Exotic instruments model", download: windsDownload)
+                }
+            }
+            // The song steps back seconds when the separated instruments take over, in karaoke and when the lyrics
+            // delay starts.
+            Section("Playback") {
+                Picker("Rewind effect", selection: $prefs.rewindEffect) {
+                    Text("Scratch").tag(RewindEffect.scratch)
+                    Text("Fade").tag(RewindEffect.fade)
                 }
             }
         }

@@ -46,7 +46,7 @@ Muskey separates the song into six stems with [BS-RoFormer](https://arxiv.org/ab
 
 Muskey separates the song in windows of 4.5 seconds that overlap by a second, and crossfades the windows. It plays the mix of the stems that are on, with the same pitch change as the song.
 
-The first window is separated a few seconds after a stem is muted. Until then the song plays as it is, and then Muskey steps back to the moment of the mute with a backspin. Karaoke counts down to that step back. With **Restart song in karaoke**, the player moves the song to its start instead, and the Mac stays silent through the countdown until the first seconds of the song are separated.
+The first window is separated a few seconds after a stem is muted. Until then the song plays as it is, and then Muskey steps back to the moment of the mute, with a backspin or a fade (**Rewind effect** in Settings). Karaoke counts down to that step back. With **Restart song in karaoke**, the player first moves the song to its start, and Muskey then steps back to the start of the song.
 
 The Winds stem comes from a second model: the woodwind and brass heads of [MVSep](https://mvsep.com)'s 53-stem BS-RoFormer. Muskey runs it on the same windows, and takes the winds that it finds out of the Other stem.
 

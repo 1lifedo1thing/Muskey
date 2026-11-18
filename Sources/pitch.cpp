@@ -290,11 +290,16 @@ struct PSShifter {
     double spinAt = 0;
     float spinLowLeft = 0, spinLowRight = 0;
     std::atomic<uint32_t> spins{0};
-    // Karaoke that starts the song over: the output is silent from the moment the stems are turned on until they
-    // start, and they start without a backspin, since the player moved the song to its start meanwhile. 1 while that
-    // move is awaited, when the stems may not start, and 2 once the timeline starts over at the song's start. The
-    // silence lasts 15 seconds at most, so a separation that never starts can't leave the Mac silent.
-    std::atomic<int> quietLead{0};
+    // How the output steps back in the song: a backspin, or a fade out of what plays and a fade in of the earlier
+    // moment. A jump of the play position fades out and back in over 10 ms, or over the fade of a step back.
+    std::atomic<bool> fadeSteps{false};
+    size_t fadeLeft = 0, fadeTotal = 0;
+    bool slowHold = false;
+    // Karaoke that starts the song over: the output dips while the player moves the song to its start. 1 while the
+    // move is awaited, when the song fades out and the stems may not start, for 15 seconds at most. 2 once the
+    // timeline starts over at the song's start: a quarter second more of silence, for the last of the old moment to
+    // pass, then the song fades in from its start as it plays, until the stems of the start step back to it.
+    std::atomic<int> seekDip{0};
     float leadGain = 1;
     size_t leadFrames = 0;
     // Frames before the moment that plays that the next restart starts from: the song started over a moment before
@@ -367,7 +372,8 @@ struct PSShifter {
             uint64_t start = engagedWas ? now - std::min(back, now - std::min(now, timelineStart)) : now;
             skipFrom = skipTo = rewindPending = 0;
             jumpPending = false;
-            spinLeft = 0;
+            spinLeft = fadeLeft = 0;
+            slowHold = false;
             stemsPlaying = true;
             stemsStarted.store(false, std::memory_order_relaxed);
             delayed = false;
@@ -376,11 +382,11 @@ struct PSShifter {
             stemsPlayed.store(start, std::memory_order_relaxed);
             anchor.store(start, std::memory_order_relaxed);
             anchorPending.store(delay > 0, std::memory_order_relaxed);
-            if (restart && quietLead.load(std::memory_order_relaxed) == 1) {
-                // The song started over: silent from here until the stems of its start are separated. Stems that
-                // played faded out before the restart, and the song mustn't come in under them as they cross back;
-                // a song that plays as it is finishes its fade out.
-                quietLead.store(2, std::memory_order_relaxed);
+            if (restart && seekDip.load(std::memory_order_relaxed) == 1) {
+                // The song started over. Stems that played faded out before the restart, and the song mustn't come in
+                // under them as they cross back; a song that plays as it is finishes its fade out.
+                seekDip.store(2, std::memory_order_relaxed);
+                leadFrames = 0;
                 if (stemsMix.load(std::memory_order_relaxed) > 0) leadGain = 0;
             }
             if (stemsWanted) beginStems(start);
@@ -453,18 +459,24 @@ struct PSShifter {
             if (started) {
                 jumpPending = true;
                 jumpTarget = back;
-                startSpin(stemsPlayed.load(std::memory_order_relaxed));
+                if (fadeSteps.load(std::memory_order_relaxed)) {
+                    // The stems fade out, jump and fade back in, each over the fade of a step back.
+                    slowHold = true;
+                    spins.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    startSpin(stemsPlayed.load(std::memory_order_relaxed));
+                }
             } else {
                 stemsPlayed.store(back, std::memory_order_relaxed);
                 stemsStarted.store(true, std::memory_order_relaxed);
                 started = true;
-                startSpin(now);
+                stepBack(now);
             }
         }
         if (!started) {
             if (anchorPending.load(std::memory_order_relaxed) || !stemsWanted) return quiet();
             // Karaoke that starts the song over waits for the player to move the song to its start.
-            if (quietLead.load(std::memory_order_relaxed) == 1) return quiet();
+            if (seekDip.load(std::memory_order_relaxed) == 1) return quiet();
             // The song plays as it is until the first block is there and the margin after it has passed.
             if (!current || ready <= stemsStart.load(std::memory_order_relaxed)) return quiet();
             if (stemsFirstReady == 0) stemsFirstReady = now;
@@ -472,14 +484,8 @@ struct PSShifter {
             stemsStarted.store(true, std::memory_order_relaxed);
             stemsLive = true;
             settleStemGains();
-            if (quietLead.exchange(0, std::memory_order_relaxed) == 2) {
-                // After karaoke's silent countdown the song comes in from its start, with no backspin.
-                stemsMix.store(1, std::memory_order_relaxed);
-                holdGain = 0;
-            } else {
-                // The stems start seconds before the moment that plays.
-                startSpin(now);
-            }
+            // The stems start seconds before the moment that plays.
+            stepBack(now);
         }
         uint64_t at = stemsPlayed.load(std::memory_order_relaxed);
         if (skipTo > skipFrom && at >= skipFrom && at < skipTo) at = skipTo;
@@ -557,6 +563,35 @@ struct PSShifter {
         for (int i = 0; i < stemCount; i++) stemGainNow[i] = stemGain[i].load(std::memory_order_relaxed);
     }
 
+    // Steps back from the song as it plays to the timeline that starts earlier in the song, with a backspin or a fade.
+    void stepBack(uint64_t heardAt) {
+        if (!fadeSteps.load(std::memory_order_relaxed)) return startSpin(heardAt);
+        fadeTotal = fadeLeft = size_t(rate * 0.8);
+        spins.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Fades out the song as it plays over 0.4 seconds, then fades in the timeline over 0.4 seconds. The timeline moves
+    // on meanwhile, as under a backspin, so the delay stays what it was set to.
+    void renderFade(size_t n, bool playing) {
+        double total = double(fadeTotal);
+        for (size_t f = 0; f < n; f++) {
+            if (fadeLeft == 0) {
+                inLeft[f] = playing ? stemLeft[f] : 0.0f;
+                inRight[f] = playing ? stemRight[f] : 0.0f;
+                continue;
+            }
+            double x = 1 - double(fadeLeft) / total;
+            float out = x < 0.5 ? float(std::cos(M_PI / 2 * x / 0.5)) * leadGain : 0.0f;
+            float in = x >= 0.5 && playing ? float(std::sin(M_PI / 2 * (x - 0.5) / 0.5)) : 0.0f;
+            inLeft[f] = inLeft[f] * out + stemLeft[f] * in;
+            inRight[f] = inRight[f] * out + stemRight[f] * in;
+            if (--fadeLeft == 0) {
+                holdGain = playing ? 1 : 0;
+                stemsMix.store(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
     void startSpin(uint64_t heardAt) {
         spinTotal = spinLeft = size_t(rate * 0.9);
         // The frame before the one that was heard last, which is written already.
@@ -617,8 +652,8 @@ struct PSShifter {
     // backspin, and coming out skips ahead.
     void mixStems(size_t n) {
         bool on = stemsOn.load(std::memory_order_relaxed) || delayFrames.load(std::memory_order_relaxed) > 0;
-        // Turning the stems and the delay off ends a backspin, which then has nothing to step back to.
-        if (!on) spinLeft = 0;
+        // Turning the stems and the delay off ends a backspin or a fade, which then has nothing to step back to.
+        if (!on) spinLeft = fadeLeft = 0;
         // Held and faded out: the stems stay where they are, and the meters fall.
         bool held = holding && holdGain <= 0;
         if (held && rewindPending) {
@@ -637,32 +672,36 @@ struct PSShifter {
         bool playing = held ? holdQuiet(n) : readStems(n);
         // The timeline moves on under the backspin, so the delay stays what it was set to.
         if (spinLeft > 0) return renderSpin(n, playing);
+        if (fadeLeft > 0) return renderFade(n, playing);
         if (playing) {
-            const float holdStep = 1.0f / (0.01f * float(rate));
+            const float holdStep = 1.0f / ((slowHold ? 0.4f : 0.01f) * float(rate));
             float target = holding || jumpPending || restartFading ? 0.0f : 1.0f;
             for (size_t f = 0; f < n; f++) {
                 holdGain += std::clamp(target - holdGain, -holdStep, holdStep);
                 stemLeft[f] *= holdGain;
                 stemRight[f] *= holdGain;
             }
+            if (slowHold && !jumpPending && holdGain >= 1) slowHold = false;
         }
         bool started = stemsStarted.load(std::memory_order_relaxed);
         float target = on && started ? 1.0f : 0.0f;
-        // Karaoke's countdown before the song starts over is silent, for 15 seconds at most.
-        bool quiet = on && !started && quietLead.load(std::memory_order_relaxed) != 0;
-        // A pause holds the stems, and the player is silent then anyway, so it doesn't count.
+        // The dip while karaoke moves the song to its start: until the move, for 15 seconds at most, and a quarter
+        // second after it. A pause holds the stems, and the player is silent then anyway, so it doesn't count.
+        int dip = seekDip.load(std::memory_order_relaxed);
+        bool quiet = on && !started && dip != 0;
         if (!quiet) {
-            leadFrames = 0;
-        } else if (!holding && (leadFrames += n) > size_t(rate * 15)) {
-            quietLead.store(0, std::memory_order_relaxed);
+            if (dip == 0) leadFrames = 0;
+        } else if (!holding && (leadFrames += n) > size_t(rate * (dip == 2 ? 0.25 : 15))) {
+            int expected = dip;
+            seekDip.compare_exchange_strong(expected, 0, std::memory_order_relaxed);
             quiet = false;
         }
         float mix = stemsMix.load(std::memory_order_relaxed);
-        const float step = 1.0f / (0.3f * float(rate));
+        const float step = 1.0f / (0.3f * float(rate)), leadStep = 1.0f / (0.2f * float(rate));
         constexpr float quarter = float(M_PI / 2);
         for (size_t f = 0; f < n; f++) {
             mix += std::clamp(target - mix, -step, step);
-            leadGain += std::clamp((quiet ? 0.0f : 1.0f) - leadGain, -step, step);
+            leadGain += std::clamp((quiet ? 0.0f : 1.0f) - leadGain, -leadStep, leadStep);
             float song = (mix <= 0 ? 1.0f : mix >= 1 ? 0.0f : std::cos(mix * quarter)) * leadGain;
             float timeline = mix <= 0 ? 0.0f : mix >= 1 ? 1.0f : std::sin(mix * quarter);
             // A gap in the stems plays silence rather than the song seconds ahead.
@@ -921,8 +960,12 @@ void ps_stems_restart_back(PSShifter *s, double seconds) {
     s->restartStems.store(true, std::memory_order_release);
 }
 
-void ps_stems_quiet_lead(PSShifter *s, int on) {
-    s->quietLead.store(on ? 1 : 0, std::memory_order_relaxed);
+void ps_stems_await_seek(PSShifter *s, int on) {
+    s->seekDip.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+void ps_set_step_fade(PSShifter *s, int fade) {
+    s->fadeSteps.store(fade != 0, std::memory_order_relaxed);
 }
 
 void ps_stems_set_gain(PSShifter *s, int stem, float gain) {

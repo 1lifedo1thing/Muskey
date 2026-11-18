@@ -253,13 +253,76 @@ final class LyricsFinder: @unchecked Sendable {
     }
 }
 
+/// The ring and the seconds of a countdown. The ring warms from amber to red over the last six seconds, and it pulses
+/// with each second, harder and more often as the countdown nears its end: once a second, then twice, then three
+/// times. A countdown is a wait that people sit through, so it moves more than the rest of the HUD; with Reduce Motion
+/// it keeps only the colour.
+private struct CountdownRing: View {
+    let seconds: Int?
+    let total: Int
+    let palette: Palette
+    @State private var tickAt = Date()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// From 0 to 1 over the last six seconds, or the whole countdown when it is shorter.
+    private func urgency(_ left: Double) -> Double {
+        let span = Double(max(2, min(total, 6)))
+        return max(0, min(1, (span - left) / (span - 1)))
+    }
+
+    var body: some View {
+        GeometryReader { space in
+            let ring = min(space.size.width, space.size.height)
+            TimelineView(.animation) { context in
+                let since = max(0, context.date.timeIntervalSince(tickAt))
+                // The seconds left as they run down between the ticks, so the colour moves smoothly.
+                let left = seconds.map { Double($0) - min(1, since) } ?? Double(total)
+                let heat = urgency(left)
+                let accent = Color(red: 0.97 + 0.03 * heat, green: 0.71 - 0.39 * heat, blue: 0.36)
+                let beats = seconds.map { 1 + Int(urgency(Double($0)) * 2.99) } ?? 1
+                let phase = (since * Double(beats)).truncatingRemainder(dividingBy: 1)
+                let pulse = seconds == nil || reduceMotion ? 0 : exp(-phase * 5)
+                let fraction = seconds.map { min(1, CGFloat($0) / CGFloat(max(1, total))) } ?? 0
+                ZStack {
+                    Circle().stroke(palette.ink.opacity(0.08), lineWidth: ring * 0.05)
+                    if let seconds {
+                        Circle()
+                            .trim(from: 0, to: fraction)
+                            .stroke(AngularGradient(colors: [accent.opacity(0.55), accent], center: .center, startAngle: .degrees(0), endAngle: .degrees(360 * fraction)),
+                                    style: StrokeStyle(lineWidth: ring * (0.05 + 0.015 * heat * pulse), lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .shadow(color: accent.opacity(0.6 + 0.3 * heat), radius: ring * (0.04 + 0.12 * heat * pulse))
+                            .animation(.linear(duration: 1), value: fraction)
+                        Text("\(seconds)s")
+                            .font(.system(size: ring * 0.32, weight: .heavy, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(palette.ink.mix(with: accent, by: 0.55 * heat))
+                            .contentTransition(.numericText(countsDown: true))
+                            .animation(.snappy(duration: 0.3), value: seconds)
+                    } else {
+                        // The seconds aren't known while the model loads, so a quarter of the ring turns instead.
+                        Circle()
+                            .trim(from: 0, to: 0.25)
+                            .stroke(accent, style: StrokeStyle(lineWidth: ring * 0.05, lineCap: .round))
+                            .rotationEffect(.degrees(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360))
+                            .shadow(color: accent.opacity(0.6), radius: ring * 0.04)
+                    }
+                }
+                .scaleEffect(1 + (0.02 + 0.08 * heat) * pulse)
+            }
+        }
+        .onChange(of: seconds) { tickAt = Date() }
+    }
+}
+
 /// Karaoke's countdown while the vocals are separated, before the song rewinds or starts over.
 struct KaraokeCountdown: Equatable {
     /// Seconds left, nil while the model loads.
     var seconds: Int?
     /// Seconds that the whole countdown lasts, which its ring empties over.
     var total: Int
-    /// The song starts over from its beginning after the countdown (Settings > Lyrics > Restart song in karaoke).
+    /// The song started over when karaoke opened, and rewinds to its beginning after the countdown (Settings > Lyrics >
+    /// Restart song in karaoke).
     var restart: Bool
     /// Seconds that the song rewinds after the countdown, back to the moment karaoke opened; nil while the model loads.
     var rewind: Int?
@@ -304,7 +367,7 @@ struct LyricsPanel: View {
                 // The lines heard during the countdown are heard again after it, or the song hasn't started yet.
                 countdown(rewind.seconds, of: rewind.total,
                           title: rewind.seconds == nil ? "Loading the common instruments model" : "Separating instruments and vocals",
-                          detail: rewind.restart ? "Song will start from the beginning after the countdown"
+                          detail: rewind.restart ? "Song will rewind to the start after the countdown"
                               : rewind.rewind.map { "Song will rewind \($0) seconds after the countdown" } ?? "Song will rewind after the countdown")
             } else {
                 content
@@ -403,37 +466,9 @@ struct LyricsPanel: View {
     private func countdown(_ seconds: Int?, of total: Int, title: String, detail: String) -> some View {
         // The wide layout's lyrics can be as short as 144 points, under the stems.
         let ring = min(large ? 150 : 92, max(52, height * 0.42))
-        let fraction = seconds.map { min(1, CGFloat($0) / CGFloat(max(1, total))) } ?? 0
-        let accent = Color(red: 0.97, green: 0.71, blue: 0.36)
         return VStack(spacing: ring * 0.12) {
-            ZStack {
-                Circle().stroke(palette.ink.opacity(0.08), lineWidth: ring * 0.05)
-                Circle()
-                    .trim(from: 0, to: fraction)
-                    .stroke(AngularGradient(colors: [accent.opacity(0.55), accent], center: .center, startAngle: .degrees(0), endAngle: .degrees(360 * fraction)),
-                            style: StrokeStyle(lineWidth: ring * 0.05, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .shadow(color: accent.opacity(0.6), radius: ring * 0.04)
-                    .animation(.linear(duration: 1), value: fraction)
-                if let seconds {
-                    Text("\(seconds)s")
-                        .font(.system(size: ring * 0.32, weight: .heavy, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(palette.ink)
-                        .contentTransition(.numericText(countsDown: true))
-                        .animation(.snappy(duration: 0.3), value: seconds)
-                } else {
-                    // The seconds aren't known while the model loads, so a quarter of the ring turns instead.
-                    TimelineView(.animation) { context in
-                        Circle()
-                            .trim(from: 0, to: 0.25)
-                            .stroke(accent, style: StrokeStyle(lineWidth: ring * 0.05, lineCap: .round))
-                            .rotationEffect(.degrees(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360))
-                            .shadow(color: accent.opacity(0.6), radius: ring * 0.04)
-                    }
-                }
-            }
-            .frame(width: ring, height: ring)
+            CountdownRing(seconds: seconds, total: total, palette: palette)
+                .frame(width: ring, height: ring)
             VStack(spacing: 3) {
                 Text(title)
                     .font(.system(size: large ? 15 : 12, weight: .semibold, design: .rounded))

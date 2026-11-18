@@ -33,15 +33,22 @@ final class PitchChanger {
     /// again, so that muting another one doesn't wait for the first block again.
     var stemsEngaged = false {
         didSet {
-            if !stemsEngaged { quietLead = false }
+            if !stemsEngaged { awaitingSeek = false }
             if stemsEngaged != oldValue { applyStems() }
         }
     }
 
-    /// Karaoke starts the song over: the output stays silent until the stems start, and they wait for
-    /// `restartStems(back:)`, which the player moving the song to its start calls. The silence lasts 15 seconds at most.
-    var quietLead = false {
-        didSet { if let shifter { ps_stems_quiet_lead(shifter, quietLead ? 1 : 0) } }
+    /// Karaoke starts the song over: the output dips while the player moves the song to its start, and the stems wait
+    /// for `restartStems(back:)`, which the move calls. The song then plays from its start as it is, and the stems step
+    /// back to it once they are separated. The dip lasts 15 seconds at most.
+    var awaitingSeek = false {
+        didSet { if let shifter { ps_stems_await_seek(shifter, awaitingSeek ? 1 : 0) } }
+    }
+
+    /// The output steps back in the song with a fade out and a fade in, instead of a backspin (Settings > Instruments
+    /// and vocals > Rewind effect).
+    var fadeSteps = false {
+        didSet { if let shifter { ps_set_step_fade(shifter, fadeSteps ? 1 : 0) } }
     }
 
     /// Called on the main thread when the stems can't be separated; the stems are back on by then.
@@ -214,6 +221,7 @@ final class PitchChanger {
         ps_set_semitones(shifter, Float(semitones))
         ps_set_paused(shifter, paused ? 1 : 0)
         ps_set_delay(shifter, lyricsDelay)
+        ps_set_step_fade(shifter, fadeSteps ? 1 : 0)
         applyStems()
 
         try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, nil) { _, input, _, output, _ in
@@ -478,48 +486,47 @@ enum PitchSelfTest {
                           before, spinStart, after, lowest / steady * 100, handover / steady * 100, rise, run.delay))
         }
 
-        // Karaoke that starts the song over: the stems are turned on at 1 s with the output silent, the player moves the
-        // song to its start at 3 s (440 Hz before, 660 Hz from its start) and reports it 0.3 s later. The output stays
-        // silent until the stems of the start are separated, then plays them with no backspin and none of the 440 Hz.
-        // Without the report, the silence ends after 15 seconds and the stems take over as usual. The output plays the
-        // song from its start at 3 s, so it is as far behind as the stems took to start, less the shifter's latency of
-        // about 0.1 s; a restart from the moment of the report would be 0.3 s less behind.
+        // Karaoke that starts the song over: the stems are turned on at 1 s and the output dips, the player moves the
+        // song to its start at 3 s (440 Hz before, 660 Hz from its start) and reports it 0.3 s later. The song comes
+        // back from its start as it plays, then the stems of the start step back to it with a backspin, and none of the
+        // 440 Hz plays again. The output plays the song from its start at 3 s, so it is as far behind as the stems took
+        // to start, less the shifter's latency of about 0.1 s; a restart from the moment of the report would be 0.3 s
+        // less behind.
         do {
             let run = renderTimeline(seconds: 10, tone: { $0 < 3 ? 440 : 660 }, events: [
-                (1, { ps_stems_quiet_lead($0, 1); ps_stems_enable($0, 1) }), (3.3, { ps_stems_restart_back($0, 0.3) }),
+                (1, { ps_stems_await_seek($0, 1); ps_stems_enable($0, 1) }), (3.3, { ps_stems_restart_back($0, 0.3) }),
             ], separator: true)
             let out = run.out
             let steady = rms(out[Int(rate * 0.4) ..< Int(rate * 0.9)])
             let window = 0.02
-            let levels = stride(from: 1.5, to: 9.9, by: window).map { (at: $0, level: rms(out[Int(rate * $0) ..< Int(rate * ($0 + window))])) }
-            let back = levels.first { $0.level > 0.1 * steady }?.at ?? 10
-            let silence = rms(out[Int(rate * 1.5) ..< Int(rate * max(1.5, back - 0.05))])
-            let fast = stride(from: 1.5, to: 9.8, by: window).filter { pitch(out, from: $0, to: $0 + window) > 1000 }
-            let first = pitch(out, from: back + 0.02, to: back + 0.3), after = pitch(out, from: back + 0.5, to: 9.9)
-            let lowest = levels.filter { $0.at > back + 0.1 }.map(\.level).min() ?? 0
-            report(run.gaps == 0 && silence < 0.01 * steady && back > 5 && fast.isEmpty && abs(first / 660 - 1) < 0.01 && abs(after / 660 - 1) < 0.01
-                   && lowest > 0.8 * steady && abs(run.delay - (back - 3.1)) < 0.15,
-                   String(format: "karaoke restart  %.1f%% level until %.2f s, %d spins, %.1f Hz at first, then %.1f Hz, lowest %.0f%%, %.1f s behind",
-                          silence / steady * 100, back, fast.count, first, after, lowest / steady * 100, run.delay))
+            let dip = rms(out[Int(rate * 1.5) ..< Int(rate * 3.3)])
+            let live = rms(out[Int(rate * 4) ..< Int(rate * 5.5)]), liveHz = pitch(out, from: 4, to: 5.5)
+            let fast = stride(from: 5.5, to: 9.8, by: window).filter { pitch(out, from: $0, to: $0 + window) > 1000 }
+            let spinStart = fast.first ?? 0
+            let after = pitch(out, from: spinStart + 1.1, to: 9.9)
+            report(run.gaps == 0 && dip < 0.01 * steady && live > 0.8 * steady && abs(liveHz / 660 - 1) < 0.01 && fast.count >= 10
+                   && abs(after / 660 - 1) < 0.01 && abs(run.delay - (spinStart - 3.1)) < 0.15,
+                   String(format: "karaoke restart  %.1f%% level until the move, %.0f%% of %.1f Hz after it, a backspin from %.2f s, then %.1f Hz, %.1f s behind",
+                          dip / steady * 100, live / steady * 100, liveHz, spinStart, after, run.delay))
 
             // Karaoke opened again while the stems play from an earlier mute: they fade out at the report, the song
-            // doesn't come in under them, and the stems of the start come in after the silence, with no backspin.
+            // comes back from its start after a quarter second as it plays, and the stems of the start step back to it.
             let again = renderTimeline(seconds: 14, tone: { $0 < 6 ? 440 : 660 }, events: [
-                (1, { ps_stems_enable($0, 1) }), (6, { ps_stems_quiet_lead($0, 1) }), (6.3, { ps_stems_restart_back($0, 0.3) }),
+                (1, { ps_stems_enable($0, 1) }), (6, { ps_stems_await_seek($0, 1) }), (6.3, { ps_stems_restart_back($0, 0.3) }),
             ], separator: true)
             let playing = rms(again.out[Int(rate * 5) ..< Int(rate * 5.9)])
-            let gaps = stride(from: 6.5, to: 13.9, by: window).map { (at: $0, level: rms(again.out[Int(rate * $0) ..< Int(rate * ($0 + window))])) }
-            let resumed = gaps.first { $0.level > 0.1 * playing }?.at ?? 14
-            let hush = gaps.filter { $0.at < resumed - 0.05 }.map(\.level).max() ?? 1
-            let spun = stride(from: 6.5, to: 13.8, by: window).filter { pitch(again.out, from: $0, to: $0 + window) > 1000 }
-            let resumedHz = pitch(again.out, from: resumed + 0.05, to: 13.9)
-            report(hush < 0.01 * playing && resumed > 8 && spun.isEmpty && abs(resumedHz / 660 - 1) < 0.01,
-                   String(format: "restart again    at most %.1f%% level until %.2f s, %d spins, then %.1f Hz", hush / playing * 100, resumed, spun.count, resumedHz))
+            let hush = rms(again.out[Int(rate * 6.45) ..< Int(rate * 6.6)])
+            let start = rms(again.out[Int(rate * 7) ..< Int(rate * 8.5)]), startHz = pitch(again.out, from: 6.8, to: 8.5)
+            let spun = stride(from: 8.5, to: 13.8, by: window).filter { pitch(again.out, from: $0, to: $0 + window) > 1000 }
+            let resumedHz = pitch(again.out, from: (spun.first ?? 13) + 1.1, to: 13.9)
+            report(hush < 0.05 * playing && start > 0.8 * playing && abs(startHz / 660 - 1) < 0.01 && spun.count >= 10 && abs(resumedHz / 660 - 1) < 0.01,
+                   String(format: "restart again    %.1f%% level as it moves, %.0f%% of %.1f Hz after, a backspin from %.2f s, then %.1f Hz",
+                          hush / playing * 100, start / playing * 100, startHz, spun.first ?? 0, resumedHz))
 
-            // A player that ignores the move: the app ends the silence after 2 seconds, the song comes back at once, and
-            // the stems take over later with a backspin to where they were turned on.
+            // A player that ignores the move: the app ends the dip after 2 seconds, the song comes back at once, and the
+            // stems take over later with a backspin to where they were turned on. Without any end, the dip lasts 15 s.
             let ignored = renderTimeline(seconds: 12, tone: { $0 < 6 ? 440 : 660 }, events: [
-                (1, { ps_stems_quiet_lead($0, 1); ps_stems_enable($0, 1) }), (3, { ps_stems_quiet_lead($0, 0) }),
+                (1, { ps_stems_await_seek($0, 1); ps_stems_enable($0, 1) }), (3, { ps_stems_await_seek($0, 0) }),
             ], separator: true).out
             let before = rms(ignored[Int(rate * 0.4) ..< Int(rate * 0.9)])
             let hushed = rms(ignored[Int(rate * 1.6) ..< Int(rate * 3.0)])
@@ -529,7 +536,7 @@ enum PitchSelfTest {
                    String(format: "move ignored     %.1f%% level until the app gives up, %.0f%% 0.6 s after, a backspin from %.2f s",
                           hushed / before * 100, returned / before * 100, whirls.first ?? 0))
 
-            let unanswered = renderTimeline(seconds: 22, tone: { _ in 440 }, events: [(1, { ps_stems_quiet_lead($0, 1); ps_stems_enable($0, 1) })], separator: true).out
+            let unanswered = renderTimeline(seconds: 22, tone: { _ in 440 }, events: [(1, { ps_stems_await_seek($0, 1); ps_stems_enable($0, 1) })], separator: true).out
             let level = { (from: Double, to: Double) in rms(unanswered[Int(rate * from) ..< Int(rate * to)]) }
             report(level(2, 15.5) < 0.01 * level(0.4, 0.9) && level(16.6, 17.5) > 0.8 * level(0.4, 0.9),
                    String(format: "restart unheard  %.1f%% level for 15 s, %.0f%% after", level(2, 15.5) / level(0.4, 0.9) * 100, level(16.6, 17.5) / level(0.4, 0.9) * 100))
@@ -559,6 +566,43 @@ enum PitchSelfTest {
             let held = rms(run.out[Int(rate * 2.05) ..< Int(rate * 3.4)]), through = rms(run.out[Int(rate * 3.8) ..< Int(rate * 5.4)])
             report(held < 0.01 * steady && through > 0.7 * steady,
                    String(format: "pause, no silence %.1f%% level in the first 1.4 s, %.0f%% after 1.8 s", held / steady * 100, through / steady * 100))
+        }
+
+        // The Fade rewind effect: the stems take over with the song fading out and the stems fading in, with no
+        // backspin, and play as far behind as after a backspin.
+        do {
+            let run = renderTimeline(seconds: 10, tone: { $0 < 2 ? 440 : 660 }, events: [(0, { ps_set_step_fade($0, 1) }), (1, { ps_stems_enable($0, 1) })], separator: true)
+            let out = run.out
+            let steady = rms(out[Int(rate * 2.4) ..< Int(rate * 2.9)])
+            let window = 0.02
+            let fast = stride(from: 2.5, to: 9.8, by: window).filter { pitch(out, from: $0, to: $0 + window) > 1000 }
+            let levels = stride(from: 3.0, to: 9.9, by: window).map { (at: $0, level: rms(out[Int(rate * $0) ..< Int(rate * ($0 + window))])) }
+            let deepest = levels.min { $0.level < $1.level } ?? (at: 0, level: 1)
+            let lowestAfter = levels.filter { $0.at > deepest.at + 0.45 }.map(\.level).min() ?? 0
+            let after = pitch(out, from: 6, to: 9.9)
+            report(run.gaps == 0 && fast.isEmpty && deepest.level < 0.1 * steady && deepest.at > 3.8 && deepest.at < 4.6 && lowestAfter > 0.8 * steady
+                   && abs(after / 660 - 1) < 0.01 && abs(run.delay - 2.8) < 0.2,
+                   String(format: "stems fade       %d spins, %.0f%% level at %.2f s, lowest %.0f%% after it, then %.1f Hz, %.1f s behind",
+                          fast.count, deepest.level / steady * 100, deepest.at, lowestAfter / steady * 100, after, run.delay))
+        }
+
+        // The Fade rewind effect while the stems play: the delay of 6 seconds steps back at 11 s, the stems fade out over
+        // 0.4 s, jump back 6 seconds and fade back in. The stems play about 3 seconds behind, so the 660 Hz from 7 s plays
+        // before it, and the 440 Hz of the earlier moment after it.
+        do {
+            let run = renderTimeline(seconds: 16, tone: { $0 < 7 ? 440 : 660 }, events: [
+                (0, { ps_set_step_fade($0, 1) }), (1, { ps_stems_enable($0, 1) }), (5, { ps_set_delay($0, 6) }),
+            ], separator: true)
+            let out = run.out
+            let window = 0.02
+            let steady = rms(out[Int(rate * 9.5) ..< Int(rate * 10.5)])
+            let fast = stride(from: 10, to: 15.8, by: window).filter { pitch(out, from: $0, to: $0 + window) > 1000 }
+            let deepest = stride(from: 10.8, to: 12.2, by: window).map { rms(out[Int(rate * $0) ..< Int(rate * ($0 + window))]) }.min() ?? 1
+            let before = pitch(out, from: 10.5, to: 10.9), after = pitch(out, from: 11.9, to: 13.1)
+            let lowest = stride(from: 12.3, to: 15.9, by: window).map { rms(out[Int(rate * $0) ..< Int(rate * ($0 + window))]) }.min() ?? 0
+            report(run.gaps == 0 && fast.isEmpty && deepest < 0.05 * steady && abs(before / 660 - 1) < 0.01 && abs(after / 440 - 1) < 0.01 && lowest > 0.5 * steady,
+                   String(format: "delay fade       %d spins, %.0f%% level at the jump, %.1f Hz before, %.1f Hz after, lowest %.0f%% after",
+                          fast.count, deepest / steady * 100, before, after, lowest / steady * 100))
         }
 
         // The lyrics delay steps back 30 seconds with the same backspin.
