@@ -112,6 +112,19 @@ When Whisper fails on three clips in a row, Muskey times the rest of the lyrics 
 
 Muskey matches the heard words to the lyrics in order, so a chorus that repeats is matched to the right verse. The heard words and the lyrics added by hand are kept in `~/Library/Application Support/Muskey/lyrics.json`.
 
+### Saving songs
+
+**Save Song** writes the song with its changes to a file: the key, the tempo, and the stems with their volumes. It is in the menu bar menu, in the File menu, on the HUD, and on `⌘S` over the HUD, and it shows only while something is changed. The changes are taken at the press, so a change made while the save panel is open doesn't go in the file.
+
+A song in Muskey Player is rendered from its file, faster than it plays:
+
+1. The stems are separated from the whole song with the model of the live stems, and mixed by their levels. While the stems also play live, this separation waits as long as each window took, so that the live stems keep up.
+2. [Rubber Band](https://breakfastquay.com/rubberband/)'s R3 engine changes the tempo and the key in its offline mode, which reads the whole song first. Muskey Player's speed changes the pitch too, which the live output undoes with an extra shift. A file at that speed needs only the time stretch.
+3. The limiter of the live output holds the peaks under −1 dBFS.
+4. M4A is AAC at 256 kbit/s, WAV is 16-bit, and MP3 is 320 kbit/s from [LAME](https://lame.sourceforge.io), with the LAME tag that tells players how much padding the encoder added.
+
+Muskey writes the song to a temporary file, which replaces the chosen one once it is whole. The pill at the top right of the screen shows the progress, then the saved song with **Show in Finder**, or a red pill with **Retry**.
+
 ## Limitations
 
 - A pitch change moves every note by the same amount, so a major song stays major. Muskey reaches a key in the other mode through its relative, which has the same notes: from A major, C minor plays as E♭ major.
@@ -183,6 +196,8 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--install-yt-dlp` | Press **Install yt-dlp**, as on the pill of a link that needs it |
 | `--menu TITLE` | Pick the item of the menu bar menu with this title, as a click on it does. No automation can open that menu on macOS 27. |
 | `--menu-after SECONDS` | How long after launch `--menu` picks its item (3 seconds by default) |
+| `--render-song PATH` | Render a song as Save Song does, write it to `--render-out PATH` (M4A, MP3 or WAV by its extension), print how long each part took, and quit |
+| `--render-semitones N`, `--render-speed S`, `--render-mute vocals,drums` | The changes of `--render-song`: the key, the speed, and the stems that are muted |
 
 ### Tests
 

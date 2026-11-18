@@ -39,6 +39,13 @@ enum OpenActivity: Equatable {
     case installFailed
     /// AVFoundation can't play the file.
     case unplayable(name: String)
+    /// A song is saved with its changes: rendered, or recorded as it plays from another player, with the time left.
+    case saving(name: String, progress: Double?)
+    case recording(name: String, left: String)
+    /// The song was saved, and Show in Finder shows the file.
+    case saved(name: String)
+    /// Saving failed, and Retry saves it again.
+    case saveFailed(name: String)
 }
 
 /// Plays the songs that Muskey opens: files, links to audio and video files, and pages that yt-dlp downloads from.
@@ -60,10 +67,18 @@ final class FilePlayer {
     /// Muskey Player has a song, playing or paused. Without one, the songs that it plays next start at their tempo.
     private(set) var hasSong = false {
         didSet {
-            if !hasSong { speed = 1 }
+            if !hasSong {
+                speed = 1
+                current = nil
+            }
             if hasSong != oldValue { onChange() }
         }
     }
+
+    /// The song that Muskey Player plays, once it said that it plays it, for saving it with its changes.
+    private(set) var current: Song?
+    /// The song sent to Muskey Player, until it plays it.
+    private var starting: Song?
 
     /// The rate that Muskey Player plays its songs at, from 0.5 to 1.5, faster or slower with the pitch.
     private(set) var speed = 1.0
@@ -236,6 +251,7 @@ final class FilePlayer {
             guard let self else { return }
             guard launch(), let input else { return show(.unplayable(name: (song.path as NSString).lastPathComponent)) }
             log("opening \(song.title == nil ? "a file" : "a downloaded song") in Muskey Player")
+            starting = song
             try? input.fileHandleForWriting.write(contentsOf: Data("open \(json)\n".utf8))
         }
     }
@@ -288,10 +304,12 @@ final class FilePlayer {
         if line.hasPrefix("ready") {
             log("Muskey Player plays the song (\(line.dropFirst(6)) seconds)")
             show(nil)
+            current = starting
             hasSong = true
             onPlaying()
         } else if line.hasPrefix("failed") {
             log("Muskey Player can't play the song: \(line.dropFirst(7))")
+            current = nil
             show(.unplayable(name: opening.map { $0.isFileURL ? $0.lastPathComponent : ($0.host() ?? $0.absoluteString) } ?? "Song"))
         } else if line == "ended", index + 1 < items.count {
             skip(1)

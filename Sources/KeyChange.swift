@@ -722,6 +722,8 @@ struct KeyHints: View {
     var karaokeKeys = false
     /// A song in Muskey Player, whose tempo the brackets change.
     var tempo = false
+    /// The song can be saved with its changes, with ⌘S.
+    var save = false
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -759,7 +761,8 @@ struct KeyHints: View {
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["K"], name: "lock key"),
              Hint(keys: ["L"], name: "lyrics"), Hint(keys: ["⌘", "K"], name: "karaoke"), Hint(keys: ["S"], name: "wide style"), Hint(keys: ["space"], name: "play or pause"),
              Hint(keys: ["N", "P"], name: "next or previous song")]
-                + (tempo ? [Hint(keys: ["[", "]"], name: "tempo"), Hint(keys: ["="], name: "original tempo")] : []) + [
+                + (tempo ? [Hint(keys: ["[", "]"], name: "tempo"), Hint(keys: ["="], name: "original tempo")] : [])
+                + (save ? [Hint(keys: ["⌘", "S"], name: "save song")] : []) + [
              Hint(keys: ["esc"], name: "close")]
         case .stems:
             // The lyrics list V in their own hints, so the tray under them leaves it out.
@@ -997,14 +1000,16 @@ final class StatusItem: NSObject {
     var onOpenFile: () -> Void = {}
     var onOpenLocation: () -> Void = {}
     var onStopPlaying: () -> Void = {}
+    var onSave: () -> Void = {}
     private var item: NSStatusItem?
 
     /// Opens the menu as a click on the icon does, for `--open-menu-after`, since no automation can open it.
     func openMenu() { item?.button?.performClick(nil) }
 
-    /// Picks the item with this title, for `--menu`, the way a click on it does. False when the menu has none.
+    /// Picks the item with this title, for `--menu`, the way a click on it does. A title may leave out its "…", which
+    /// a shell can mangle. False when the menu has none.
     func perform(_ title: String) -> Bool {
-        guard let menu = item?.menu, let index = menu.items.firstIndex(where: { $0.title == title }) else { return false }
+        guard let menu = item?.menu, let index = menu.items.firstIndex(where: { $0.title == title || $0.title == title + "…" }) else { return false }
         menu.performActionForItem(at: index)
         return true
     }
@@ -1013,8 +1018,9 @@ final class StatusItem: NSObject {
     /// `current` is the key that the song playing now is heard in, with the pitch change, and nil while Muskey
     /// doesn't know it. `stems` lists the stems that play while the others are muted, and is nil while every stem plays.
     /// `playing` is true while Muskey Player has a song, which the menu can stop, so the icon shows then too.
+    /// `savable` is true while the song can be saved with its changes.
     func update(shift: Int, from original: DetectedKey?, heard: DetectedKey?, kept: DetectedKey?, current: DetectedKey?, stems: [Stem]?,
-                alwaysShown: Bool, playing: Bool, hotkey: Shortcut)
+                alwaysShown: Bool, playing: Bool, savable: Bool, hotkey: Shortcut)
     {
         let changing = shift != 0 || kept != nil || stems != nil
         guard changing || alwaysShown || playing else {
@@ -1054,6 +1060,7 @@ final class StatusItem: NSObject {
         menu.addItem(.separator())
         menu.addItem(menuItem("Open File…", #selector(openFile), key: "o"))
         menu.addItem(menuItem("Open URL…", #selector(openLocation), key: "l"))
+        if savable { menu.addItem(menuItem("Save Song…", #selector(save), key: "s")) }
         if playing { menu.addItem(menuItem("Stop Playing", #selector(stopPlaying))) }
         menu.addItem(.separator())
         menu.addItem(menuItem("Settings…", #selector(settings), key: ","))
@@ -1078,6 +1085,7 @@ final class StatusItem: NSObject {
     @objc private func changeKey() { onChangeKey() }
     @objc private func keep() { onKeep() }
     @objc private func stop() { onStop() }
+    @objc private func save() { onSave() }
     @objc private func playAllStems() { onPlayAllStems() }
     @objc private func settings() { onSettings() }
     @objc private func openFile() { onOpenFile() }

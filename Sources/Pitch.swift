@@ -798,12 +798,13 @@ enum PitchSelfTest {
                String(format: "save limiter     peak %.3f (want at most 0.891), %d frames", savedPeak, limited?.frames ?? 0))
         let folder = FileManager.default.temporaryDirectory.appending(path: "muskey-selftest-\(getpid())")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        for format in [SaveFormat.wav, .m4a] {
+        for format in SaveFormat.allCases {
             let url = folder.appending(path: "tone.\(format.rawValue)")
             guard let rendered else { break }
             let back = (try? SongRender.write(rendered, as: format, to: url)).flatMap { try? SongRender.read(url) }
             let seconds = back?.seconds ?? 0, heard = back.map { pitch($0.left, from: 0.5, to: seconds - 0.5) } ?? 0
-            report(abs(seconds - rendered.seconds) < 0.05 && abs(heard / hz(2) - 1) < 0.01,
+            // An MP3 decoder may keep part of the encoder's padding at the ends: a frame is 24 ms at 48 kHz.
+            report(abs(seconds - rendered.seconds) < (format == .mp3 ? 0.1 : 0.05) && abs(heard / hz(2) - 1) < 0.01,
                    String(format: "save %@          %.2f s (want %.2f), %.1f Hz", format.name, seconds, rendered.seconds, heard))
         }
         try? FileManager.default.removeItem(at: folder)

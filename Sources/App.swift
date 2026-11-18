@@ -211,6 +211,8 @@ final class HUDModel: ObservableObject {
     @Published var seekable = false
     /// The key 0 starts the song over in karaoke: the player took the last seek and the lyrics don't play behind.
     @Published var restartable = false
+    /// The key, the stems or the tempo is changed, and the song can be saved with the changes.
+    @Published var savable = false
     /// The song plays, as the record and its tonearm show it. Space changes it before the player reports the change.
     @Published var playing = false
     /// The last play or pause, for the glyph on the record or over the lyrics.
@@ -298,6 +300,7 @@ final class HUDModel: ObservableObject {
     var onStop: () -> Void = {}
     var onKeep: () -> Void = {}
     var onLayout: () -> Void = {}
+    var onSave: () -> Void = {}
     var onLyrics: () -> Void = {}
     var onKaraoke: () -> Void = {}
     /// Slower with -1, faster with 1, and the song's own tempo with 0.
@@ -418,6 +421,11 @@ struct HUDView: View {
         .overlay(alignment: .topTrailing) {
             if showsStrip {
                 HStack(spacing: 6) {
+                    if !focus, model.savable {
+                        RoundButton(symbol: "square.and.arrow.down", help: "Save the song with its changes (⌘S)", label: "Save", key: "⌘S",
+                                    palette: palette, action: model.onSave)
+                            .transition(.opacity)
+                    }
                     // Karaoke keeps only its own button, which closes it.
                     if !focus {
                         RoundButton(symbol: "quote.bubble", help: model.lyricsShown ? "Show the keys (L)" : "Show the lyrics (L)", label: "Lyrics", key: "L",
@@ -1658,6 +1666,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let path = Self.stringOption("--stems-install") { return ModelDownload.stems.installForTesting(path) }
         if let path = Self.stringOption("--winds-install") { return ModelDownload.winds.installForTesting(path) }
         if let path = Self.stringOption("--stems-file") { return StemFileTest.run(path, to: Self.stringOption("--stems-out") ?? "/tmp/muskey-stems") }
+        if let path = Self.stringOption("--render-song") {
+            return SaveTest.run(path, to: Self.stringOption("--render-out") ?? "/tmp/muskey-render.m4a", semitones: Int(Self.option("--render-semitones", 0)),
+                                speed: Self.option("--render-speed", 1),
+                                mute: (Self.stringOption("--render-mute") ?? "").split(separator: ",").map { $0.lowercased() })
+        }
 
         NSApp.mainMenu = mainMenu()
         Updates.shared.start()
@@ -1758,15 +1771,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onOpenFile = { [weak self] in self?.openFile() }
         statusItem.onOpenLocation = { [weak self] in self?.openLocation() }
         filePlayer.log = { [weak self] in self?.log($0) }
-        filePlayer.onActivity = { [weak self] in self?.activityPill.show($0) }
+        filePlayer.onActivity = { [weak self] in self?.openActivity = $0 }
         filePlayer.onPlaying = { [weak self] in self?.filePlays() }
         filePlayer.pauseOthers = { [weak self] done in
             guard let self else { return done() }
             nowPlaying.pauseOthers(except: FilePlayer.bundleID, then: done)
         }
-        activityPill.onRetry = { [weak self] in self?.filePlayer.retry() }
+        activityPill.onRetry = { [weak self] in
+            guard let self else { return }
+            if openActivity == nil, case .saveFailed = saveActivity { retrySave() } else { filePlayer.retry() }
+        }
         activityPill.onInstall = { [weak self] in self?.filePlayer.installDownloader() }
-        activityPill.onDismiss = { [weak self] in self?.filePlayer.dismiss() }
+        activityPill.onDismiss = { [weak self] in
+            guard let self else { return }
+            if openActivity != nil { filePlayer.dismiss() } else { saveActivity = nil }
+        }
+        activityPill.onReveal = { [weak self] in
+            guard let url = self?.savedURL else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            self?.saveActivity = nil
+        }
+        model.onSave = { [weak self] in self?.saveSong() }
+        statusItem.onSave = { [weak self] in self?.saveSong() }
         model.onOpen = { [weak self] urls in self?.open(urls) }
         model.onPlayPause = { [weak self] in self?.playPause() }
         model.onSkip = { [weak self] in self?.skip($0) }
@@ -1790,6 +1816,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nowPlaying.onTrack = { [weak self] in
             self?.syncSpeed()
             self?.syncSeekable()
+            self?.syncSavable()
             self?.syncPaused()
             self?.checkKaraokeRestart()
             self?.syncTrack()
@@ -2136,9 +2163,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func stopPlaying() { filePlayer.close() }
 
-    /// Stop Playing in the File menu works only while Muskey Player has a song.
+    @objc private func saveFromMenu() { saveSong() }
+
+    /// Stop Playing in the File menu works only while Muskey Player has a song, and Save Song only while the song
+    /// can be saved with its changes.
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        item.action == #selector(stopPlaying) ? filePlayer.hasSong : true
+        switch item.action {
+        case #selector(stopPlaying): filePlayer.hasSong
+        case #selector(saveFromMenu): model.savable
+        default: true
+        }
     }
 
     @objc private func openFile() {
@@ -2224,6 +2258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = NSMenu(title: "File")
         file.addItem(withTitle: "Open File…", action: #selector(openFile), keyEquivalent: "o").target = self
         file.addItem(withTitle: "Open URL…", action: #selector(openLocation), keyEquivalent: "l").target = self
+        file.addItem(withTitle: "Save Song…", action: #selector(saveFromMenu), keyEquivalent: "s").target = self
         file.addItem(withTitle: "Stop Playing", action: #selector(stopPlaying), keyEquivalent: "").target = self
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
@@ -2529,6 +2564,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.toggleKaraoke()
                 return nil
             }
+            // ⌘S saves the song with its changes.
+            if let self, self.model.picking, event.window === self.panel, flags.contains(.command), !flags.contains(.option),
+               Int(event.keyCode) == kVK_ANSI_S, self.model.savable {
+                self.saveSong()
+                return nil
+            }
             // Typing in the lyrics editor stays in the editor.
             guard let self, self.model.picking, !flags.contains(.command), !flags.contains(.control),
                   event.window == nil || event.window === self.panel else { return event }
@@ -2644,6 +2685,171 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         beginKaraokeRestart()
+    }
+
+    // MARK: Saving
+
+    /// Where a song is saved from: the file that Muskey Player plays.
+    private enum SaveSource: Equatable {
+        case file(path: String)
+    }
+
+    private struct SaveJob: Equatable {
+        let name: String
+        let source: SaveSource
+        let changes: SongChanges
+        let url: URL
+        let format: SaveFormat
+    }
+
+    /// The song being saved, and the last save that failed, for Retry.
+    private var saveJob: SaveJob?
+    private var failedSave: SaveJob?
+    /// The file of the last save, for Show in Finder.
+    private var savedURL: URL?
+    /// The pill at the top right: a song that opens takes it, and the save shows again once that is done.
+    private var openActivity: OpenActivity? {
+        didSet { activityPill.show(openActivity ?? saveActivity) }
+    }
+    private var saveActivity: OpenActivity? {
+        didSet { activityPill.show(openActivity ?? saveActivity) }
+    }
+
+    /// The changes that a save keeps, nil when the song plays as it is.
+    private func saveChanges() -> SongChanges? {
+        var changes = SongChanges(semitones: model.shift, speed: playedSpeed)
+        if model.stemsEngaged, model.stemsAdjusted {
+            changes.stemGains = Stem.allCases.map { model.stemsMuted.contains($0) ? 0 : Float(model.stemVolumes[$0] ?? 1) }
+        }
+        return changes.isEmpty ? nil : changes
+    }
+
+    private func saveSource() -> SaveSource? {
+        guard nowPlaying.track?.bundleID == FilePlayer.bundleID, let song = filePlayer.current else { return nil }
+        return .file(path: song.path)
+    }
+
+    private func syncSavable() {
+        let savable = saveChanges() != nil && saveSource() != nil
+        guard savable != model.savable else { return }
+        model.savable = savable
+        updateHoverKeys()
+    }
+
+    /// Save Song in the menus, the button on the HUD and ⌘S: asks where to save the song, then renders it with the
+    /// changes it plays with now.
+    private func saveSong() {
+        guard saveJob == nil else { return log("save: a song is being saved already") }
+        // The changes are taken at the press, so a change made while the panel is open doesn't go in the file.
+        guard let changes = saveChanges(), let source = saveSource() else { return log("save: nothing changed, or the song can't be saved") }
+        guard case let .file(path) = source else { return }
+        let title = filePlayer.current?.title ?? nowPlaying.track?.title ?? ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let name = title.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        guard let (url, format) = askWhereToSave(fileName(name, changes)) else { return log("save: cancelled") }
+        startSave(SaveJob(name: name, source: source, changes: changes, url: url, format: format))
+    }
+
+    /// The title, and what changed in parentheses: `Bine (C minor, 90%, no vocals)`.
+    private func fileName(_ name: String, _ changes: SongChanges) -> String {
+        var parts: [String] = []
+        if changes.semitones != 0, let base = shiftBase { parts.append(model.shown(base.transposed(by: changes.semitones)).name) }
+        if abs(changes.speed - 1) > 0.001 { parts.append("\(Int((changes.speed * 100).rounded()))%") }
+        if let gains = changes.stemGains {
+            let muted = Stem.shown.filter { gains[$0.rawValue] == 0 }, playing = Stem.shown.filter { gains[$0.rawValue] > 0 }
+            if muted.isEmpty {
+                parts.append("stem volumes")
+            } else if playing.count == 1 {
+                parts.append("\(playing[0].name.lowercased()) only")
+            } else if muted.count <= 2 {
+                parts.append("no " + muted.map { $0.name.lowercased() }.joined(separator: " and "))
+            } else {
+                parts.append("\(playing.count) stems")
+            }
+        }
+        return parts.isEmpty ? name : "\(name) (\(parts.joined(separator: ", ")))"
+    }
+
+    private func askWhereToSave(_ name: String) -> (URL, SaveFormat)? {
+        let panel = NSSavePanel()
+        panel.title = "Save Song"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        var format = prefs.saveFormat
+        panel.allowedContentTypes = [format.type]
+        panel.nameFieldStringValue = "\(name).\(format.rawValue)"
+        let accessory = NSHostingView(rootView: SaveAccessory(format: format) { picked in
+            format = picked
+            panel.allowedContentTypes = [picked.type]
+            panel.nameFieldStringValue = ((panel.nameFieldStringValue as NSString).deletingPathExtension as NSString).appendingPathExtension(picked.rawValue) ?? name
+        })
+        accessory.frame.size = accessory.fittingSize
+        panel.accessoryView = accessory
+        guard inFront({ panel.runModal() }) == .OK, let url = panel.url else { return nil }
+        prefs.saveFormat = format
+        return (url, format)
+    }
+
+    private func retrySave() {
+        guard let job = failedSave, saveJob == nil else { return }
+        startSave(job)
+    }
+
+    /// Renders the song on a thread of its own, into a temporary file that replaces the chosen one once it is whole.
+    private func startSave(_ job: SaveJob) {
+        saveJob = job
+        failedSave = nil
+        saveActivity = .saving(name: job.name, progress: 0)
+        let changes = job.changes
+        log(String(format: "save: %@ as %@, %+d semitones, %.0f%% tempo%@", job.name, job.format.name, changes.semitones, changes.speed * 100,
+                   changes.stemGains == nil ? "" : ", stems \(changes.stemGains!.map { String(format: "%.2f", $0) }.joined(separator: " "))"))
+        // With the stems separated for the output too, the separation of the whole song leaves them half of the time.
+        let live = model.stemsEngaged
+        let started = Date()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var shown = -1
+            let report = { (part: Double) -> Bool in
+                let percent = Int(part * 100)
+                if percent != shown {
+                    shown = percent
+                    DispatchQueue.main.async {
+                        guard let self, self.saveJob == job else { return }
+                        self.saveActivity = .saving(name: job.name, progress: part)
+                    }
+                }
+                return true
+            }
+            let temporary = FileManager.default.temporaryDirectory.appending(path: "Muskey save \(UUID().uuidString).\(job.format.rawValue)")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            do {
+                guard case let .file(path) = job.source else { throw SaveError(message: "The song has no file") }
+                let audio = try SongRender.read(URL(fileURLWithPath: path))
+                let rendered = try SongRender.render(audio, changes: changes, live: { live }) { report($0 * 0.95) }
+                try SongRender.write(rendered, as: job.format, to: temporary) { report(0.95 + $0 * 0.05) }
+                if FileManager.default.fileExists(atPath: job.url.path) { try FileManager.default.removeItem(at: job.url) }
+                try FileManager.default.moveItem(at: temporary, to: job.url)
+                DispatchQueue.main.async { self?.saveFinished(job, error: nil, seconds: Date().timeIntervalSince(started), length: rendered.seconds) }
+            } catch {
+                DispatchQueue.main.async { self?.saveFinished(job, error: error, seconds: Date().timeIntervalSince(started), length: 0) }
+            }
+        }
+    }
+
+    private func saveFinished(_ job: SaveJob, error: Error?, seconds: Double, length: Double) {
+        guard saveJob == job else { return }
+        saveJob = nil
+        if let error {
+            log("save: \(job.name) failed: \(error.localizedDescription)")
+            failedSave = job
+            saveActivity = .saveFailed(name: job.name)
+            return
+        }
+        log(String(format: "save: wrote %@ (%.1f s of song) in %.1f s", job.url.lastPathComponent, length, seconds))
+        savedURL = job.url
+        saveActivity = .saved(name: job.name)
+        // The pill of a finished save goes away by itself after a while.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            if case .saved = self?.saveActivity { self?.saveActivity = nil }
+        }
     }
 
     /// Seeks are instant only while nothing plays behind the song: with the stems separated live, a seek would wait
@@ -3423,6 +3629,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForSpeed = false
     private var hoverKeysForSeek = false
     private var hoverKeysForRestart = false
+    private var hoverKeysForSave = false
 
     /// Open File… or Open URL… is open. Its text would otherwise reach the keys over the HUD, which are global
     /// hotkeys, whenever the pointer rests on the HUD.
@@ -3437,7 +3644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard wanted == hoverKeys.isEmpty
             || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
-                || hoverKeysForRestart != model.restartable))
+                || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -3448,6 +3655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForSpeed = model.speedAdjustable
         hoverKeysForSeek = model.seekable
         hoverKeysForRestart = model.restartable
+        hoverKeysForSave = model.savable
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) }
         if model.stemsAvailable {
@@ -3476,6 +3684,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let karaoke = try? HotKey(keyCode: kVK_ANSI_K, modifiers: cmdKey, action: { [weak self] in self?.toggleKaraoke() }) {
             hoverKeys.append(karaoke)
+        }
+        if model.savable, let save = try? HotKey(keyCode: kVK_ANSI_S, modifiers: cmdKey, action: { [weak self] in self?.saveSong() }) {
+            hoverKeys.append(save)
         }
     }
 
@@ -3553,7 +3764,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [self] in playSpeed(speed) }
             }
         }
-        if model.speed != filePlayer.speed { model.speed = filePlayer.speed }
+        if model.speed != filePlayer.speed {
+            model.speed = filePlayer.speed
+            syncSavable()
+        }
         let speed = playedSpeed
         if speed != heardSpeed {
             heardSpeed = speed
@@ -3663,10 +3877,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshStatus() {
+        syncSavable()
         statusItem.update(shift: model.shift, from: shiftBase, heard: shiftBase.map { model.shown($0.transposed(by: model.shift)) }, kept: keptKey,
                           current: currentKey,
                           stems: model.stemsAdjusted ? Stem.shown.filter { !model.stemsMuted.contains($0) } : nil,
-                          alwaysShown: prefs.menuBarIcon == .always, playing: filePlayer.hasSong, hotkey: prefs.hotkey)
+                          alwaysShown: prefs.menuBarIcon == .always, playing: filePlayer.hasSong, savable: model.savable, hotkey: prefs.hotkey)
     }
 
     private func logShift() {

@@ -3,3 +3,4 @@
 #include "ekshim.h"
 #include "pitch.h"
 #include "whisper.h"
+#include "lame/lame.h"

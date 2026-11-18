@@ -37,7 +37,7 @@
 ## Build from source
 
 ```sh
-brew install eigen
+brew install eigen lame
 make install
 ```
 

@@ -56,6 +56,16 @@ $(BUILD)/obj/pitch.o: Sources/pitch.cpp Sources/pitch.h | $(RUBBERBAND)
 	@mkdir -p $(@D)
 	clang++ $(RBFLAGS) -c $< -o $@
 
+# LAME writes MP3 for Save Song, which Core Audio can't. LGPL 2, linked statically from Homebrew's build
+# (`brew install lame`), so nothing else is downloaded for it. Homebrew's LAME calls its decoder from the encoder, and
+# the decoder is mpg123 (LGPL 2.1), which Homebrew installs with it.
+LAME := $(shell brew --prefix lame 2>/dev/null)
+LAME_LIB := $(LAME)/lib/libmp3lame.a
+MPG123_LIB := $(shell brew --prefix mpg123 2>/dev/null)/lib/libmpg123.a
+
+$(LAME_LIB):
+	@echo "Save Song needs LAME for MP3: brew install lame" && exit 1
+
 # whisper.cpp 1.9.5 turns speech into text with a time for each word, on the GPU through Metal. It is linked statically
 # with the Metal shaders embedded, so the app needs no extra files next to it. GGML_NATIVE is off because it would tune
 # the CPU code for the Mac that builds it, and a newer chip's instructions crash older Apple Silicon. OpenMP is off so
@@ -111,12 +121,12 @@ $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 	xcrun actool muskey.icon --compile $(@D) --app-icon muskey --platform macosx --target-device mac \
 		--minimum-deployment-target $(MACOS) --output-partial-info-plist $(@D)/icon.plist >/dev/null
 
-$(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
+$(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB) $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
 		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE)
 	rm -rf $@
 	mkdir -p $@/Contents/MacOS $@/Contents/Helpers $@/Contents/Frameworks $@/Contents/Resources
-	swiftc -O -target $(TARGET) $(DEV) -parse-as-library -import-objc-header Sources/bridge.h $(WHISPER_INCLUDES) -F $(SPARKLE) \
-		Sources/*.swift $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o $(ESSENTIA_LIB) $(WHISPER_LIBS) \
+	swiftc -O -target $(TARGET) $(DEV) -parse-as-library -import-objc-header Sources/bridge.h $(WHISPER_INCLUDES) -Xcc -I$(LAME)/include \
+		-F $(SPARKLE) Sources/*.swift $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o $(ESSENTIA_LIB) $(WHISPER_LIBS) $(LAME_LIB) $(MPG123_LIB) \
 		-lc++ -framework Accelerate -framework Metal -framework MetalKit -framework Foundation -framework Sparkle \
 		-Xlinker -rpath -Xlinker @executable_path/../Frameworks \
 		-o $@/Contents/MacOS/$(APP)

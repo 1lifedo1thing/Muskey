@@ -8,6 +8,7 @@ final class ActivityPill {
     var onRetry: () -> Void = {}
     var onInstall: () -> Void = {}
     var onDismiss: () -> Void = {}
+    var onReveal: () -> Void = {}
 
     private let model = ActivityPillModel()
     private static let size = CGSize(width: 460, height: 64)
@@ -29,6 +30,7 @@ final class ActivityPill {
     init() {
         model.retry = { [weak self] in self?.onRetry() }
         model.install = { [weak self] in self?.onInstall() }
+        model.reveal = { [weak self] in self?.onReveal() }
         model.dismiss = { [weak self] in
             self?.show(nil)
             self?.onDismiss()
@@ -63,6 +65,7 @@ final class ActivityPillModel: ObservableObject {
     var retry: () -> Void = {}
     var install: () -> Void = {}
     var dismiss: () -> Void = {}
+    var reveal: () -> Void = {}
 }
 
 struct ActivityPillView: View {
@@ -97,18 +100,26 @@ struct ActivityPillView: View {
             failure("yt-dlp") { button("Retry", action: model.retry) }
         case let .unplayable(name):
             failure(name) { EmptyView() }
+        case let .saving(name, progress):
+            working("Saving \(name)", progress: progress)
+        case let .recording(name, left):
+            working("Recording \(name)", progress: nil, detail: left)
+        case let .saved(name):
+            done("\(name) saved") { button("Show in Finder", action: model.reveal) }
+        case let .saveFailed(name):
+            failure("Saving \(name) failed") { button("Retry", action: model.retry) }
         }
     }
 
-    private func working(_ name: String, progress: Double?) -> some View {
+    private func working(_ name: String, progress: Double?, detail: String? = nil) -> some View {
         HStack(spacing: 8) {
             ProgressRing(progress: progress)
                 .frame(width: 14, height: 14)
             Text(name)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if let progress {
-                Text("\(Int((progress * 100).rounded()))%")
+            if let detail = detail ?? progress.map({ "\(Int(($0 * 100).rounded()))%" }) {
+                Text(detail)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
@@ -132,6 +143,27 @@ struct ActivityPillView: View {
         .padding(.trailing, 6)
         .padding(.vertical, 5)
         .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
+        .modifier(PillGlass(preview: renderingPreview, scheme: colorScheme))
+        .overlay(alignment: .topLeading) {
+            CloseButton(size: 13, action: model.dismiss)
+                .offset(x: -4, y: -4)
+        }
+    }
+
+    /// Work that finished, with the action that follows from it and a button that dismisses the pill.
+    private func done(_ text: String, @ViewBuilder action: () -> some View) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(StripColors.text(.sage, colorScheme))
+            Text(text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+            action()
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
+        .padding(.vertical, 5)
         .modifier(PillGlass(preview: renderingPreview, scheme: colorScheme))
         .overlay(alignment: .topLeading) {
             CloseButton(size: 13, action: model.dismiss)

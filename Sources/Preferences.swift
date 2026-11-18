@@ -138,6 +138,10 @@ final class Preferences: ObservableObject {
     @Published var karaokeBackdrop: Bool {
         didSet { defaults.set(karaokeBackdrop, forKey: "karaokeBackdrop") }
     }
+    /// The format that Save Song writes, kept from the last save.
+    @Published var saveFormat: SaveFormat {
+        didSet { defaults.set(saveFormat.rawValue, forKey: "saveFormat") }
+    }
     /// The base URL of the Whisper server, up to `/v1`.
     @Published var whisperServer: String {
         didSet { defaults.set(whisperServer, forKey: "whisperServer") }
@@ -161,5 +165,6 @@ final class Preferences: ObservableObject {
         karaokeRestarts = defaults.bool(forKey: "karaokeRestarts")
         rewindEffect = defaults.string(forKey: "rewindEffect").flatMap(RewindEffect.init) ?? .scratch
         karaokeBackdrop = defaults.bool(forKey: "karaokeBackdrop")
+        saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }
