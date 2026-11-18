@@ -32,6 +32,12 @@ A link to an audio or video file is downloaded directly. Muskey downloads any ot
 
 yt-dlp takes only the audio. With ffmpeg, it converts any audio to M4A. Without ffmpeg, it takes M4A, MP3 or MP4, and Muskey copies the audio into a new M4A, since AVFoundation reads the DASH M4A of YouTube as twice as long as it is. Muskey keeps up to 2 GB of downloaded songs in `~/Library/Caches/Muskey/Links`, so a link opened again plays at once.
 
+Several files opened together play one after another. **Stop Playing**, in the menu bar menu and in the File menu while a song plays in Muskey Player, quits the player.
+
+### Controls on the record
+
+A click on the record plays or pauses the song, as Space does. With the pointer over the record, buttons for the previous and the next song show beside it. A two-finger swipe across the HUD skips too: fingers moving left play the next song, and fingers moving right play the previous one. Only a trackpad swipe that is mostly sideways counts. Scrolling the lyrics or turning the wheel of a mouse doesn't change the song. These controls send the commands of the media keys to the app that plays the song, so they work with any player.
+
 ### Hotkey
 
 The hotkey is registered with Carbon's `RegisterEventHotKey`, which works without the Accessibility permission.
@@ -143,6 +149,8 @@ Builds made with `make` or `make install` take these flags, and release builds i
 |---|---|
 | `--open PATH_OR_LINK` | Play a file or a link, as a drop on the HUD does |
 | `--install-yt-dlp` | Press **Install yt-dlp**, as on the pill of a link that needs it |
+| `--menu TITLE` | Pick the item of the menu bar menu with this title, as a click on it does. No automation can open that menu on macOS 27. |
+| `--menu-after SECONDS` | How long after launch `--menu` picks its item (3 seconds by default) |
 
 ### Tests
 

@@ -905,16 +905,25 @@ final class StatusItem: NSObject {
     var onSettings: () -> Void = {}
     var onOpenFile: () -> Void = {}
     var onOpenLocation: () -> Void = {}
+    var onStopPlaying: () -> Void = {}
     private var item: NSStatusItem?
+
+    /// Picks the item with this title, for `--menu`, the way a click on it does. False when the menu has none.
+    func perform(_ title: String) -> Bool {
+        guard let menu = item?.menu, let index = menu.items.firstIndex(where: { $0.title == title }) else { return false }
+        menu.performActionForItem(at: index)
+        return true
+    }
 
     /// `heard` is the key that the song plays in, as the HUD names it, and `kept` the key that the next songs get.
     /// `current` is the key that the song playing now is heard in, with the pitch change, and nil while Muskey
     /// doesn't know it. `stems` lists the stems that play while the others are muted, and is nil while every stem plays.
+    /// `playing` is true while Muskey Player has a song, which the menu can stop, so the icon shows then too.
     func update(shift: Int, from original: DetectedKey?, heard: DetectedKey?, kept: DetectedKey?, current: DetectedKey?, stems: [Stem]?,
-                alwaysShown: Bool, hotkey: Shortcut)
+                alwaysShown: Bool, playing: Bool, hotkey: Shortcut)
     {
         let changing = shift != 0 || kept != nil || stems != nil
-        guard changing || alwaysShown else {
+        guard changing || alwaysShown || playing else {
             if let item { NSStatusBar.system.removeStatusItem(item) }
             item = nil
             return
@@ -949,6 +958,7 @@ final class StatusItem: NSObject {
         menu.addItem(.separator())
         menu.addItem(menuItem("Open File…", #selector(openFile), key: "o"))
         menu.addItem(menuItem("Open Location…", #selector(openLocation), key: "l"))
+        if playing { menu.addItem(menuItem("Stop Playing", #selector(stopPlaying))) }
         menu.addItem(.separator())
         menu.addItem(menuItem("Settings…", #selector(settings), key: ","))
         menu.addItem(menuItem("Check for Updates…", #selector(checkForUpdates)))
@@ -976,5 +986,6 @@ final class StatusItem: NSObject {
     @objc private func settings() { onSettings() }
     @objc private func openFile() { onOpenFile() }
     @objc private func openLocation() { onOpenLocation() }
+    @objc private func stopPlaying() { onStopPlaying() }
     @objc private func checkForUpdates() { Updates.shared.check() }
 }

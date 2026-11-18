@@ -5,11 +5,12 @@ import Foundation
 // signs this helper as com.apple.controlcenter.Muskey.
 //
 //   watch   a line at start and after every change, until stdin closes or the parent process exits. A line
-//           `playpause` on stdin plays or pauses the song, `pause` pauses it, and `seek <seconds>` moves it to that
-//           time.
+//           `playpause` on stdin plays or pauses the song, `pause` pauses it, `next` and `previous` skip to another
+//           song, and `seek <seconds>` moves it to that time.
 //   get     one line, then exit
 //   playpause  plays or pauses the song, then exits
 //   pause   pauses the song, then exits
+//   next, previous  skips to the next or the previous song, then exits
 //   seek <seconds>  moves the song to that time, then exits
 
 struct Track: Encodable, Equatable {
@@ -56,6 +57,11 @@ enum MediaRemote {
     /// The pause command (kMRPause), which leaves a paused song paused.
     @discardableResult static func pause() -> Bool {
         function("MRMediaRemoteSendCommand", as: SendCommand.self)?(1, nil) ?? false
+    }
+
+    /// The next and previous track commands (kMRNextTrack, kMRPreviousTrack), as the keyboard's media keys send them.
+    @discardableResult static func skip(_ direction: Int) -> Bool {
+        function("MRMediaRemoteSendCommand", as: SendCommand.self)?(direction > 0 ? 4 : 5, nil) ?? false
     }
 
     /// Moves the song to `seconds` into it, the way dragging the time in Control Center does.
@@ -165,6 +171,8 @@ case "watch":
             pending = String(pending[pending.index(after: end)...])
             if line == "playpause" { MediaRemote.togglePlayPause() }
             if line == "pause" { MediaRemote.pause() }
+            if line == "next" { MediaRemote.skip(1) }
+            if line == "previous" { MediaRemote.skip(-1) }
             if line.hasPrefix("seek "), let seconds = Double(line.dropFirst(5)) { MediaRemote.seek(to: seconds) }
         }
     }
@@ -174,8 +182,13 @@ case "watch":
     parent.resume()
     RunLoop.main.run()
 
-case "playpause", "pause":
-    let sent = CommandLine.arguments[1] == "pause" ? MediaRemote.pause() : MediaRemote.togglePlayPause()
+case "playpause", "pause", "next", "previous":
+    let sent = switch CommandLine.arguments[1] {
+    case "pause": MediaRemote.pause()
+    case "next": MediaRemote.skip(1)
+    case "previous": MediaRemote.skip(-1)
+    default: MediaRemote.togglePlayPause()
+    }
     // The command is sent from the main queue, so it is given a moment to leave before the helper exits.
     RunLoop.main.run(until: Date() + 0.3)
     exit(sent ? 0 : 1)
@@ -191,6 +204,6 @@ case "seek":
     exit(sent ? 0 : 1)
 
 default:
-    FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) get|watch|playpause|pause|seek <seconds>\n".utf8))
+    FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) get|watch|playpause|pause|next|previous|seek <seconds>\n".utf8))
     exit(64)
 }

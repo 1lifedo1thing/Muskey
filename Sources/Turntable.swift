@@ -144,6 +144,8 @@ struct TurntableDeck: View {
                     PlayFlashView(flash: flash, size: 58)
                 }
                 .frame(width: Self.size, height: Self.size)
+                // On the rims, where the tonearm never passes.
+                .modifier(RecordControls(spread: Self.size / 2))
             }
             ZStack {
                 Details(track: track, ticking: spinning, palette: palette)
@@ -160,6 +162,88 @@ struct TurntableDeck: View {
             swapping = true
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.swap) { swapping = false }
         }
+    }
+}
+
+/// What a click on the record and the buttons at its sides do: play or pause the song, and skip to the previous or
+/// the next one.
+struct RecordActions {
+    var playPause: () -> Void = {}
+    var skip: (Int) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    @Entry var recordActions = RecordActions()
+    /// `--render` shows the previous and next buttons, as the pointer over the record does.
+    @Entry var recordHovered = false
+}
+
+/// A click on the record plays or pauses the song, as Space does. The pointer over the record shows the previous and
+/// next buttons, `spread` points to its left and right and `lift` points above its centre. The buttons show only on
+/// hover, since the record is the thing to look at, and they fade in quickly, as hover feedback does.
+struct RecordControls: ViewModifier {
+    let spread: CGFloat
+    var lift: CGFloat = 0
+    @Environment(\.recordActions) private var actions
+    @Environment(\.recordHovered) private var previewHover
+    @State private var hovering = false
+    @State private var leave: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Circle())
+            .onTapGesture { actions.playPause() }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Record")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { actions.playPause() }
+            .onHover(perform: hover)
+            .overlay {
+                if hovering || previewHover {
+                    HStack(spacing: 0) {
+                        SkipButton(direction: -1) { actions.skip(-1) }.onHover(perform: hover)
+                        Spacer(minLength: 0)
+                        SkipButton(direction: 1) { actions.skip(1) }.onHover(perform: hover)
+                    }
+                    .frame(width: 2 * spread + SkipButton.size)
+                    .offset(y: -lift)
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+
+    private func hover(_ inside: Bool) {
+        leave?.cancel()
+        if inside { return hovering = true }
+        // The buttons stick out past the record, so moving onto one leaves the record a moment before it enters the
+        // button.
+        leave = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            if !Task.isCancelled { hovering = false }
+        }
+    }
+}
+
+private struct SkipButton: View {
+    let direction: Int
+    let action: () -> Void
+    static let size: CGFloat = 28
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: direction > 0 ? "forward.fill" : "backward.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: Self.size, height: Self.size)
+                .background(Circle().fill(.black.opacity(0.6)))
+                .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(direction > 0 ? "Play the next song" : "Play the previous song")
+        .accessibilityLabel(direction > 0 ? "Next song" : "Previous song")
     }
 }
 
@@ -194,6 +278,8 @@ struct RecordDisc: View {
             PlayFlashView(flash: flash, size: 58)
         }
         .frame(width: side, height: side)
+        // Inside the record, since the ring of keys sits around it.
+        .modifier(RecordControls(spread: side * 0.36))
         .animation(.smooth(duration: TurntableDeck.swap), value: song)
     }
 }
@@ -432,6 +518,8 @@ struct PlayFlash: Equatable {
     var playing: Bool
     var id: Int
     var date = Date()
+    /// 1 for the next song and -1 for the previous one, which show their own glyph.
+    var skip = 0
 }
 
 /// The play or pause glyph, on the record or over the lyrics, at full opacity on the frame that the change lands
@@ -448,11 +536,11 @@ struct PlayFlashView: View {
         ZStack {
             if let current {
                 Circle().fill(.black.opacity(0.55))
-                Image(systemName: current.playing ? "play.fill" : "pause.fill")
-                    .font(.system(size: size * 0.38, weight: .bold))
+                Image(systemName: current.skip > 0 ? "forward.fill" : current.skip < 0 ? "backward.fill" : current.playing ? "play.fill" : "pause.fill")
+                    .font(.system(size: size * (current.skip == 0 ? 0.38 : 0.32), weight: .bold))
                     .foregroundStyle(.white)
                     // The triangle's weight sits left of its box, so it moves right to look centred.
-                    .offset(x: current.playing ? size * 0.035 : 0)
+                    .offset(x: current.skip == 0 && current.playing ? size * 0.035 : 0)
             }
         }
         .frame(width: size, height: size)
@@ -588,6 +676,8 @@ struct KaraokeRecord<Footer: View>: View {
                     GroovedLetters(track: track, side: side)
                 }
                 .frame(width: side, height: side)
+                // On the part of the record above the edge of the glass, beside the cover.
+                .modifier(RecordControls(spread: side * 0.38, lift: side * 0.1))
                 .opacity(arriving == nil ? 1 : 0.6)
                 .overlay { if let arriving { ArrivalRing(arriving: arriving, diameter: side * Self.label + 12) } }
                 .background(Circle().fill(Color(white: 0.09)).shadow(color: .black.opacity(0.3), radius: 12, y: -2))

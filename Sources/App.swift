@@ -275,6 +275,12 @@ final class HUDModel: ObservableObject {
     var onStemsRetry: () -> Void = {}
     /// Files or links dropped on the HUD, which Muskey plays.
     var onOpen: ([URL]) -> Void = { _ in }
+    /// A click on the record: play or pause.
+    var onPlayPause: () -> Void = {}
+    /// The previous (-1) or next (1) song, from the buttons beside the record.
+    var onSkip: (Int) -> Void = { _ in }
+    /// A link in the HUD, like the credit under the lyrics, opens in the browser.
+    var onLink: (URL) -> Void = { _ in }
     /// A file or a link is dragged over the HUD.
     @Published var dropTargeted = false
 }
@@ -378,6 +384,11 @@ struct HUDView: View {
         } isTargeted: { model.dropTargeted = $0 }
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.songArriving, model.songArriving)
+        .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }))
+        .environment(\.openURL, OpenURLAction { url in
+            model.onLink(url)
+            return .systemAction
+        })
         .animation(.smooth(duration: 0.35), value: model.songArriving == nil)
         // The glass moves the panel when dragged anywhere that isn't a control.
         .gesture(WindowDragGesture())
@@ -1547,6 +1558,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         activityPill.onInstall = { [weak self] in self?.filePlayer.installDownloader() }
         activityPill.onDismiss = { [weak self] in self?.filePlayer.dismiss() }
         model.onOpen = { [weak self] urls in self?.open(urls) }
+        model.onPlayPause = { [weak self] in self?.playPause() }
+        model.onSkip = { [weak self] in self?.skip($0) }
+        model.onLink = { [weak self] url in self?.log("opening \(url.host() ?? url.absoluteString) in the browser") }
+        filePlayer.onChange = { [weak self] in self?.refreshStatus() }
+        statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, event.window === panel else { return event }
+            return swipe(event) ? nil : event
+        }
         nowPlaying.log = { [weak self] in self?.log($0) }
         nowPlaying.onSongChange = { [weak self] in
             // Another song during karaoke's countdown plays as it comes.
@@ -1672,6 +1692,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let text = Self.stringOption("--open"), let url = FilePlayer.url(from: text) { open([url]) }
         // `--install-yt-dlp` presses Install yt-dlp on the pill.
         if TestFlags.has("--install-yt-dlp") { filePlayer.installDownloader() }
+        // `--menu "Stop Playing" [--menu-after SECONDS]` picks an item of the menu bar menu, which no automation can
+        // open on macOS 27.
+        if let title = Self.stringOption("--menu") {
+            let after = Self.stringOption("--menu-after").flatMap(Double.init) ?? 3
+            DispatchQueue.main.asyncAfter(deadline: .now() + after) { [self] in
+                log(statusItem.perform(title) ? "menu: \(title)" : "menu: no item \(title)")
+            }
+        }
         if let urls = openedEarly {
             openedEarly = nil
             open(urls)
@@ -1690,6 +1718,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         filePlayer.open(urls)
     }
 
+    /// The previous or next song, from the buttons beside the record or a swipe over the HUD. The player gets the
+    /// command that the media keys send, and the record shows the glyph at once.
+    private func skip(_ direction: Int) {
+        log(direction > 0 ? "next song" : "previous song")
+        nowPlaying.skip(direction)
+        guard model.shown, let track = nowPlaying.track, track.title?.isEmpty == false else { return }
+        model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, skip: direction)
+    }
+
+    private var scrollMonitor: Any?
+    /// The fingers' travel across the HUD in the swipe that goes on, in points, and whether it skipped already.
+    private var swipeTravel = CGSize.zero
+    private var swiped = false
+
+    /// A two-finger swipe across the HUD skips to another song, once per swipe. The fingers moving left play the next
+    /// song, the way the record on the deck slides off to the left for it, and moving right play the previous one.
+    /// Mostly vertical scrolls, like the lyrics', and a mouse wheel are left alone.
+    private func swipe(_ event: NSEvent) -> Bool {
+        guard event.hasPreciseScrollingDeltas else { return false }
+        if event.phase == .began {
+            swipeTravel = .zero
+            swiped = false
+        }
+        // The momentum after the fingers lift belongs to the swipe that skipped.
+        if event.phase.isEmpty { return swiped && !event.momentumPhase.isEmpty }
+        // With natural scrolling the deltas go the way the fingers go.
+        let sign: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
+        swipeTravel.width += event.scrollingDeltaX * sign
+        swipeTravel.height += abs(event.scrollingDeltaY)
+        if !swiped, abs(swipeTravel.width) > 60, abs(swipeTravel.width) > 2 * swipeTravel.height {
+            swiped = true
+            if Self.logKeys { log(String(format: "swipe %.0f points", swipeTravel.width)) }
+            skip(swipeTravel.width < 0 ? 1 : -1)
+        }
+        return swiped
+    }
+
     /// The song that Muskey opened plays: the HUD opens on it as the hotkey opens it, unless it already shows. During a
     /// pitch change or with a key locked, that is the key picker, since the song change moves the song already.
     private func filePlays() {
@@ -1697,13 +1762,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         (pitch.running && pitchWanted) || keptKey != nil ? pickKey() : start()
     }
 
+    @objc private func stopPlaying() { filePlayer.close() }
+
+    /// Stop Playing in the File menu works only while Muskey Player has a song.
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        item.action == #selector(stopPlaying) ? filePlayer.hasSong : true
+    }
+
     @objc private func openFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .movie]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        NSApp.activate()
-        guard panel.runModal() == .OK else { return }
+        guard inFront({ panel.runModal() }) == .OK else { return }
         open(panel.urls)
     }
 
@@ -1718,11 +1789,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Open")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
-        NSApp.activate()
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard inFront({ alert.runModal() }) == .alertFirstButtonReturn else { return }
         guard let url = FilePlayer.url(from: field.stringValue) else { return log("open location: not a link or a file") }
         open([url])
     }
+
+    /// Runs a dialog in front of the app that is active, with the keyboard on the dialog. macOS brings only a regular
+    /// app to the front, so Muskey shows in the Dock while the dialog is open, as it does for Settings.
+    private func inFront<T>(_ run: () -> T) -> T {
+        let accessory = NSApp.activationPolicy() == .accessory
+        if accessory { NSApp.setActivationPolicy(.regular) }
+        Self.activate()
+        defer {
+            if accessory, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
+                NSApp.setActivationPolicy(.accessory)
+                // The app that was in front gets the keyboard back, as when the HUD closes.
+                if let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
+            }
+        }
+        return run()
+    }
+
+    /// The cooperative `activate()` of macOS 14 is refused when nobody clicked Muskey just before, as when a menu item
+    /// is picked through `--menu`, so this asks the older way.
+    @available(macOS, deprecated: 14)
+    private static func activate() { NSApp.activate(ignoringOtherApps: true) }
 
     /// Files or a link on the clipboard, for ⌘V over the HUD.
     private static func pastedURLs() -> [URL] {
@@ -1775,6 +1866,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = NSMenu(title: "File")
         file.addItem(withTitle: "Open File…", action: #selector(openFile), keyEquivalent: "o").target = self
         file.addItem(withTitle: "Open Location…", action: #selector(openLocation), keyEquivalent: "l").target = self
+        file.addItem(withTitle: "Stop Playing", action: #selector(stopPlaying), keyEquivalent: "").target = self
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
@@ -2892,7 +2984,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.update(shift: model.shift, from: shiftBase, heard: shiftBase.map { model.shown($0.transposed(by: model.shift)) }, kept: keptKey,
                           current: currentKey,
                           stems: model.stemsMuted.isEmpty ? nil : Stem.shown.filter { !model.stemsMuted.contains($0) },
-                          alwaysShown: prefs.menuBarIcon == .always, hotkey: prefs.hotkey)
+                          alwaysShown: prefs.menuBarIcon == .always, playing: filePlayer.hasSong, hotkey: prefs.hotkey)
     }
 
     private func logShift() {
@@ -3020,7 +3112,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -3102,6 +3194,7 @@ extension EnvironmentValues {
             // The arm on the record, or lifted off it with the pause glyph that Space shows.
             model.playing = !variant.hasSuffix("-paused")
             if variant.hasSuffix("-paused") { model.playFlash = PlayFlash(playing: false, id: 1) }
+            if variant.hasSuffix("-skip") { model.playFlash = PlayFlash(playing: true, id: 1, skip: 1) }
             // The pill that Lock Key shows after it moved a new song.
             if name == "picking-A-to-Cm" { model.moved = "A major → C minor" }
             if name == "listening-waiting-Cm" { model.pending = DetectedKey(pitchClass: 0, minor: true) }
@@ -3111,6 +3204,7 @@ extension EnvironmentValues {
                 .environment(\.colorScheme, scheme == "dark" ? .dark : .light)
                 .environment(\.renderingPreview, true)
                 .environment(\.cornerLabelsShown, variant == "-labels")
+                .environment(\.recordHovered, variant.hasSuffix("-skip"))
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             if let image = renderer.nsImage, let tiff = image.tiffRepresentation,

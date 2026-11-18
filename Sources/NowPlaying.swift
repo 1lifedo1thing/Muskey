@@ -105,6 +105,13 @@ final class NowPlaying {
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data("playpause\n".utf8))
     }
 
+    /// Skips to the next or the previous song, the way the media keys do, through the helper.
+    func skip(_ direction: Int) {
+        let command = direction > 0 ? "next" : "previous"
+        guard let stdinPipe else { return Self.run([command]) { _ in } }
+        try? stdinPipe.fileHandleForWriting.write(contentsOf: Data("\(command)\n".utf8))
+    }
+
     /// Moves the song to `seconds` into it, the way dragging the time in Control Center does, through the helper.
     func seek(to seconds: Double) {
         guard let stdinPipe else { return log("seek: the now playing helper isn't running") }

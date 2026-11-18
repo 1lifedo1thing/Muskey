@@ -11,6 +11,9 @@
 //   ready <seconds>   the song plays, and lasts that long
 //   failed <reason>   the song can't be played
 //   ended             the song played to its end
+//   next, previous    the next or previous track command came, from the media keys, Control Center or Muskey's HUD;
+//                     Muskey keeps the songs, so it opens the other one. Previous more than 3 seconds into a song
+//                     starts it over, as music apps do, and says nothing.
 // The player quits when stdin closes, which happens when Muskey quits or crashes.
 import AppKit
 import AVFoundation
@@ -28,7 +31,8 @@ final class Player: NSObject, NSApplicationDelegate {
     private let player = AVPlayer()
     private var info: [String: Any] = [:]
     private var opened = 0
-    private var endObserver: NSObjectProtocol?
+    /// Says `ended` when the song that plays reaches its end.
+    private var endWatch: Task<Void, Never>?
     private var rateObserver: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -43,7 +47,15 @@ final class Player: NSObject, NSApplicationDelegate {
             seek(to: event.positionTime)
             return .success
         }
-        for command in [commands.nextTrackCommand, commands.previousTrackCommand, commands.skipForwardCommand, commands.skipBackwardCommand] {
+        commands.nextTrackCommand.addTarget { [self] _ in
+            say("next")
+            return .success
+        }
+        commands.previousTrackCommand.addTarget { [self] _ in
+            if player.currentTime().seconds > 3 { seek(to: 0) } else { say("previous") }
+            return .success
+        }
+        for command in [commands.skipForwardCommand, commands.skipBackwardCommand] {
             command.isEnabled = false
         }
         rateObserver = player.observe(\.rate, options: [.new]) { [weak self] _, _ in
@@ -112,11 +124,13 @@ final class Player: NSObject, NSApplicationDelegate {
                 }
                 guard current == opened else { return }
                 self.info = info
-                if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
                 let item = AVPlayerItem(asset: asset)
-                endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { [weak self] _ in
-                    self?.report()
-                    self?.say("ended")
+                endWatch?.cancel()
+                endWatch = Task { @MainActor [weak self] in
+                    for await _ in NotificationCenter.default.notifications(named: AVPlayerItem.didPlayToEndTimeNotification, object: item) {
+                        self?.report()
+                        self?.say("ended")
+                    }
                 }
                 player.replaceCurrentItem(with: item)
                 player.play()

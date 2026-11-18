@@ -43,7 +43,8 @@ enum OpenActivity: Equatable {
 
 /// Plays the songs that Muskey opens: files, links to audio and video files, and pages that yt-dlp downloads from.
 /// Muskey Player (Contents/Helpers) plays them as an app of its own, so that Now Playing, the play key and Muskey's
-/// taps treat it like any music app. Files dropped together play one after the other. Main thread only.
+/// taps treat it like any music app. Files dropped together play one after the other, and previous and next step
+/// through them. Main thread only.
 final class FilePlayer {
     static let bundleID = "com.lowtechguys.Muskey.Player"
 
@@ -53,12 +54,20 @@ final class FilePlayer {
     /// Pauses the song of another app before Muskey Player starts one, and calls its argument once that is done.
     var pauseOthers: (@escaping () -> Void) -> Void = { $0() }
     var log: (String) -> Void = { _ in }
+    /// Muskey Player starts or stops having a song, for Stop Playing in the menu.
+    var onChange: () -> Void = {}
+
+    /// Muskey Player has a song, playing or paused.
+    private(set) var hasSong = false {
+        didSet { if hasSong != oldValue { onChange() } }
+    }
 
     private var process: Process?
     private var input: Pipe?
     private var buffer = Data()
-    /// The songs after the one that plays.
-    private var queue: [URL] = []
+    /// The songs opened together, and the one that plays.
+    private var items: [URL] = []
+    private var index = 0
     /// The link or file being opened, for Retry.
     private var opening: URL?
     private var download: LinkDownload?
@@ -73,8 +82,35 @@ final class FilePlayer {
     func open(_ urls: [URL]) {
         let urls = urls.filter { $0.isFileURL || ["http", "https"].contains($0.scheme?.lowercased() ?? "") }
         guard let first = urls.first else { return }
-        queue = Array(urls.dropFirst())
+        items = urls
+        index = 0
         start(first)
+    }
+
+    /// Previous or next, for the songs opened together. Previous on the first song starts it over.
+    func skip(_ direction: Int) {
+        let target = index + (direction > 0 ? 1 : -1)
+        if items.indices.contains(target) {
+            index = target
+            start(items[target])
+        } else if direction < 0 {
+            send("seek 0")
+        }
+    }
+
+    /// Stop Playing: Muskey Player quits, with the songs opened together.
+    func close() {
+        log("stop playing")
+        download?.cancel()
+        download = nil
+        items = []
+        opening = nil
+        show(nil)
+        stop()
+    }
+
+    private func send(_ line: String) {
+        try? input?.fileHandleForWriting.write(contentsOf: Data((line + "\n").utf8))
     }
 
     /// A link or a path that was pasted or typed, with or without `https://`.
@@ -128,6 +164,7 @@ final class FilePlayer {
         try? input?.fileHandleForWriting.close()
         input = nil
         process = nil
+        hasSong = false
     }
 
     private var lastActivity: OpenActivity?
@@ -208,6 +245,7 @@ final class FilePlayer {
                 self.log("Muskey Player exited (\(ended.terminationStatus))")
                 self.process = nil
                 self.input = nil
+                self.hasSong = false
             }
         }
         do {
@@ -236,12 +274,16 @@ final class FilePlayer {
         if line.hasPrefix("ready") {
             log("Muskey Player plays the song (\(line.dropFirst(6)) seconds)")
             show(nil)
+            hasSong = true
             onPlaying()
         } else if line.hasPrefix("failed") {
             log("Muskey Player can't play the song: \(line.dropFirst(7))")
             show(.unplayable(name: opening.map { $0.isFileURL ? $0.lastPathComponent : ($0.host() ?? $0.absoluteString) } ?? "Song"))
-        } else if line == "ended", !queue.isEmpty {
-            start(queue.removeFirst())
+        } else if line == "ended", index + 1 < items.count {
+            skip(1)
+        } else if line == "next" || line == "previous" {
+            log("\(line) song in Muskey Player")
+            skip(line == "next" ? 1 : -1)
         }
     }
 }
@@ -548,7 +590,8 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
                 if (try? data.write(to: cover)) != nil { song.artwork = cover.path }
             }
         }
-        await MainActor.run { finish(song) }
+        let found = song
+        await MainActor.run { finish(found) }
     }
 
     /// Copies the audio into a new M4A without converting it, or converts the audio of a video into M4A.
