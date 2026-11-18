@@ -267,9 +267,15 @@ final class HUDModel: ObservableObject {
     @Published var stemsFailed = false
     /// How loud each stem plays, in their own object so that the meters redraw without the rest of the HUD.
     let stemMeters = StemMeters()
+    /// The scroll over the tempo or a stem.
+    let scroll = ScrollFeel()
+    /// The volume of each stem that a scroll over it set, from 0 to 1.5. A stem that isn't in it plays at 1.
+    @Published var stemVolumes: [Stem: Double] = [:]
+    /// A stem is muted, or plays louder or softer than the others, so the stems play in place of the song.
+    var stemsAdjusted: Bool { !stemsMuted.isEmpty || !stemVolumes.isEmpty }
     /// The stems show in place of the Separate instruments and vocals button: while they play, while any is muted,
     /// and while their failure shows.
-    var stemsOpen: Bool { stemsEngaged || stemsFailed || !stemsMuted.isEmpty }
+    var stemsOpen: Bool { stemsEngaged || stemsFailed || stemsAdjusted }
 
     func shown(_ key: DetectedKey) -> DetectedKey { relative ? key.relative : key }
     /// The key that is heard, as the HUD names it.
@@ -314,6 +320,22 @@ final class HUDModel: ObservableObject {
 /// The level of each stem, in the order of `Stem`, 20 times a second while the stems play and the HUD shows.
 final class StemMeters: ObservableObject {
     @Published var levels = [Float](repeating: 0, count: Stem.allCases.count)
+}
+
+/// What a scroll over the HUD adjusts: the tempo of a song in Muskey Player, or the volume of a stem.
+enum ScrollRegion: Hashable {
+    case tempo
+    case stem(Stem)
+}
+
+/// The scroll that adjusts the tempo or a stem, in its own object so that the lift redraws only what it moves.
+final class ScrollFeel: ObservableObject {
+    /// What the scroll that goes on adjusts.
+    @Published var region: ScrollRegion?
+    /// How far the fingers moved since the scroll began, from −1 down to 1 up, which lifts what they adjust.
+    @Published var lift: CGFloat = 0
+    /// Where each adjustable thing is in the HUD, in the coordinates of the HUD's window from its top left.
+    var frames: [ScrollRegion: CGRect] = [:]
 }
 
 struct HUDView: View {
@@ -1656,7 +1678,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onLyricsRetry = { [weak self] in self?.retryLyrics() }
         model.onLyricsEdit = { [weak self] in self?.editLyrics() }
         model.onStem = { [weak self] stem, solo in self?.toggleStem(stem, solo: solo) }
-        model.onStemsReset = { [weak self] in self?.setStems([]) }
+        model.onStemsReset = { [weak self] in self?.playAllStems() }
         model.onStemsRetry = { [weak self] in self?.retryStems() }
         model.onSeparate = { [weak self] in self?.separate() }
         lyricsSync.log = { [weak self] in self?.log($0) }
@@ -1697,7 +1719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onChangeKey = { [weak self] in self?.pickKey() }
         statusItem.onKeep = { [weak self] in self?.toggleKeep() }
         statusItem.onStop = { [weak self] in self?.stopPitch() }
-        statusItem.onPlayAllStems = { [weak self] in self?.setStems([]) }
+        statusItem.onPlayAllStems = { [weak self] in self?.playAllStems() }
         statusItem.onSettings = { [weak self] in self?.settingsWindow.show() }
         statusItem.onOpenFile = { [weak self] in self?.openFile() }
         statusItem.onOpenLocation = { [weak self] in self?.openLocation() }
@@ -1722,7 +1744,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === panel else { return event }
-            return swipe(event) ? nil : event
+            return adjust(event) || swipe(event) ? nil : event
         }
         nowPlaying.log = { [weak self] in self?.log($0) }
         nowPlaying.onSongChange = { [weak self] in
@@ -1748,7 +1770,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateStemMeters(shown: shown)
             self?.prepareStemModel(shown: shown)
             // With every stem playing, the song as it plays comes back once the HUD is gone.
-            if !shown, self?.model.stemsMuted.isEmpty == true { self?.engageStems(false) }
+            if !shown, self?.model.stemsAdjusted == false { self?.engageStems(false) }
             // Once the HUD has faded in, a song that changed while it was hidden swaps in on the record.
             if shown { DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self?.syncTrack() } }
         }
@@ -1936,6 +1958,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             skip(right != prefs.naturalSwipes ? 1 : -1)
         }
         return swiped
+    }
+
+    /// The scroll over the tempo or a stem that goes on: what it adjusts, the value when it began, and the fingers'
+    /// travel since then, in points, up as positive.
+    private var adjusting: (region: ScrollRegion, start: Double, travel: CGFloat)?
+    /// Ends a scroll of a mouse wheel, which has no phases, a moment after its last notch.
+    private var adjustEnd: DispatchWorkItem?
+    /// The last adjusting scroll ended: its momentum still belongs to it.
+    private var adjustedAt = Date.distantPast
+
+    /// A scroll that begins over the tempo of a song in Muskey Player changes its speed, by 1 % for every 6 points,
+    /// and one that begins over a stem changes its volume, by 1 % for every 3 points. It adjusts the same thing
+    /// until the fingers lift, even after the pointer has left it. Fingers moving up raise the value, with natural
+    /// scrolling or without.
+    private func adjust(_ event: NSEvent) -> Bool {
+        let precise = event.hasPreciseScrollingDeltas
+        // The momentum after the fingers lift isn't the hand's, so it adjusts nothing, and scrolls nothing else.
+        if !event.momentumPhase.isEmpty { return adjusting != nil || Date().timeIntervalSince(adjustedAt) < 0.5 }
+        if event.phase == .ended || event.phase == .cancelled {
+            guard adjusting != nil else { return false }
+            endAdjusting()
+            return true
+        }
+        // A trackpad scroll picks what it adjusts when it begins, and a wheel at each notch, keeping the last one
+        // while the pointer is over nothing to adjust.
+        if event.phase == .began || (!precise && event.phase.isEmpty) {
+            if let region = scrollRegion(at: event), let value = adjustedValue(region) {
+                if adjusting?.region != region {
+                    adjusting = (region, value, 0)
+                    model.scroll.region = region
+                }
+            } else if precise {
+                adjusting = nil
+            }
+        }
+        guard var current = adjusting else { return false }
+        let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
+        current.travel += sign * event.scrollingDeltaY * (precise ? 1 : 8)
+        adjusting = current
+        model.scroll.lift = tanh(current.travel / 60)
+        switch current.region {
+        case .tempo:
+            let speed = min(max(((current.start + Double(current.travel) / 600) * 100).rounded() / 100, 0.5), 1.5)
+            if speed != filePlayer.speed { playSpeed(speed) }
+        case let .stem(stem):
+            let volume = min(max(((current.start + Double(current.travel) / 300) * 100).rounded() / 100, 0), 1.5)
+            if volume != model.stemVolumes[stem] ?? 1 { setStemVolume(stem, volume) }
+        }
+        if !precise {
+            adjustEnd?.cancel()
+            let end = DispatchWorkItem { [weak self] in self?.endAdjusting() }
+            adjustEnd = end
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: end)
+        }
+        return true
+    }
+
+    private func endAdjusting() {
+        adjustEnd?.cancel()
+        adjustEnd = nil
+        if case let .stem(stem) = adjusting?.region {
+            log(String(format: "%@ at %.0f%%", stem.name.lowercased(), (model.stemVolumes[stem] ?? 1) * 100))
+        }
+        adjusting = nil
+        adjustedAt = Date()
+        model.scroll.region = nil
+        model.scroll.lift = 0
+    }
+
+    /// The tempo or the stem under the pointer, among the ones that can be adjusted now.
+    private func scrollRegion(at event: NSEvent) -> ScrollRegion? {
+        guard let view = panel.contentView else { return nil }
+        let local = view.convert(event.locationInWindow, from: nil)
+        let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
+        return model.scroll.frames.first { region, frame in frame.contains(point) && adjustedValue(region) != nil }?.key
+    }
+
+    /// The value that a scroll over `region` starts from, or nil while it can't be adjusted.
+    private func adjustedValue(_ region: ScrollRegion) -> Double? {
+        switch region {
+        case .tempo: model.speedAdjustable ? filePlayer.speed : nil
+        case let .stem(stem): model.stemsAvailable ? model.stemVolumes[stem] ?? 1 : nil
+        }
     }
 
     /// The song that Muskey opened plays: the HUD opens on it as the hotkey opens it, unless it already shows. During a
@@ -2523,7 +2628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleStemKey(_ code: Int, option: Bool) -> Bool {
         guard model.stemsAvailable else { return false }
         if code == kVK_ANSI_0 {
-            setStems([])
+            playAllStems()
         } else if code == kVK_ANSI_V, !option {
             toggleVocals()
         } else if let index = Self.stemKeys.firstIndex(of: code), index < Stem.shown.count {
@@ -2548,6 +2653,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setStems(muted)
     }
 
+    /// Play all, 0 and the menu: every stem plays again, at the volume of the others.
+    private func playAllStems() {
+        if !model.stemVolumes.isEmpty {
+            model.stemVolumes = [:]
+            pitch.stemVolumes = [:]
+            log("every stem at its own volume")
+        }
+        if model.stemsMuted.isEmpty {
+            engageStems(model.shown && model.stemsEngaged)
+            refreshStatus()
+        } else {
+            setStems([])
+        }
+    }
+
+    /// A scroll over a stem sets its volume. Like a mute, it plays the stems in place of the song, and picks the key
+    /// so that the HUD stays up with the change.
+    private func setStemVolume(_ stem: Stem, _ volume: Double) {
+        guard model.stemsAvailable else { return }
+        if !model.picking, model.shown { pickKey() }
+        model.stemsFailed = false
+        model.stemVolumes[stem] = volume == 1 ? nil : volume
+        pitch.stemVolumes = model.stemVolumes
+        engageStems(model.stemsAdjusted || (model.shown && model.stemsEngaged))
+        refreshStatus()
+        if pitchWanted, !pitch.running { startPitch() }
+    }
+
     /// The stems that last played apart, for Retry after a failure.
     private var lastMutedStems: Set<Stem> = []
 
@@ -2563,7 +2696,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !muted.isEmpty { lastMutedStems = muted }
         pitch.stemsFade = fade ? 0.45 : 0.02
         pitch.mutedStems = muted
-        engageStems(!muted.isEmpty || (model.shown && model.stemsEngaged))
+        engageStems(model.stemsAdjusted || (model.shown && model.stemsEngaged))
         log(muted.isEmpty ? "playing every stem" : "playing only \(Stem.shown.filter { !muted.contains($0) }.map(\.name).joined(separator: ", "))")
         refreshStatus()
         if pitchWanted, !pitch.running {
@@ -2633,9 +2766,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stemModelRelease = nil
         if shown {
             model.stemsAvailable = StemModel.installed
-        } else if model.stemsMuted.isEmpty {
+        } else if !model.stemsAdjusted {
             let release = DispatchWorkItem { [weak self] in
-                guard let self, !model.shown, model.stemsMuted.isEmpty else { return }
+                guard let self, !model.shown, !model.stemsAdjusted else { return }
                 StemModel.unload()
             }
             stemModelRelease = release

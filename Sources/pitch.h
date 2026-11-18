@@ -53,6 +53,8 @@ void ps_set_paused(PSShifter *shifter, int paused);
 // block of the new song is separated.
 void ps_stems_restart(PSShifter *shifter);
 void ps_stems_set_gain(PSShifter *shifter, int stem, float gain);
+// The volume of a stem on top of its gain, from 0 to 1.5, which glides to the new value over about 15 ms.
+void ps_stems_set_volume(PSShifter *shifter, int stem, float volume);
 // The level of a stem as it plays, for a meter.
 float ps_stems_level(PSShifter *shifter, int stem);
 // Seconds that the output plays behind the song, 0 while the stems are off.

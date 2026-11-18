@@ -58,7 +58,7 @@ At the end of a listen, Muskey finds the tempo of what it heard with Essentia's 
 
 Spotify measures the tempo over the whole song, while a listen hears 10 to 30 seconds of it. A listen sometimes counts half or double the beats that people count along to. So when Noiseblend knows the tempo of the song, and the listen found the same tempo or half, double, a third or three times of it, the pill shows Spotify's tempo.
 
-A song that plays in Muskey Player can be played slower or faster. The keys `[` and `]` (or the keycaps at the ends of the tempo pill) change its speed by 5 %, from 50 % to 150 %, and `=` (or the pill of the speed) plays it at 100 % again. Muskey Player changes the speed with AVPlayer's varispeed, which changes the pitch with it, and Muskey's pitch change moves the pitch back by `−12 × log2(speed)` semitones, on top of any key change. The tempo pill shows the tempo at the speed that the song plays.
+A song that plays in Muskey Player can be played slower or faster. The keys `[` and `]` (or the keycaps at the ends of the tempo pill) change its speed by 5 %, from 50 % to 150 %, and `=` (or the pill of the speed) plays it at 100 % again. A scroll over the tempo pill changes the speed by 1 % for every 6 points that the fingers move, up for faster. Muskey Player changes the speed with AVPlayer's varispeed, which changes the pitch with it, and Muskey's pitch change moves the pitch back by `−12 × log2(speed)` semitones, on top of any key change. The tempo pill shows the tempo at the speed that the song plays.
 
 The pitch change hears every app, so the correction applies only while macOS shows Muskey Player as the app that plays. A listen during a speed change reads the audio at the tap's rate divided by the speed, which finds the key and the tempo of the song at 100 %. The lyrics aren't timed by ear while the speed isn't 100 %.
 
@@ -133,6 +133,10 @@ Builds made with `make` or `make install` take these flags, and release builds i
 | `--stems-file PATH --stems-out DIR` | Separate a song file into DIR and print how long it took |
 | `--stems-install ZIP`, `--winds-install ZIP` | Install a separation model from a zip |
 | `--stems-download`, `--winds-download`, `--whisper-download` | Download a model the way Settings does |
+
+### Stem volumes
+
+A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 points that the fingers move, up for louder. The engine glides each stem's volume to the new value over about 15 ms, on top of the gain that mutes it. A stem at another volume than 100 % plays the stems in place of the song, as a muted one does, and shows its volume in place of its name. **Play all** and `0` play every stem at 100 % again. The thing that a scroll adjusts grows a little, and rides up or down with the fingers while its contents ride a little further, until the fingers lift.
 
 ### Keys and the HUD
 

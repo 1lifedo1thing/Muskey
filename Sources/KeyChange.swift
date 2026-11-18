@@ -757,7 +757,7 @@ struct KeyHints: View {
         case .stems:
             // The lyrics list V in their own hints, so the tray under them leaves it out.
             [Hint(keys: ["1–\(Stem.shown.count)"], name: "mute"), Hint(keys: ["⌥", "1–\(Stem.shown.count)"], name: "solo")]
-                + (vocals ? [Hint(keys: ["V"], name: "vocals")] : []) + [Hint(keys: ["0"], name: "play all")]
+                + (vocals ? [Hint(keys: ["V"], name: "vocals")] : []) + [Hint(keys: ["0"], name: "play all"), Hint(keys: ["scroll"], name: "volume")]
         }
     }
 

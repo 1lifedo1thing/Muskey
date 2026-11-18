@@ -32,6 +32,15 @@ final class PitchChanger {
     var mutedStems: Set<Stem> = [] {
         didSet { applyStems() }
     }
+    /// The volume of each stem that a scroll over it set, from 0 to 1.5. A stem that isn't in it plays at 1.
+    var stemVolumes: [Stem: Double] = [:] {
+        didSet { applyVolumes() }
+    }
+
+    private func applyVolumes() {
+        guard let shifter else { return }
+        for stem in Stem.allCases { ps_stems_set_volume(shifter, Int32(stem.rawValue), Float(stemVolumes[stem] ?? 1)) }
+    }
     /// Seconds that the next change of `mutedStems` fades over: 20 ms for keys and clicks, longer for karaoke's vocals.
     var stemsFade = 0.02 {
         didSet { if let shifter { ps_stems_set_fade(shifter, stemsFade) } }
@@ -288,6 +297,7 @@ final class PitchChanger {
         for stem in Stem.allCases {
             ps_stems_set_gain(shifter, Int32(stem.rawValue), mutedStems.contains(stem) ? 0 : 1)
         }
+        applyVolumes()
         if stemsOn, separator == nil {
             let separator = StemSeparator()
             separator.onFailure = { [weak self] error in

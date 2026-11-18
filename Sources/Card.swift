@@ -124,13 +124,20 @@ struct ShiftPills: View {
 
     @ViewBuilder private var tempoPills: some View {
         if model.speedAdjustable || model.shownTempo != nil {
-            TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
-                      palette: palette, step: model.onSpeed)
-                .transition(.opacity)
-        }
-        if model.speedAdjustable, model.speed != 1 {
-            SpeedPill(speed: model.speed, palette: palette) { model.onSpeed(0) }
-                .transition(.opacity)
+            // The tempo and the speed are one thing to scroll over, so the speed that appears beside the tempo, which
+            // moves it, is scrolled as well.
+            ScrollLifted(region: .tempo, scroll: model.scroll, depth: 2.5) { inner, _ in
+                HStack(spacing: 6) {
+                    TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
+                              palette: palette, lift: inner, step: model.onSpeed)
+                    if model.speedAdjustable, model.speed != 1 {
+                        SpeedPill(speed: model.speed, palette: palette) { model.onSpeed(0) }
+                            .offset(y: inner)
+                            .transition(.opacity)
+                    }
+                }
+            }
+            .transition(.opacity)
         }
     }
 
@@ -155,12 +162,41 @@ struct ShiftPills: View {
     }
 }
 
+/// Something that a scroll over it adjusts. While the scroll lasts, it grows a little and rides up or down with the
+/// fingers, and its contents ride a little further, like a layer nearer the eye; it springs back once the fingers
+/// lift. It tells the scroll where it is, and the scroll finds out whether it can be adjusted now.
+struct ScrollLifted<Content: View>: View {
+    let region: ScrollRegion
+    @ObservedObject var scroll: ScrollFeel
+    var scale: CGFloat = 1.08
+    /// How far it rides at the most, in points. Its contents ride as far again.
+    var depth: CGFloat = 3
+    /// Gets the extra lift of the contents in points, and whether a scroll adjusts it now.
+    @ViewBuilder let content: (CGFloat, Bool) -> Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let active = scroll.region == region
+        let lift = active && !reduceMotion ? scroll.lift : 0
+        content(-lift * depth, active)
+            .scaleEffect(active && !reduceMotion ? scale : 1)
+            .offset(y: -lift * depth)
+            // The lift follows the fingers closely, and the growth and the return settle with a soft spring.
+            .animation(.interactiveSpring(response: 0.16, dampingFraction: 0.82), value: lift)
+            .animation(.spring(response: 0.3, dampingFraction: 0.66), value: active)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { scroll.frames[region] = $0 }
+            .onDisappear { scroll.frames[region] = nil }
+    }
+}
+
 /// The song's tempo at the speed that it plays. A song in Muskey Player gets keycaps at the ends of the pill, which
-/// slow it down or speed it up by 5 %.
+/// slow it down or speed it up by 5 %, and a scroll over it changes the speed by 1 % steps.
 struct TempoPill: View {
     let bpm: Double?
     let adjustable: Bool
     let palette: Palette
+    /// The extra lift of the text and the keycaps while a scroll changes the speed.
+    var lift: CGFloat = 0
     let step: (Int) -> Void
 
     var body: some View {
@@ -170,6 +206,7 @@ struct TempoPill: View {
                 .contentTransition(.numericText(value: bpm ?? 0))
             if adjustable { cap("]", help: "Faster (])", step: 1) }
         }
+        .offset(y: lift)
         .font(.system(size: 11, weight: .bold, design: .rounded))
         .monospacedDigit()
         .foregroundStyle(palette.ink)

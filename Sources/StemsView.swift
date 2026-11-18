@@ -96,7 +96,7 @@ struct StemsRow: View {
                         .transition(.opacity)
                 }
                 Spacer(minLength: 0)
-                if !model.stemsMuted.isEmpty {
+                if model.stemsAdjusted {
                     Button("Play all") { model.onStemsReset() }
                         .buttonStyle(PillButtonStyle(palette: palette))
                         .focusable(false)
@@ -190,10 +190,13 @@ private struct StemHalos: View {
         let crowded = card && shown.count > 6
         HStack(spacing: crowded ? 2 : 6) {
             ForEach(Array(shown.enumerated()), id: \.element) { index, stem in
-                StemHalo(stem: stem, key: index + 1, on: !model.stemsMuted.contains(stem),
-                         level: model.stemsEngaged ? stemFill(meters.levels[stem.rawValue]) : 0,
-                         palette: palette, compact: compact, crowded: crowded, solo: model.flipped) { solo in model.onStem(stem, solo) }
-                    .frame(maxWidth: .infinity)
+                ScrollLifted(region: .stem(stem), scroll: model.scroll, scale: 1.1, depth: 3.5) { inner, adjusting in
+                    StemHalo(stem: stem, key: index + 1, on: !model.stemsMuted.contains(stem),
+                             level: model.stemsEngaged ? stemFill(meters.levels[stem.rawValue]) : 0,
+                             volume: model.stemVolumes[stem] ?? 1, adjusting: adjusting, lift: inner,
+                             palette: palette, compact: compact, crowded: crowded, solo: model.flipped) { solo in model.onStem(stem, solo) }
+                }
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -211,6 +214,12 @@ private struct StemHalo: View {
     let on: Bool
     /// How loud the stem plays, from 0 to 1, while the stems are separated.
     let level: CGFloat
+    /// The volume that a scroll over the stem set, from 0 to 1.5, shown in place of its name while it isn't 1.
+    var volume = 1.0
+    /// A scroll over the stem changes its volume now.
+    var adjusting = false
+    /// The extra lift of the symbol while the scroll lasts.
+    var lift: CGFloat = 0
     let palette: Palette
     let compact: Bool
     var crowded = false
@@ -235,6 +244,7 @@ private struct StemHalo: View {
                         .overlay(Circle().strokeBorder(stem.color(scheme, opacity: on ? 0.75 : 0), lineWidth: 1))
                     Image(systemName: solo ? "headphones" : stem.symbol)
                         .font(.system(size: crowded ? 11 : compact ? 12 : 15, weight: .semibold))
+                        .offset(y: lift)
                         .foregroundStyle(on || solo ? palette.ink : palette.muted.opacity(0.4))
                         // Option is a key held for a moment, so the swap runs at three times the usual speed.
                         .contentTransition(.symbolEffect(.replace, options: .speed(3)))
@@ -248,7 +258,9 @@ private struct StemHalo: View {
                         .offset(x: crowded ? 5 : 4, y: 3)
                 }
                 .shadow(color: on ? stem.color(scheme, opacity: 0.6 * level) : .clear, radius: 8)
-                Text(stem.name)
+                Text(adjusting || volume != 1 ? "\(Int((volume * 100).rounded()))%" : stem.name)
+                    .contentTransition(.numericText(value: volume))
+                    .monospacedDigit()
                     .font(.system(size: crowded ? 10 : compact ? 10.5 : 12, weight: .semibold, design: .rounded))
                     .strikethrough(!on, color: palette.muted.opacity(0.5))
                     .foregroundStyle(on ? palette.ink : palette.muted.opacity(0.5))

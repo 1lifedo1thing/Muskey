@@ -240,6 +240,9 @@ struct PSShifter {
     double rate;
     std::atomic<float> stemGain[stemCount];
     float stemGainNow[stemCount];
+    // The volume of each stem that a scroll over it sets, apart from the gain that mutes it.
+    std::atomic<float> stemVolume[stemCount];
+    float stemVolumeNow[stemCount];
     // How long the next mute or unmute of a stem takes: 20 ms for the keys and the clicks, which play in time with
     // the song, and longer for the vocals that karaoke mutes, which fade.
     std::atomic<float> stemFadeSeconds{0.02f};
@@ -348,6 +351,8 @@ struct PSShifter {
         for (int i = 0; i < stemCount; i++) {
             stemGain[i].store(1.0f);
             stemGainNow[i] = 1.0f;
+            stemVolume[i].store(1.0f);
+            stemVolumeNow[i] = 1.0f;
             stemLevel[i].store(0.0f);
         }
     }
@@ -514,19 +519,24 @@ struct PSShifter {
             // A stem muted or played again glides along an S curve, over 20 ms for a key or a click, so it doesn't
             // click, and over the longer fade that karaoke asks for when it mutes the vocals.
             const float step = float(1.0 / (std::max(0.005f, stemFadeSeconds.load(std::memory_order_relaxed)) * rate));
+            // A volume follows the scroll that sets it closely, without the steps of each event.
+            const float glide = float(1.0 - std::exp(-1.0 / (0.015 * rate)));
             for (int i = 0; i < stemCount; i++) {
                 const float *left = stems.planes[i * 2].data(), *right = stems.planes[i * 2 + 1].data();
                 float target = stemGain[i].load(std::memory_order_relaxed), gain = stemGainNow[i], energy = 0;
+                float volumeTarget = stemVolume[i].load(std::memory_order_relaxed), volume = stemVolumeNow[i];
                 for (size_t f = 0; f < n; f++) {
                     size_t index = size_t((at + f) % stems.capacity);
                     float l = left[index], r = right[index];
                     energy += l * l + r * r;
                     gain += std::clamp(target - gain, -step, step);
-                    float curve = gain * gain * (3 - 2 * gain);
+                    volume += (volumeTarget - volume) * glide;
+                    float curve = gain * gain * (3 - 2 * gain) * volume;
                     stemLeft[f] += l * curve;
                     stemRight[f] += r * curve;
                 }
                 stemGainNow[i] = gain;
+                stemVolumeNow[i] = volume;
                 // The level of each stem as it plays, on or off, for the meters in the HUD.
                 float rms = std::sqrt(energy / float(2 * n));
                 float last = stemLevel[i].load(std::memory_order_relaxed);
@@ -560,7 +570,10 @@ struct PSShifter {
 
     // A stem muted before its stems play is muted from their first frame, with no fade that nobody would hear.
     void settleStemGains() {
-        for (int i = 0; i < stemCount; i++) stemGainNow[i] = stemGain[i].load(std::memory_order_relaxed);
+        for (int i = 0; i < stemCount; i++) {
+            stemGainNow[i] = stemGain[i].load(std::memory_order_relaxed);
+            stemVolumeNow[i] = stemVolume[i].load(std::memory_order_relaxed);
+        }
     }
 
     // Steps back from the song as it plays to the timeline that starts earlier in the song, with a backspin or a fade.
@@ -970,6 +983,10 @@ void ps_set_step_fade(PSShifter *s, int fade) {
 
 void ps_stems_set_gain(PSShifter *s, int stem, float gain) {
     if (stem >= 0 && stem < PSShifter::stemCount) s->stemGain[stem].store(gain, std::memory_order_relaxed);
+}
+
+void ps_stems_set_volume(PSShifter *s, int stem, float volume) {
+    if (stem >= 0 && stem < PSShifter::stemCount) s->stemVolume[stem].store(std::clamp(volume, 0.0f, 1.5f), std::memory_order_relaxed);
 }
 
 float ps_stems_level(PSShifter *s, int stem) {
