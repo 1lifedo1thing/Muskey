@@ -377,9 +377,11 @@ struct PSShifter {
             anchor.store(start, std::memory_order_relaxed);
             anchorPending.store(delay > 0, std::memory_order_relaxed);
             if (restart && quietLead.load(std::memory_order_relaxed) == 1) {
-                // The song started over: silent from here until the stems of its start are separated.
+                // The song started over: silent from here until the stems of its start are separated. Stems that
+                // played faded out before the restart, and the song mustn't come in under them as they cross back;
+                // a song that plays as it is finishes its fade out.
                 quietLead.store(2, std::memory_order_relaxed);
-                leadGain = 0;
+                if (stemsMix.load(std::memory_order_relaxed) > 0) leadGain = 0;
             }
             if (stemsWanted) beginStems(start);
             else stemsLive = false;

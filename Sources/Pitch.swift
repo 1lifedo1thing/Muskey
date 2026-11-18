@@ -502,6 +502,20 @@ enum PitchSelfTest {
                    String(format: "karaoke restart  %.1f%% level until %.2f s, %d spins, %.1f Hz at first, then %.1f Hz, lowest %.0f%%, %.1f s behind",
                           silence / steady * 100, back, fast.count, first, after, lowest / steady * 100, run.delay))
 
+            // Karaoke opened again while the stems play from an earlier mute: they fade out at the report, the song
+            // doesn't come in under them, and the stems of the start come in after the silence, with no backspin.
+            let again = renderTimeline(seconds: 14, tone: { $0 < 6 ? 440 : 660 }, events: [
+                (1, { ps_stems_enable($0, 1) }), (6, { ps_stems_quiet_lead($0, 1) }), (6.3, { ps_stems_restart_back($0, 0.3) }),
+            ], separator: true)
+            let playing = rms(again.out[Int(rate * 5) ..< Int(rate * 5.9)])
+            let gaps = stride(from: 6.5, to: 13.9, by: window).map { (at: $0, level: rms(again.out[Int(rate * $0) ..< Int(rate * ($0 + window))])) }
+            let resumed = gaps.first { $0.level > 0.1 * playing }?.at ?? 14
+            let hush = gaps.filter { $0.at < resumed - 0.05 }.map(\.level).max() ?? 1
+            let spun = stride(from: 6.5, to: 13.8, by: window).filter { pitch(again.out, from: $0, to: $0 + window) > 1000 }
+            let resumedHz = pitch(again.out, from: resumed + 0.05, to: 13.9)
+            report(hush < 0.01 * playing && resumed > 8 && spun.isEmpty && abs(resumedHz / 660 - 1) < 0.01,
+                   String(format: "restart again    at most %.1f%% level until %.2f s, %d spins, then %.1f Hz", hush / playing * 100, resumed, spun.count, resumedHz))
+
             let unanswered = renderTimeline(seconds: 22, tone: { _ in 440 }, events: [(1, { ps_stems_quiet_lead($0, 1); ps_stems_enable($0, 1) })], separator: true).out
             let level = { (from: Double, to: Double) in rms(unanswered[Int(rate * from) ..< Int(rate * to)]) }
             report(level(2, 15.5) < 0.01 * level(0.4, 0.9) && level(16.6, 17.5) > 0.8 * level(0.4, 0.9),

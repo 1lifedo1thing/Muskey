@@ -1155,12 +1155,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func karaokeCountdown(_ progress: StemsProgress?) -> KaraokeCountdown? {
         guard model.lyricsFocus, let progress else { return nil }
         if case .seeking = karaokeRestart { return nil }
-        let total = Int(Self.stemsWait.rounded(.up))
+        // The countdown starts at the seconds that the song rewinds by, rounded the same way.
+        let total = Int(Self.stemsWait.rounded())
         guard case .separating = progress, let waited = pitch.stemsWaited else {
             return KaraokeCountdown(seconds: nil, total: total, restart: karaokeRestart != nil, rewind: nil)
         }
-        let left = max(1, Int((Self.stemsWait - waited).rounded(.up)))
-        return KaraokeCountdown(seconds: left, total: total, restart: karaokeRestart != nil, rewind: Int(waited.rounded(.down)) + left)
+        let left = max(1, Int((Self.stemsWait - waited).rounded()))
+        // The song rewinds as far as the stems took to start: the estimate, unless they run late.
+        let rewind = Int(max(Self.stemsWait, waited + 0.5).rounded())
+        return KaraokeCountdown(seconds: left, total: total, restart: karaokeRestart != nil, rewind: rewind)
     }
 
     /// The V key, in every layout: the vocals muted, or playing again.
