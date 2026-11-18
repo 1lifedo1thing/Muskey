@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The panes of Settings, in the sidebar's order.
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, hud, listening, lyrics, stems, permissions, updates
+    case general, hud, listening, lyrics, stems, permissions, updates, about
 
     var id: String { rawValue }
 
@@ -16,6 +16,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .stems: "Instruments and vocals"
         case .permissions: "Permissions"
         case .updates: "Updates"
+        case .about: "About"
         }
     }
 
@@ -28,6 +29,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .stems: "slider.vertical.3"
         case .permissions: "hand.raised"
         case .updates: "arrow.triangle.2.circlepath"
+        case .about: "info.circle"
         }
     }
 
@@ -40,6 +42,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .stems: .sage
         case .permissions: .terracotta
         case .updates: .ochre
+        case .about: .dustyRose
         }
     }
 }
@@ -54,6 +57,7 @@ struct SidebarHue {
     static let plum = rgb(0.58, 0.30, 0.55, 0.68, 0.55, 0.67)
     static let stone = rgb(0.45, 0.43, 0.37, 0.66, 0.64, 0.57)
     static let ochre = rgb(0.78, 0.56, 0.16, 0.83, 0.68, 0.40)
+    static let dustyRose = rgb(0.76, 0.39, 0.40, 0.80, 0.60, 0.58)
 
     let light: Color
     let dark: Color
@@ -148,6 +152,7 @@ struct SettingsView: View {
                 Section("Support") {
                     row(.permissions)
                     row(.updates)
+                    row(.about)
                 }
             }
             .listStyle(.sidebar)
@@ -163,6 +168,7 @@ struct SettingsView: View {
                 case .stems: StemsPane(prefs: prefs)
                 case .permissions: PermissionsPane()
                 case .updates: UpdatesPane()
+                case .about: AboutPane()
                 }
             }
             // The toolbar names the pane, as System Settings does.
