@@ -1,3 +1,4 @@
+import Accelerate
 import AppKit
 import AudioToolbox
 import CoreAudio
@@ -778,6 +779,34 @@ enum PitchSelfTest {
         let pairs: [(heard: Double, online: Double?, shown: Double)] = [(121, 120, 120), (60.5, 120, 120), (240, 120, 120), (40.1, 120, 120), (90, 120, 90), (97, nil, 97)]
         let wrongTempos = pairs.filter { TempoDetector.reconcile(heard: $0.heard, online: $0.online) != $0.shown }.map { "\($0.heard) with \($0.online ?? 0)" }
         report(wrongTempos.isEmpty, "tempo levels     \(pairs.count) pairs\(wrongTempos.isEmpty ? "" : ", wrong: " + wrongTempos.joined(separator: "; "))")
+
+        // Saving a song: a tone rendered with another key and tempo, the limiter on a tone near full scale, and the
+        // files it is written to, read back.
+        let tone = (0 ..< Int(rate * 4)).map { Float(0.5 * sin(2 * .pi * 440 * Double($0) / rate)) }
+        var rendered: StereoAudio?
+        for (semitones, speed) in [(2, 0.8), (-5, 1.25)] {
+            let saved = try? SongRender.render(StereoAudio(left: tone, right: tone, rate: rate), changes: SongChanges(semitones: semitones, speed: speed)) { _ in true }
+            let seconds = saved?.seconds ?? 0, heard = saved.map { pitch($0.left, from: 0.5, to: seconds - 0.5) } ?? 0
+            report(abs(seconds / (4 / speed) - 1) < 0.01 && abs(heard / hz(semitones) - 1) < 0.01,
+                   String(format: "save %+d, %.2fx  %.2f s (want %.2f), %.1f Hz (want %.1f)", semitones, speed, seconds, 4 / speed, heard, hz(semitones)))
+            if rendered == nil { rendered = saved }
+        }
+        let hot = tone.map { $0 * 1.98 }
+        let limited = try? SongRender.stretch(StereoAudio(left: hot, right: hot, rate: rate), timeRatio: 1, pitchScale: 1) { _ in true }
+        let savedPeak = limited.map { vDSP.maximumMagnitude($0.left) } ?? 1
+        report(savedPeak <= 0.892 && limited?.frames == hot.count,
+               String(format: "save limiter     peak %.3f (want at most 0.891), %d frames", savedPeak, limited?.frames ?? 0))
+        let folder = FileManager.default.temporaryDirectory.appending(path: "muskey-selftest-\(getpid())")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for format in [SaveFormat.wav, .m4a] {
+            let url = folder.appending(path: "tone.\(format.rawValue)")
+            guard let rendered else { break }
+            let back = (try? SongRender.write(rendered, as: format, to: url)).flatMap { try? SongRender.read(url) }
+            let seconds = back?.seconds ?? 0, heard = back.map { pitch($0.left, from: 0.5, to: seconds - 0.5) } ?? 0
+            report(abs(seconds - rendered.seconds) < 0.05 && abs(heard / hz(2) - 1) < 0.01,
+                   String(format: "save %@          %.2f s (want %.2f), %.1f Hz", format.name, seconds, rendered.seconds, heard))
+        }
+        try? FileManager.default.removeItem(at: folder)
 
         return failures == 0 ? 0 : 1
     }

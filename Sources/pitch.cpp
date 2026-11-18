@@ -1,6 +1,8 @@
 #include "pitch.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <atomic>
 #include <cmath>
 #include <vector>
@@ -1129,3 +1131,65 @@ void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *out
     float playing = s->phase == PSShifter::Phase::steady ? s->voices[s->active].semitones : NAN;
     s->playingSemitones.store(playing, std::memory_order_relaxed);
 }
+
+size_t ps_render(const float *left, const float *right, size_t frames, double rate, double timeRatio, double pitchScale,
+                 float **outLeft, float **outRight, int (*progress)(void *context, double done), void *context) {
+    *outLeft = nullptr;
+    *outRight = nullptr;
+    std::vector<float> resultLeft, resultRight;
+    resultLeft.reserve(size_t(double(frames) * timeRatio) + 8192);
+    resultRight.reserve(resultLeft.capacity());
+
+    if (timeRatio == 1.0 && pitchScale == 1.0) {
+        resultLeft.assign(left, left + frames);
+        resultRight.assign(right, right + frames);
+    } else {
+        // The offline mode reads the whole song first, which gives the exact length and no warm-up at the start.
+        RubberBandStretcher stretcher(size_t(rate), 2, RubberBandStretcher::OptionProcessOffline | RubberBandStretcher::OptionEngineFiner,
+                                      timeRatio, pitchScale);
+        constexpr size_t block = 16384;
+        stretcher.setExpectedInputDuration(frames);
+        stretcher.setMaxProcessSize(block);
+        for (size_t at = 0; at < frames; at += block) {
+            size_t n = std::min(block, frames - at);
+            const float *planes[2] = {left + at, right + at};
+            stretcher.study(planes, n, at + n >= frames);
+            if (progress && !progress(context, 0.2 * double(at + n) / double(frames))) return 0;
+        }
+        std::vector<float> takenLeft(block), takenRight(block);
+        auto take = [&] {
+            for (int available; (available = stretcher.available()) > 0;) {
+                size_t n = stretcher.retrieve(std::array<float *, 2>{takenLeft.data(), takenRight.data()}.data(),
+                                              std::min(size_t(available), block));
+                resultLeft.insert(resultLeft.end(), takenLeft.begin(), takenLeft.begin() + long(n));
+                resultRight.insert(resultRight.end(), takenRight.begin(), takenRight.begin() + long(n));
+            }
+        };
+        for (size_t at = 0; at < frames; at += block) {
+            size_t n = std::min(block, frames - at);
+            const float *planes[2] = {left + at, right + at};
+            stretcher.process(planes, n, at + n >= frames);
+            take();
+            if (progress && !progress(context, 0.2 + 0.8 * double(at + n) / double(frames))) return 0;
+        }
+        while (stretcher.available() >= 0) {
+            take();
+            if (stretcher.available() == 0) break;
+        }
+    }
+
+    // The same limiter as the live output, run past the end by its look-ahead, which it delays the song by.
+    Limiter limiter(rate);
+    size_t count = resultLeft.size();
+    resultLeft.resize(count + limiter.lookahead, 0.0f);
+    resultRight.resize(count + limiter.lookahead, 0.0f);
+    limiter.process(resultLeft.data(), resultRight.data(), resultLeft.size());
+
+    *outLeft = static_cast<float *>(malloc(sizeof(float) * std::max<size_t>(1, count)));
+    *outRight = static_cast<float *>(malloc(sizeof(float) * std::max<size_t>(1, count)));
+    std::copy(resultLeft.begin() + long(limiter.lookahead), resultLeft.end(), *outLeft);
+    std::copy(resultRight.begin() + long(limiter.lookahead), resultRight.end(), *outRight);
+    return count;
+}
+
+void ps_render_free(float *samples) { free(samples); }

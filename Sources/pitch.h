@@ -100,6 +100,15 @@ void ps_stems_write(PSShifter *shifter, const float *const *planes, size_t frame
 // What was recorded so far as interleaved (input, output) pairs of the left channel, and how many frames.
 size_t ps_recording(PSShifter *shifter, const float **pairs);
 
+// For saving a song: changes the tempo and the pitch of stereo audio offline with Rubber Band's R3 engine, then limits
+// its peaks as the live output does. `timeRatio` 1.25 makes it a quarter longer, and `pitchScale` 2 makes it an octave
+// higher. With both at 1, only the limiter runs. `progress` gets the part done, from 0 to 1, and stops the render when
+// it returns 0. Returns the frames written to the two buffers, which go back through ps_render_free, or 0 when stopped.
+// Any thread but the IOProc's.
+size_t ps_render(const float *left, const float *right, size_t frames, double rate, double timeRatio, double pitchScale,
+                 float **outLeft, float **outRight, int (*progress)(void *context, double done), void *context);
+void ps_render_free(float *samples);
+
 #ifdef __cplusplus
 }
 #endif
