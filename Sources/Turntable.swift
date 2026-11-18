@@ -145,7 +145,7 @@ struct TurntableDeck: View {
                 }
                 .frame(width: Self.size, height: Self.size)
                 // On the rims, where the tonearm never passes.
-                .modifier(RecordControls(spread: Self.size / 2, art: Self.size * 0.9 * 0.66))
+                .modifier(RecordControls(diameter: Self.size * 0.9, label: 0.66))
             }
             ZStack {
                 Details(track: track, ticking: spinning, palette: palette)
@@ -182,13 +182,16 @@ extension EnvironmentValues {
     @Entry var recordButtonsShown = false
 }
 
-/// A click on the record plays or pauses the song, as Space does. The pointer over the record shows buttons on it:
-/// previous and next `spread` points to the left and right of its centre, and play or pause between them, about two
-/// thirds as wide as the cover (`art` is the cover's width), all `lift` points above its centre. The buttons show
-/// only on hover, since the record is the thing to look at, and they fade in quickly, as hover feedback does.
+/// A click on the record plays or pauses the song, as Space does. The pointer over the record shrinks its cover a
+/// little, which widens the rim around it, and shows previous and next as bare glyphs on the rim, at half past ten and
+/// half past one: the tonearm crosses the rim lower on the right, and karaoke shows only the top half of its record.
+/// The cover itself is the play and pause button: the pointer over it tints it faintly and shows the glyph in its
+/// middle. Nothing gets a cap or a plate, so the cover art stays the thing to look at. `diameter` is the record's
+/// width, `label` the cover's width against it, and `lift` how far above the centre the play glyph sits, for
+/// karaoke's record.
 struct RecordControls: ViewModifier {
-    let spread: CGFloat
-    let art: CGFloat
+    let diameter: CGFloat
+    let label: CGFloat
     var lift: CGFloat = 0
     @Environment(\.recordActions) private var actions
     @Environment(\.recordPlaying) private var playing
@@ -196,12 +199,18 @@ struct RecordControls: ViewModifier {
     @State private var hovering = false
     @State private var leave: Task<Void, Never>?
 
-    private var middle: CGFloat { art * 0.65 }
+    /// The cover's width while the pointer is over the record.
+    static let shrink: CGFloat = 0.8
+
+    private var cover: CGFloat { diameter * label * Self.shrink }
+    /// The middle of the rim, between the shrunk cover and the edge of the record.
+    private var spread: CGFloat { diameter * (label * Self.shrink + 1) / 4 }
+    private var rim: CGFloat { min(34, diameter * (1 - label * Self.shrink) / 2 * 0.86) }
 
     func body(content: Content) -> some View {
         let shown = hovering || previewHover
         content
-            // The glyph that Space flashes on the record would show around the middle button.
+            // The record shrinks its cover, and the glyph that Space flashes on it stays hidden behind the buttons.
             .environment(\.recordButtonsShown, shown)
             .preference(key: RecordButtonsShown.self, value: shown)
             .contentShape(Circle())
@@ -214,26 +223,23 @@ struct RecordControls: ViewModifier {
             .overlay {
                 if shown {
                     ZStack {
-                        DeckButton(symbol: "backward.end.fill", size: DeckButton.skip, help: "Play the previous song", label: "Previous song") { actions.skip(-1) }
-                            .offset(x: -spread)
-                        DeckButton(symbol: playing ? "pause.fill" : "play.fill", size: middle, help: playing ? "Pause" : "Play",
-                                   label: playing ? "Pause" : "Play", action: actions.playPause)
-                        DeckButton(symbol: "forward.end.fill", size: DeckButton.skip, help: "Play the next song", label: "Next song") { actions.skip(1) }
-                            .offset(x: spread)
+                        CoverButton(size: cover, glyphLift: lift, playing: playing, action: actions.playPause)
+                        RimGlyph(symbol: "backward.end.fill", size: rim, help: "Play the previous song", label: "Previous song") { actions.skip(-1) }
+                            .offset(x: -spread * 0.7071, y: -spread * 0.7071)
+                        RimGlyph(symbol: "forward.end.fill", size: rim, help: "Play the next song", label: "Next song") { actions.skip(1) }
+                            .offset(x: spread * 0.7071, y: -spread * 0.7071)
                     }
                     .onHover(perform: hover)
-                    .offset(y: -lift)
                     .transition(.opacity)
                 }
             }
-            .animation(.easeOut(duration: 0.12), value: hovering)
+            .animation(.easeOut(duration: 0.15), value: shown)
     }
 
     private func hover(_ inside: Bool) {
         leave?.cancel()
         if inside { return hovering = true }
-        // The side buttons stick out past the record, so moving onto one leaves the record a moment before it enters
-        // the button.
+        // Moving from the record onto a glyph leaves the record a moment before the pointer enters the glyph.
         leave = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             if !Task.isCancelled { hovering = false }
@@ -247,75 +253,92 @@ struct RecordButtonsShown: PreferenceKey {
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
 
-/// A round button of brushed aluminium, like the start and speed buttons of a turntable: a bevelled rim lit from
-/// above, a face brushed in circles, and the glyph pressed into it. It sinks a little while it is held.
-private struct DeckButton: View {
+/// How the play and pause glyph keeps readable on any cover, for `--render` to compare.
+enum CoverGlyphStyle: String, CaseIterable {
+    /// White, with a soft dark halo.
+    case halo
+    /// White, drawn in the difference blend mode, which turns it into the opposite of the cover under it.
+    case difference
+}
+
+extension EnvironmentValues {
+    @Entry var coverGlyphStyle = CoverGlyphStyle.difference
+}
+
+/// The shrunk cover as the play and pause button: a faint tint over it and the glyph in its middle while the pointer
+/// is over it, and nothing otherwise.
+private struct CoverButton: View {
+    let size: CGFloat
+    let glyphLift: CGFloat
+    let playing: Bool
+    let action: () -> Void
+    @Environment(\.recordHovered) private var previewHover
+    @Environment(\.coverGlyphStyle) private var glyphStyle
+    @State private var hovered = false
+
+    var body: some View {
+        let lit = hovered || previewHover
+        Button(action: action) {
+            ZStack {
+                Circle().fill(.black.opacity(lit ? 0.24 : 0))
+                Circle().strokeBorder(.white.opacity(lit ? 0.22 : 0), lineWidth: 1)
+                if lit { glyph.transition(.opacity) }
+            }
+            .frame(width: size, height: size)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: lit)
+        .help(playing ? "Pause" : "Play")
+        .accessibilityLabel(playing ? "Pause" : "Play")
+    }
+
+    @ViewBuilder private var glyph: some View {
+        let image = Image(systemName: playing ? "pause.fill" : "play.fill")
+            .font(.system(size: min(glyphLift > 0 ? 40 : 54, size * 0.3), weight: .bold))
+            .foregroundStyle(.white)
+            // The triangle's weight sits left of its box, so it moves right to look centred.
+            .offset(x: playing ? 0 : size * 0.02, y: -glyphLift)
+        switch glyphStyle {
+        case .halo:
+            image
+                .shadow(color: .black.opacity(0.55), radius: 6)
+                .shadow(color: .black.opacity(0.35), radius: 1.5)
+        case .difference:
+            image.blendMode(.difference)
+        }
+    }
+}
+
+/// Previous or next on the rim of the record: a bare glyph, and a translucent circle of the accent red under it while
+/// the pointer is over it.
+private struct RimGlyph: View {
     let symbol: String
     let size: CGFloat
     let help: String
     let label: String
     let action: () -> Void
-
-    static let skip: CGFloat = 36
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hovered = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: size * 0.34, weight: .black))
-                // The triangle's weight sits left of its box, so it moves right to look centred.
-                .offset(x: symbol == "play.fill" ? size * 0.03 : 0)
+                .font(.system(size: size * 0.42, weight: .bold))
+                .foregroundStyle(.white.opacity(hovered ? 1 : 0.85))
+                .shadow(color: .black.opacity(0.4), radius: 2)
                 .frame(width: size, height: size)
+                .background(Circle().fill(StripColors.tint(.red, strong: true, colorScheme).opacity(hovered ? 0.75 : 0)))
                 .contentShape(Circle())
         }
-        .buttonStyle(DeckButtonStyle(size: size, primary: symbol.hasPrefix("p")))
+        .buttonStyle(.plain)
         .focusable(false)
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovered)
         .help(help)
         .accessibilityLabel(label)
-    }
-}
-
-private struct DeckButtonStyle: ButtonStyle {
-    let size: CGFloat
-    let primary: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        DeckButtonFace(label: configuration.label, pressed: configuration.isPressed, size: size, primary: primary)
-    }
-}
-
-/// Glossy enamel caps: off-white for previous and next, honey for play and pause. The cap under the pointer grows a
-/// little and brightens, and sinks while it is held.
-private struct DeckButtonFace<Label: View>: View {
-    let label: Label
-    let pressed: Bool
-    let size: CGFloat
-    let primary: Bool
-    @State private var hovered = false
-
-    private static var ink: Color { Color(red: 0.16, green: 0.11, blue: 0.12) }
-    private static var honey: Color { Color(red: 0.97, green: 0.71, blue: 0.36) }
-
-    var body: some View {
-        label
-            .foregroundStyle(Self.ink)
-            .background {
-                ZStack {
-                    Circle().fill(primary ? Self.honey : Color(white: 0.95))
-                    // The gloss: light from above on the top half of the cap.
-                    Circle()
-                        .fill(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0)], startPoint: .top, endPoint: .center))
-                        .padding(size * 0.08)
-                        .offset(y: -size * 0.04)
-                        .mask(Circle())
-                    Circle().strokeBorder(.black.opacity(0.18), lineWidth: 0.75)
-                }
-                .shadow(color: .black.opacity(hovered && !pressed ? 0.5 : 0.45), radius: hovered && !pressed ? 5 : 3, y: hovered && !pressed ? 3 : 2)
-            }
-            .brightness(pressed ? -0.06 : hovered ? 0.05 : 0)
-            .scaleEffect(pressed ? 0.95 : hovered ? 1.06 : 1)
-            .animation(.easeOut(duration: 0.08), value: pressed)
-            .animation(.easeOut(duration: 0.12), value: hovered)
-            .onHover { hovered = $0 }
     }
 }
 
@@ -351,8 +374,7 @@ struct RecordDisc: View {
         }
         .frame(width: side, height: side)
         // Inside the record, since the ring of keys sits around it.
-        // The previous and next buttons sit near the edge of the record, clear of the large middle button.
-        .modifier(RecordControls(spread: side * 0.43, art: side * 0.66))
+        .modifier(RecordControls(diameter: side, label: 0.66))
         .animation(.smooth(duration: TurntableDeck.swap), value: song)
     }
 }
@@ -395,46 +417,67 @@ private struct Platter: View {
 
 /// The vinyl with its grooves, and the cover on the label, or a plain cream label when the player sends no cover.
 private struct Record: View {
+    enum Part { case whole, vinyl, cover }
+
     let artwork: NSImage?
     /// Off when the record is drawn into the spinning layer, whose image would cut the shadow off and turn it.
     var shadow = true
     /// The width of the label against the record's. Karaoke's label is smaller, which leaves the grooves above it
     /// for the song's details.
     var label: CGFloat = 0.66
+    /// The spinning record draws the vinyl and the cover apart, so the cover can shrink while it turns with it.
+    var part = Part.whole
+    @Environment(\.recordButtonsShown) private var buttonsShown
 
     var body: some View {
         GeometryReader { geometry in
             let side = geometry.size.width
-            ZStack {
-                Circle().fill(Color(white: 0.09))
-                Canvas { context, size in
-                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                    var radius = size.width * (label / 2 + 0.03)
-                    while radius < size.width / 2 - 1.5 {
-                        let ring = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
-                        context.stroke(ring, with: .color(.white.opacity(0.045)), lineWidth: 0.6)
-                        radius += 1.6
+            if part == .cover {
+                cover(side)
+            } else {
+                ZStack {
+                    Circle().fill(Color(white: 0.09))
+                    // The grooves run under the cover too, for the rim that shows when it shrinks.
+                    Canvas { context, size in
+                        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                        let first = size.width * (label * RecordControls.shrink / 2 + 0.03)
+                        for radius in stride(from: first, to: size.width / 2 - 1.5, by: 1.6) {
+                            let ring = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+                            context.stroke(ring, with: .color(.white.opacity(0.045)), lineWidth: 0.6)
+                        }
+                    }
+                    if part == .whole {
+                        cover(side * label)
+                            .scaleEffect(buttonsShown ? RecordControls.shrink : 1)
+                            .animation(.easeOut(duration: 0.18), value: buttonsShown)
                     }
                 }
-                Group {
-                    if let artwork {
-                        Image(nsImage: artwork).resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        Color(red: 0.93, green: 0.88, blue: 0.80)
-                    }
-                }
-                .frame(width: side * label, height: side * label)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(.black.opacity(0.5), lineWidth: 1))
-                Circle()
-                    .fill(Color(red: 0.93, green: 0.90, blue: 0.89))
-                    .overlay(Circle().strokeBorder(.black.opacity(0.3), lineWidth: 0.5))
-                    .frame(width: 8, height: 8)
+                .frame(width: side, height: side)
             }
-            .frame(width: side, height: side)
         }
         .aspectRatio(1, contentMode: .fit)
         .shadow(color: .black.opacity(shadow ? 0.35 : 0), radius: 7, y: 4)
+    }
+
+    /// The cover on the label, or a plain cream label, with the spindle in its middle.
+    private func cover(_ width: CGFloat) -> some View {
+        ZStack {
+            Group {
+                if let artwork {
+                    Image(nsImage: artwork).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Color(red: 0.93, green: 0.88, blue: 0.80)
+                }
+            }
+            .frame(width: width, height: width)
+            .clipShape(Circle())
+            .overlay(Circle().strokeBorder(.black.opacity(0.5), lineWidth: 1))
+            Circle()
+                .fill(Color(red: 0.93, green: 0.90, blue: 0.89))
+                .overlay(Circle().strokeBorder(.black.opacity(0.3), lineWidth: 0.5))
+                .frame(width: 8, height: 8)
+        }
+        .frame(width: width, height: width)
     }
 }
 
@@ -457,16 +500,21 @@ private struct SpinningRecord: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context _: Context) -> SpinView { SpinView(period: period) }
+    func makeNSView(context _: Context) -> SpinView { SpinView(period: period, label: label) }
 
     func updateNSView(_ view: SpinView, context: Context) {
         if !context.coordinator.drawn || context.coordinator.artwork !== artwork {
             context.coordinator.artwork = artwork
             context.coordinator.drawn = true
-            let renderer = ImageRenderer(content: Record(artwork: artwork, shadow: false, label: label).frame(width: side, height: side))
-            renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
-            view.record.contents = renderer.cgImage
+            let scale = NSScreen.main?.backingScaleFactor ?? 2
+            let vinyl = ImageRenderer(content: Record(artwork: artwork, shadow: false, label: label, part: .vinyl).frame(width: side, height: side))
+            vinyl.scale = scale
+            view.record.contents = vinyl.cgImage
+            let cover = ImageRenderer(content: Record(artwork: artwork, shadow: false, label: label, part: .cover).frame(width: side * label, height: side * label))
+            cover.scale = scale
+            view.cover.contents = cover.cgImage
         }
+        view.shrunk = context.environment.recordButtonsShown
         let rewinds = context.environment.recordRewinds
         if let seen = context.coordinator.rewinds, rewinds > seen { view.rewind() }
         context.coordinator.rewinds = rewinds
@@ -477,13 +525,19 @@ private struct SpinningRecord: NSViewRepresentable {
 
     final class SpinView: NSView {
         let record = CALayer()
+        /// The cover, in a layer of its own that turns with the record and shrinks while the pointer is over it.
+        let cover = CALayer()
+        private let label: CGFloat
 
-        init(period: Double) {
+        init(period: Double, label: CGFloat) {
+            self.label = label
             super.init(frame: .zero)
             layer = CALayer()
             wantsLayer = true
             record.contentsGravity = .resizeAspect
+            cover.contentsGravity = .resizeAspect
             layer?.addSublayer(record)
+            record.addSublayer(cover)
             // Clockwise, one turn every `period` seconds.
             let turn = CABasicAnimation(keyPath: "transform.rotation.z")
             turn.fromValue = 0
@@ -503,7 +557,20 @@ private struct SpinningRecord: NSViewRepresentable {
             CATransaction.setDisableActions(true)
             record.bounds = bounds
             record.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            cover.bounds = CGRect(x: 0, y: 0, width: bounds.width * label, height: bounds.height * label)
+            cover.position = CGPoint(x: bounds.midX, y: bounds.midY)
             CATransaction.commit()
+        }
+
+        var shrunk = false {
+            didSet {
+                guard shrunk != oldValue else { return }
+                CATransaction.begin()
+                CATransaction.setAnimationDuration(0.18)
+                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+                cover.transform = shrunk ? CATransform3DMakeScale(RecordControls.shrink, RecordControls.shrink, 1) : CATransform3DIdentity
+                CATransaction.commit()
+            }
         }
 
         var spinning = false {
@@ -768,8 +835,8 @@ struct KaraokeRecord<Footer: View>: View {
                 .frame(width: side, height: side)
                 // On the part of the record above the edge of the glass, beside the cover. Over the cover's hover area
                 // too, which would take the clicks of the middle button otherwise.
-                // Only the top half of the cover shows, so the middle button stays the size that it has on the deck.
-                .modifier(RecordControls(spread: side * 0.38, art: min(side * Self.label, 110), lift: side * 0.1))
+                // The play glyph sits in the top half of the cover, which shows above the hints along the edge of the glass.
+                .modifier(RecordControls(diameter: side, label: Self.label, lift: side * Self.label * RecordControls.shrink * 0.3))
             }
             .frame(width: side + 2 * Self.margin, height: side + 2 * Self.margin)
             // The record's centre sits `below` above the bottom edge of the glass.
