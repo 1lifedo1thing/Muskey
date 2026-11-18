@@ -1,7 +1,29 @@
 import AppKit
 import AVFoundation
+import CoreTransferable
 import CryptoKit
 import Foundation
+
+/// A file or a link dropped on the HUD: a file from Finder, a link from a browser, or a link dragged as text.
+struct DroppedSong: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        ProxyRepresentation(importing: { (url: URL) in DroppedSong(url: url) })
+        ProxyRepresentation(importing: { (text: String) in
+            guard let url = FilePlayer.url(from: text) else { throw CocoaError(.fileReadUnknown) }
+            return DroppedSong(url: url)
+        })
+    }
+}
+
+/// For the small requests around a download, so that a stalled one never holds the song for long.
+let quickSession: URLSession = {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.timeoutIntervalForRequest = 10
+    configuration.timeoutIntervalForResource = 20
+    return URLSession(configuration: configuration)
+}()
 
 /// What the activity pill shows while Muskey opens a song: a download, or a failure with what recovers from it.
 enum OpenActivity: Equatable {
@@ -292,7 +314,7 @@ final class DownloaderInstall: NSObject, URLSessionDownloadDelegate {
 
     private func verify(_ staged: URL) async -> Bool {
         defer { try? FileManager.default.removeItem(at: staged) }
-        guard let sums = try? await URLSession.shared.data(from: URL(string: Self.release + "SHA2-256SUMS")!).0,
+        guard let sums = try? await quickSession.data(from: URL(string: Self.release + "SHA2-256SUMS")!).0,
               let line = String(decoding: sums, as: UTF8.self).split(separator: "\n").first(where: { $0.hasSuffix(" yt-dlp_macos") }),
               let data = try? Data(contentsOf: staged)
         else { return false }
@@ -519,7 +541,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
             song.artist = named.artist
             song.album = info.album
             if let thumbnail = info.thumbnail.flatMap(URL.init(string:)), thumbnail.scheme == "https",
-               let (data, response) = try? await URLSession.shared.data(from: thumbnail),
+               let (data, response) = try? await quickSession.data(from: thumbnail),
                (response as? HTTPURLResponse)?.statusCode == 200, data.count < 10_000_000, NSImage(data: data) != nil
             {
                 let cover = folder.appending(path: "\(base).cover")

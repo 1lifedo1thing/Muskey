@@ -372,9 +372,9 @@ struct HUDView: View {
         }
         .animation(.easeOut(duration: 0.12), value: model.dropTargeted)
         .modifier(HUDBackground(tint: tint, scheme: colorScheme))
-        .dropDestination(for: URL.self) { urls, _ in
-            model.onOpen(urls)
-            return !urls.isEmpty
+        .dropDestination(for: DroppedSong.self) { songs, _ in
+            model.onOpen(songs.map(\.url))
+            return !songs.isEmpty
         } isTargeted: { model.dropTargeted = $0 }
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.songArriving, model.songArriving)
@@ -1690,9 +1690,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         filePlayer.open(urls)
     }
 
-    /// The song that Muskey opened plays: the HUD opens on it, as the hotkey opens it, unless it already shows.
+    /// The song that Muskey opened plays: the HUD opens on it as the hotkey opens it, unless it already shows. During a
+    /// pitch change or with a key locked, that is the key picker, since the song change moves the song already.
     private func filePlays() {
-        if state == .idle { start() }
+        guard state == .idle else { return }
+        (pitch.running && pitchWanted) || keptKey != nil ? pickKey() : start()
     }
 
     @objc private func openFile() {
