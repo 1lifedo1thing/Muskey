@@ -78,7 +78,7 @@ struct AboutPane: View {
                         Text("Projects behind Muskey")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.primary)
-                        Text("Muskey is free. To support it, sponsor the projects it's built on.")
+                        Text("Muskey is free, but if you want to show your support, feel free to sponsor the projects that made it possible.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
