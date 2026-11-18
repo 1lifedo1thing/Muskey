@@ -695,6 +695,24 @@ final class LinkCache {
         return song
     }
 
+    /// The link was downloaded before, and its song plays at once.
+    func has(_ url: URL) -> Bool {
+        load()[url.absoluteString].map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+    }
+
+    /// The links that songs were downloaded from, the song opened last first.
+    func recent(_ limit: Int) -> [(link: URL, song: FilePlayer.Song)] {
+        load().compactMap { key, song -> (URL, FilePlayer.Song, Date)? in
+            guard let link = URL(string: key),
+                  let date = try? URL(fileURLWithPath: song.path).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            else { return nil }
+            return (link, song, date)
+        }
+        .sorted { $0.2 > $1.2 }
+        .prefix(limit)
+        .map { (link: $0.0, song: $0.1) }
+    }
+
     func keep(_ song: FilePlayer.Song, for url: URL) {
         var songs = load()
         songs[url.absoluteString] = song

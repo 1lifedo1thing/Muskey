@@ -967,6 +967,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Plays the files and links that Muskey opens, through Muskey Player.
     private let filePlayer = FilePlayer()
     private let activityPill = ActivityPill()
+    private lazy var locationPanel: OpenLocationPanel = {
+        let panel = OpenLocationPanel()
+        panel.onOpen = { [weak self] url in self?.open([url]) }
+        if Self.logKeys { panel.onLog = { [weak self] in self?.log($0) } }
+        // The HUD takes the keyboard back while a key is picked, and the app that was in front otherwise.
+        panel.onClose = { [weak self] in
+            guard let self else { return }
+            if model.picking, self.panel.isVisible { return self.panel.makeKey() }
+            if NSApp.isActive, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }),
+               let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
+        }
+        return panel
+    }()
     /// Files opened before the app finished launching, as with Open With.
     private var openedEarly: [URL]?
     private var launched = false
@@ -1778,28 +1791,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         open(panel.urls)
     }
 
-    /// A link to a song or a video, or the path of a file, with the link on the clipboard filled in.
-    @objc private func openLocation() {
-        let alert = NSAlert()
-        alert.messageText = "Open Location"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
-        field.placeholderString = "https://"
-        if let text = NSPasteboard.general.string(forType: .string), FilePlayer.url(from: text) != nil { field.stringValue = text }
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Open")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        guard inFront({ alert.runModal() }) == .alertFirstButtonReturn else { return }
-        guard let url = FilePlayer.url(from: field.stringValue) else { return log("open location: not a link or a file") }
-        open([url])
-    }
+    /// A link to a song or a video, or the path of a file, in a glass bar like the HUD's.
+    @objc private func openLocation() { locationPanel.show() }
 
     /// Runs a dialog in front of the app that is active, with the keyboard on the dialog. macOS brings only a regular
     /// app to the front, so Muskey shows in the Dock while the dialog is open, as it does for Settings.
     private func inFront<T>(_ run: () -> T) -> T {
         let accessory = NSApp.activationPolicy() == .accessory
         if accessory { NSApp.setActivationPolicy(.regular) }
-        Self.activate()
+        NSApp.takeFocus()
         defer {
             if accessory, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
                 NSApp.setActivationPolicy(.accessory)
@@ -1809,11 +1809,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return run()
     }
-
-    /// The cooperative `activate()` of macOS 14 is refused when nobody clicked Muskey just before, as when a menu item
-    /// is picked through `--menu`, so this asks the older way.
-    @available(macOS, deprecated: 14)
-    private static func activate() { NSApp.activate(ignoringOtherApps: true) }
 
     /// Files or a link on the clipboard, for ⌘V over the HUD.
     private static func pastedURLs() -> [URL] {
@@ -3222,6 +3217,37 @@ extension EnvironmentValues {
         ("pill-installing", .installing(progress: 0.3)), ("pill-failed", .failed(name: "Never Gonna Give You Up")),
         ("pill-needs-downloader", .needsDownloader(name: "youtube.com")), ("pill-install-failed", .installFailed), ("pill-unplayable", .unplayable(name: "Concert.mkv")),
     ]
+    // Open Location, empty, with a link that was downloaded before and the songs under it, and after Return on text
+    // that can't be opened.
+    let recent = [
+        OpenLocationModel.Recent(title: "Never Gonna Give You Up", artist: "Rick Astley", site: "youtube.com"),
+        OpenLocationModel.Recent(title: "Midnight City", artist: "M83", site: "soundcloud.com"),
+        OpenLocationModel.Recent(title: "Around the World", artist: "Daft Punk", site: "youtube.com"),
+    ]
+    let locations: [(String, String, [OpenLocationModel.Recent], Bool)] = [
+        ("open-location-empty", "", [], false),
+        ("open-location-recent", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", recent, false),
+        ("open-location-error", "not a link", recent, true),
+    ]
+    for (name, text, songs, submit) in locations {
+        for (scheme, backdrop) in [("light", Color(white: 0.85)), ("dark", Color(white: 0.12))] {
+            let model = OpenLocationModel()
+            model.reset(text: text, recent: songs)
+            if submit { model.submit() }
+            let view = OpenLocationView(model: model)
+                .frame(width: OpenLocationView.width + 40, height: songs.isEmpty ? 140 : 330)
+                .padding(.top, 20)
+                .background(backdrop)
+                .environment(\.colorScheme, scheme == "dark" ? .dark : .light)
+                .environment(\.renderingPreview, true)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+               let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)-\(scheme).png"))
+            }
+        }
+    }
     for (name, activity) in pills {
         for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
             let model = ActivityPillModel()
