@@ -1914,9 +1914,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var swipeTravel = CGSize.zero
     private var swiped = false
 
-    /// A two-finger swipe across the HUD skips to another song, once per swipe. The fingers moving left play the next
-    /// song, the way the record on the deck slides off to the left for it, and moving right play the previous one.
-    /// Mostly vertical scrolls, like the lyrics', and a mouse wheel are left alone.
+    /// A two-finger swipe across the HUD skips to another song, once per swipe. The fingers moving right play the next
+    /// song, and moving left play the previous one, the other way round with Natural swiping in Settings. Mostly
+    /// vertical scrolls, like the lyrics', and a mouse wheel are left alone.
     private func swipe(_ event: NSEvent) -> Bool {
         guard event.hasPreciseScrollingDeltas else { return false }
         if event.phase == .began {
@@ -1932,7 +1932,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !swiped, abs(swipeTravel.width) > 60, abs(swipeTravel.width) > 2 * swipeTravel.height {
             swiped = true
             if Self.logKeys { log(String(format: "swipe %.0f points", swipeTravel.width)) }
-            skip(swipeTravel.width < 0 ? 1 : -1)
+            let right = swipeTravel.width > 0
+            skip(right != prefs.naturalSwipes ? 1 : -1)
         }
         return swiped
     }

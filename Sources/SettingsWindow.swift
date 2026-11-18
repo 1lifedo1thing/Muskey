@@ -198,6 +198,12 @@ private struct GeneralPane: View {
                     ShortcutRecorder(shortcut: $prefs.hotkey, recording: $prefs.recordingHotkey, failed: prefs.hotkeyFailed)
                 }
             }
+            Section("Trackpad") {
+                Toggle(isOn: $prefs.naturalSwipes) {
+                    Text("Natural swiping")
+                    Text("Next song on a swipe to the left")
+                }
+            }
             Section("Menu bar icon") {
                 HStack(spacing: 14) {
                     ChoiceTile(title: "Always", selected: prefs.menuBarIcon == .always) { prefs.menuBarIcon = .always } preview: {

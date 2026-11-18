@@ -109,6 +109,11 @@ final class Preferences: ObservableObject {
     @Published var alwaysListen: Bool {
         didSet { defaults.set(alwaysListen, forKey: "alwaysListen") }
     }
+    /// A two-finger swipe to the left plays the next song, the way content follows the fingers with natural scrolling.
+    /// Off by default: a swipe to the right plays the next song.
+    @Published var naturalSwipes: Bool {
+        didSet { defaults.set(naturalSwipes, forKey: "naturalSwipes") }
+    }
     /// The second row of keys in the wide layout and the inner ring of the card, with the keys in the other mode.
     @Published var relativeKeys: Bool {
         didSet { defaults.set(relativeKeys, forKey: "relativeKeys") }
@@ -149,6 +154,7 @@ final class Preferences: ObservableObject {
         onlineKeys = defaults.bool(forKey: "onlineKeys")
         alwaysListen = defaults.bool(forKey: "alwaysListen")
         relativeKeys = defaults.bool(forKey: "relativeKeys")
+        naturalSwipes = defaults.bool(forKey: "naturalSwipes")
         lyricsTranscription = defaults.string(forKey: "lyricsTranscription").flatMap(LyricsTranscription.init) ?? .apple
         whisperServer = defaults.string(forKey: "whisperServer") ?? ""
         karaokeMutesVocals = defaults.bool(forKey: "karaokeMutesVocals")
