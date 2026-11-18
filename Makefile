@@ -98,13 +98,21 @@ $(BUILD)/obj/$(HELPER): Helper/*.swift
 	@mkdir -p $(@D)
 	swiftc -O -target $(TARGET) Helper/*.swift -o $@
 
+# Plays the songs that Muskey opens, as an app of its own, so that Now Playing and Muskey's taps hear it like any player.
+PLAYER := Muskey Player
+PLAYER_APP := $(BUNDLE)/Contents/Helpers/$(PLAYER).app
+
+$(BUILD)/obj/player: Player/*.swift
+	@mkdir -p $(@D)
+	swiftc -O -target $(TARGET) Player/*.swift -o $@
+
 $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 	@mkdir -p $(@D)
 	xcrun actool muskey.icon --compile $(@D) --app-icon muskey --platform macosx --target-device mac \
 		--minimum-deployment-target $(MACOS) --output-partial-info-plist $(@D)/icon.plist >/dev/null
 
 $(BUNDLE): Sources/*.swift Sources/*.h Info.plist $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
-		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE)
+		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE)
 	rm -rf $@
 	mkdir -p $@/Contents/MacOS $@/Contents/Helpers $@/Contents/Frameworks $@/Contents/Resources
 	swiftc -O -target $(TARGET) $(DEV) -parse-as-library -import-objc-header Sources/bridge.h $(WHISPER_INCLUDES) -F $(SPARKLE) \
@@ -122,6 +130,11 @@ $(BUNDLE): Sources/*.swift Sources/*.h Info.plist $(BUILD)/obj/ekshim.o $(BUILD)
 	$(SIGN) $(SPARKLE_FRAMEWORK)
 	cp $(BUILD)/obj/$(HELPER) $@/Contents/Helpers/
 	$(SIGN) --identifier com.apple.controlcenter.Muskey $@/Contents/Helpers/$(HELPER)
+	mkdir -p "$(PLAYER_APP)/Contents/MacOS" "$(PLAYER_APP)/Contents/Resources"
+	cp $(BUILD)/obj/player "$(PLAYER_APP)/Contents/MacOS/$(PLAYER)"
+	sed "s/1\.0\.1/$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)/" Player/Info.plist > "$(PLAYER_APP)/Contents/Info.plist"
+	cp $(BUILD)/obj/Assets.car $(BUILD)/obj/muskey.icns "$(PLAYER_APP)/Contents/Resources/"
+	$(SIGN) "$(PLAYER_APP)"
 	$(SIGN) $@
 
 install: $(BUNDLE)
