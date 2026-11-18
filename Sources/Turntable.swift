@@ -180,6 +180,7 @@ extension EnvironmentValues {
     @Entry var recordHovered = false
     /// The buttons show on the record, so the glyph that a play, a pause or a skip flashes on it doesn't.
     @Entry var recordButtonsShown = false
+    @Entry var recordButtonLook = RecordButtonLook.label
 }
 
 /// A click on the record plays or pauses the song, as Space does. The pointer over the record shows the buttons of a
@@ -267,7 +268,7 @@ private struct DeckButton: View {
                 .frame(width: size, height: size)
                 .contentShape(Circle())
         }
-        .buttonStyle(DeckButtonStyle(size: size))
+        .buttonStyle(DeckButtonStyle(size: size, primary: symbol.hasPrefix("p")))
         .focusable(false)
         .help(help)
         .accessibilityLabel(label)
@@ -276,24 +277,109 @@ private struct DeckButton: View {
 
 private struct DeckButtonStyle: ButtonStyle {
     let size: CGFloat
+    let primary: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        DeckButtonFace(label: configuration.label, pressed: configuration.isPressed, size: size)
+        DeckButtonFace(label: configuration.label, pressed: configuration.isPressed, size: size, primary: primary)
     }
+}
+
+/// The looks for the buttons on the record that `--render-buttons` draws side by side, for picking one.
+enum RecordButtonLook: String, CaseIterable {
+    case metal, vinyl, label, glass, soft, enamel
 }
 
 private struct DeckButtonFace<Label: View>: View {
     let label: Label
     let pressed: Bool
     let size: CGFloat
+    let primary: Bool
+    @Environment(\.recordButtonLook) private var look
     @State private var hovered = false
 
     private static func white(_ level: Double) -> Color { Color(white: level) }
+    private static var ink: Color { Color(red: 0.16, green: 0.11, blue: 0.12) }
+    private static var cream: Color { Color(red: 0.96, green: 0.93, blue: 0.86) }
+    private static var honey: Color { Color(red: 0.97, green: 0.71, blue: 0.36) }
 
     var body: some View {
+        face
+            .brightness(pressed ? -0.06 : hovered ? 0.03 : 0)
+            .scaleEffect(pressed ? 0.95 : 1)
+            .animation(.easeOut(duration: 0.08), value: pressed)
+            .onHover { hovered = $0 }
+    }
+
+    @ViewBuilder private var face: some View {
+        switch look {
+        case .metal: metal
+        case .vinyl:
+            // Cut from the record itself: glossy black with grooves, and the same sheen as the vinyl.
+            label
+                .foregroundStyle(.white.opacity(0.92))
+                .background {
+                    ZStack {
+                        Circle().fill(RadialGradient(colors: [Self.white(0.16), Self.white(0.05)], center: .center, startRadius: 0, endRadius: size / 2))
+                        ForEach(1 ..< 5) { ring in
+                            Circle().strokeBorder(.white.opacity(0.05), lineWidth: 0.5).padding(size * 0.06 * CGFloat(ring))
+                        }
+                        Circle().fill(AngularGradient(colors: [.clear, .white.opacity(0.16), .clear, .clear, .white.opacity(0.1), .clear, .clear], center: .center, angle: .degrees(20)))
+                        Circle().strokeBorder(.white.opacity(0.16), lineWidth: 0.75)
+                    }
+                    .shadow(color: .black.opacity(0.55), radius: 4, y: 2)
+                }
+        case .label:
+            // Printed like a record's paper label: matte cream, a thin ring of ink near the edge.
+            label
+                .foregroundStyle(Self.ink)
+                .background {
+                    ZStack {
+                        Circle().fill(Self.cream)
+                        Circle().strokeBorder(Self.ink.opacity(0.3), lineWidth: 0.75).padding(size * 0.09)
+                    }
+                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1.5)
+                }
+        case .glass:
+            // A clear disc over the record: a faint fill, light caught along its top edge.
+            label
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                .background {
+                    ZStack {
+                        Circle().fill(.white.opacity(0.14))
+                        Circle().fill(LinearGradient(colors: [.white.opacity(0.32), .clear], startPoint: .top, endPoint: .center))
+                        Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.12), .white.opacity(0.35)], startPoint: .top, endPoint: .bottom), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+                }
+        case .soft:
+            // Plain white, with a soft shadow under it and nothing else.
+            label
+                .foregroundStyle(Self.ink)
+                .background {
+                    Circle().fill(Self.white(0.98))
+                        .shadow(color: .black.opacity(0.35), radius: 8, y: 4)
+                        .shadow(color: .black.opacity(0.2), radius: 1, y: 1)
+                }
+        case .enamel:
+            // Glossy enamel caps: off-white for the skips, honey for play and pause.
+            label
+                .foregroundStyle(Self.ink)
+                .background {
+                    ZStack {
+                        Circle().fill(primary ? Self.honey : Self.white(0.95))
+                        Circle().fill(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0)], startPoint: .top, endPoint: .center)).padding(size * 0.08).offset(y: -size * 0.04).mask(Circle())
+                        Circle().strokeBorder(.black.opacity(0.18), lineWidth: 0.75)
+                    }
+                    .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
+                }
+        }
+    }
+
+    private var metal: some View {
         let lift = pressed ? -0.04 : hovered ? 0.03 : 0
         let rim = size * 0.07
-        label
+        return label
             // Engraved: dark, with a thin highlight under each edge where the light from above catches it.
             .foregroundStyle(Self.white(0.26))
             .shadow(color: .white.opacity(0.75), radius: 0, y: 0.8)
@@ -313,9 +399,6 @@ private struct DeckButtonFace<Label: View>: View {
                 .shadow(color: .black.opacity(pressed ? 0.35 : 0.5), radius: pressed ? 1 : 2.5, y: pressed ? 1 : 2)
                 .shadow(color: .black.opacity(pressed ? 0.1 : 0.25), radius: pressed ? 2 : 6, y: pressed ? 1 : 4)
             }
-            .scaleEffect(pressed ? 0.96 : 1)
-            .animation(.easeOut(duration: 0.08), value: pressed)
-            .onHover { hovered = $0 }
     }
 }
 

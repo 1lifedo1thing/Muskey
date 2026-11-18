@@ -1481,6 +1481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_: Notification) {
         if let dir = Self.stringOption("--render") { return renderPreviews(to: dir) }
+        if let dir = Self.stringOption("--render-buttons") { return renderButtonLooks(to: dir) }
         if let path = Self.stringOption("--render-menubar") {
             StatusItem.renderSheet(to: path)
             return NSApp.terminate(nil)
@@ -3114,6 +3115,48 @@ extension EnvironmentValues {
 }
 
 /// `--render <dir>` writes a PNG of each HUD state over a light and a dark backdrop, to check the design without the screen.
+/// `--render-buttons DIR` draws the HUD with the buttons on the record in each look, in both layouts and both
+/// themes, while the song plays.
+@MainActor func renderButtonLooks(to dir: String) {
+    let track = NowPlaying.Track(title: "Paper Lanterns", artist: "Mira Vale", album: "Low Tide Radio", duration: 238, elapsed: 102, timestamp: Date().timeIntervalSince1970, rate: 0, bundleID: nil)
+    let cover = sampleCover()
+    for look in RecordButtonLook.allCases {
+        for card in [false, true] {
+            for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
+                for playing in [true, false] {
+                    let model = HUDModel()
+                    model.relativeKeys = true
+                    model.keysActive = true
+                    model.card = card
+                    model.phase = .done
+                    model.key = DetectedKey(pitchClass: 1, minor: true)
+                    model.progress = 1
+                    model.shift = -3
+                    model.picking = true
+                    model.track = track
+                    model.artwork = cover
+                    model.playing = playing
+                    let view = HUDView(model: model)
+                        .frame(width: HUDPanel.size.width, height: HUDPanel.size.height)
+                        .background(backdrop)
+                        .environment(\.colorScheme, scheme == "dark" ? .dark : .light)
+                        .environment(\.renderingPreview, true)
+                        .environment(\.recordHovered, true)
+                        .environment(\.recordButtonLook, look)
+                    let renderer = ImageRenderer(content: view)
+                    renderer.scale = 2
+                    if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+                       let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                        let name = "\(look.rawValue)-\(card ? "card" : "wide")-\(scheme)\(playing ? "" : "-paused").png"
+                        try? png.write(to: URL(fileURLWithPath: dir).appending(path: name))
+                    }
+                }
+            }
+        }
+    }
+    exit(0)
+}
+
 @MainActor func renderPreviews(to dir: String) {
     let csm = EKResult(pitchClass: 1, minor: 1, strength: 0.8)
     let a = EKResult(pitchClass: 9, minor: 0, strength: 0.8)

@@ -135,6 +135,7 @@ Builds made with `make` or `make install` take these flags, and release builds i
 | `--key-lookup "Title\|Artist\|Album\|Seconds"` | Ask Noiseblend for the key of that song, print the answer and quit |
 | `--tempo FILE` | Print the tempo of the part of FILE that a listen would hear, and quit. `--tempo-at S` moves the start from 45 seconds, and `--seconds S` sets the length |
 | `--render DIR` | Write a PNG of each HUD state and quit |
+| `--render-buttons DIR` | Write a PNG of the HUD with the buttons on the record in each look, and quit |
 | `--log-keys` | Log every key and click that reaches the HUD, with the host time of each line |
 
 ### Lyrics
