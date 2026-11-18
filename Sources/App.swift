@@ -126,12 +126,12 @@ final class KeyAnalyzer {
     }
 
     /// The final key, the peak, and the tempo of everything heard, which only the final estimate looks for.
-    func finish(_ completion: @escaping (EKResult, Float, Double?) -> Void) {
+    func finish(_ completion: @escaping (EKResult, Float, (bpm: Double, confidence: Float)?) -> Void) {
         queue.async { [self] in
             guard !finished else { return }
             finished = true
             let result = analyze()
-            let tempo = peak >= 0.0005 ? TempoDetector.bpm(samples, sourceRate: rate)?.bpm : nil
+            let tempo = peak >= 0.0005 ? TempoDetector.bpm(samples, sourceRate: rate) : nil
             if let wavPath { writeWAV(samples, rate: UInt32(rate.rounded()), to: wavPath) }
             let peak = peak
             DispatchQueue.main.async { completion(result, peak, tempo) }
@@ -1282,14 +1282,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.tempo != known { model.tempo = known }
     }
 
-    /// A listen heard `bpm` in `song`. Noiseblend's tempo picks the level at which the beats are counted, and the
+    /// A listen heard `tempo` in `song`. Noiseblend's tempo picks the level at which the beats are counted, and the
     /// tempo is kept with the song's key.
-    private func heardTempo(_ bpm: Double?, in song: [String?]?) -> Double? {
-        guard let bpm else { return nil }
+    private func heardTempo(_ tempo: (bpm: Double, confidence: Float)?, in song: [String?]?) -> Double? {
+        guard let tempo else { return nil }
         let online = prefs.onlineKeys ? song.flatMap(keyLookup.bpm) : nil
-        let shown = TempoDetector.reconcile(heard: bpm, online: online)
-        log(String(format: "tempo: heard %.1f BPM%@", bpm, online.map { String(format: ", Noiseblend %.1f, shown %.1f", $0, shown) } ?? ""))
-        if model.track?.song == song { model.tempo = SongTempo(song: song, bpm: shown) }
+        let shown = TempoDetector.reconcile(heard: tempo.bpm, confidence: tempo.confidence, online: online)
+        log(String(format: "tempo: heard %.1f BPM, confidence %.2f, Noiseblend %@, shown %@", tempo.bpm, tempo.confidence,
+                   online.map { String(format: "%.1f", $0) } ?? "none", shown.map { String(format: "%.1f", $0) } ?? "none"))
+        if let shown, model.track?.song == song { model.tempo = SongTempo(song: song, bpm: shown) }
         return shown
     }
 

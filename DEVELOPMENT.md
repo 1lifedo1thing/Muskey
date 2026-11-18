@@ -54,6 +54,8 @@ At the end of a listen, Muskey finds the tempo of what it heard with Essentia's 
 
 Spotify measures the tempo over the whole song, while a listen hears 10 to 30 seconds of it. A listen sometimes counts half or double the beats that people count along to. So when Noiseblend knows the tempo of the song, and the listen found the same tempo or half, double, a third or three times of it, the pill shows Spotify's tempo.
 
+A song without a steady beat, like a rubato ballad, gets a confidence under 1 from Essentia. Muskey then shows Spotify's tempo when Noiseblend knows it, and no tempo otherwise.
+
 The setting is off by default, for people who want every key found on their own Mac.
 
 ### Lyrics
