@@ -3034,9 +3034,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The tempo keys and pills: 5 % slower or faster, from 50 % to 150 %, or the song's own tempo with 0.
     private func changeSpeed(by step: Int) {
-        guard model.speedAdjustable else { return }
-        let target = step == 0 ? 1 : min(max(((filePlayer.speed * 20).rounded() + Double(step)) / 20, 0.5), 1.5)
-        guard target != filePlayer.speed else { return }
+        playSpeed(step == 0 ? 1 : min(max(((filePlayer.speed * 20).rounded() + Double(step)) / 20, 0.5), 1.5))
+    }
+
+    /// `--speed S` plays the first song that Muskey Player opens at that speed, for testing the correction.
+    private var testSpeed = TestFlags.value("--speed").flatMap(Double.init)
+
+    private func playSpeed(_ target: Double) {
+        guard model.speedAdjustable, target != filePlayer.speed else { return }
         filePlayer.setSpeed(target)
         log(String(format: "tempo %.0f%%", target * 100))
         syncSpeed()
@@ -3050,6 +3055,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.speedAdjustable = adjustable
             log("tempo keys \(adjustable ? "on" : "off") (playing: \(nowPlaying.track?.bundleID ?? "nothing"))")
             updateHoverKeys()
+            if adjustable, let speed = testSpeed {
+                testSpeed = nil
+                DispatchQueue.main.async { [self] in playSpeed(speed) }
+            }
         }
         if model.speed != filePlayer.speed { model.speed = filePlayer.speed }
         let speed = playedSpeed
