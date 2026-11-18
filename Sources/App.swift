@@ -573,6 +573,38 @@ struct HUDView: View {
         }
         .frame(width: Self.focusWidth, height: focusHeight)
         .overlay(alignment: .top) { karaokeKey(palette).padding(.top, Self.focusRowTop) }
+        .overlay { if track != nil { karaokeTransport(palette) } }
+    }
+
+    @Environment(\.karaokeTransport) private var transportPlacement
+
+    /// Karaoke's playback buttons, which the record doesn't hold, since its cover shows the instruments and vocals.
+    @ViewBuilder private func karaokeTransport(_ palette: Palette) -> some View {
+        let buttons = KaraokeTransport(ink: palette.ink).modifier(FocusDim(on: true))
+        let record = KaraokeRecord<EmptyView>.height(side: recordSide)
+        switch transportPlacement {
+        case 1:
+            // In the top row, after the close button.
+            buttons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.leading, 38).padding(.top, 6)
+        case 2:
+            // In the top row, before the karaoke button.
+            buttons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, 40).padding(.top, 6)
+        case 3:
+            // On the record, above the title.
+            buttons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom).padding(.bottom, record - 38)
+        case 4:
+            // Along the bottom edge, after the elapsed time.
+            buttons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading).padding(.leading, 44).padding(.bottom, 1)
+        default:
+            // In a pill of its own between the lyrics and the record.
+            KaraokeTransport(size: 30, ink: palette.ink)
+                .padding(.horizontal, 4)
+                .background(Capsule().fill(palette.ink.opacity(0.07)))
+                .overlay(Capsule().strokeBorder(palette.ink.opacity(0.1), lineWidth: 0.5))
+                .modifier(FocusDim(on: true))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .padding(.bottom, record + 2)
+        }
     }
 
     private var otherMode: String { model.key.map { $0.minor ? "major" : "minor" } ?? "" }
@@ -1024,6 +1056,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var karaokeChange: AnyCancellable?
     /// When karaoke last opened or closed.
     private var focusChangedAt = Date.distantPast
+    private var glyphSheet: NSWindow?
     private var backdropChange: AnyCancellable?
     /// Blurs and dims the screen around the karaoke glass, and a click on it closes karaoke.
     private lazy var karaokeBackdrop: KaraokeBackdrops = {
@@ -1816,6 +1849,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if TestFlags.has("--install-yt-dlp") { filePlayer.installDownloader() }
         // `--menu "Stop Playing" [--menu-after SECONDS]` picks an item of the menu bar menu, which no automation can
         // open on macOS 27.
+        // `--glyph-sheet STYLE` opens a window of live records with that style of the cover glyph.
+        if let name = Self.stringOption("--glyph-sheet"), let style = CoverGlyphStyle(rawValue: name) {
+            let paths = Self.stringOption("--glyph-covers")?.split(separator: ",").map(String.init) ?? []
+            let window = NSWindow(contentViewController: NSHostingController(rootView: GlyphSheet(style: style, covers: GlyphSheet.covers(paths: paths))))
+            window.title = "Glyph sheet"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            glyphSheet = window
+        }
         // `--open-menu-after S` opens the menu bar menu after S seconds, so a posted key reaches the open menu.
         if let after = Self.stringOption("--open-menu-after").flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + after) { [self] in
@@ -3330,9 +3375,14 @@ extension EnvironmentValues {
                 if layout == "-card-shortcuts", name != "picking-Csm-3" { continue }
             }
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
-        for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
+        for listed in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"]
+            // Karaoke's playback buttons in each of their places, idle, under the key row, under the stems and in the
+            // countdown.
+            + (1 ... 5).flatMap { n in ["-lyrics-focus", "-lyrics-focus-keys", "-lyrics-focus-stems", "-lyrics-focus-rewind"].map { "\($0)-t\(n)" } } {
+            let placement = listed.range(of: "-t[1-5]$", options: .regularExpression).map { Int(listed[$0].dropFirst(2)) ?? 0 } ?? 0
+            let variant = placement > 0 ? String(listed.dropLast(3)) : listed
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -3430,11 +3480,12 @@ extension EnvironmentValues {
                 .environment(\.renderingPreview, true)
                 .environment(\.cornerLabelsShown, variant == "-labels")
                 .environment(\.recordHovered, variant.contains("-skip"))
+                .environment(\.karaokeTransport, placement > 0 ? placement : 5)
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
                let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-                try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)\(suffix)\(layout)\(variant)-\(scheme).png"))
+                try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)\(suffix)\(layout)\(listed)-\(scheme).png"))
             }
         }
         }
