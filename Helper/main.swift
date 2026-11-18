@@ -6,12 +6,14 @@ import Foundation
 //
 //   watch   a line at start and after every change, until stdin closes or the parent process exits. A line
 //           `playpause` on stdin plays or pauses the song, `pause` pauses it, `next` and `previous` skip to another
-//           song, and `seek <seconds>` moves it to that time.
+//           song, `seek <seconds>` moves it to that time, and `seekclient <pid> <seconds>` sends the move to the
+//           player running as that process.
 //   get     one line, then exit
 //   playpause  plays or pauses the song, then exits
 //   pause   pauses the song, then exits
 //   next, previous  skips to the next or the previous song, then exits
 //   seek <seconds>  moves the song to that time, then exits
+//   seekclient <pid> <seconds>  sends the move to the player running as that process, then exits
 
 struct Track: Encodable, Equatable {
     var title: String?
@@ -23,6 +25,8 @@ struct Track: Encodable, Equatable {
     var timestamp: Double?
     var rate: Double?
     var bundleID: String?
+    /// The process of the player, which a move sent to one player needs.
+    var pid: Int32?
     var artworkBytes = 0
     /// The cover art, sent only when it differs from the one in the last line.
     var artwork: Data?
@@ -42,6 +46,12 @@ enum MediaRemote {
     private typealias Register = @convention(c) (DispatchQueue) -> Void
     private typealias SendCommand = @convention(c) (UInt32, CFDictionary?) -> Bool
     private typealias SetElapsed = @convention(c) (Double) -> Void
+    private typealias ClientPID = @convention(c) (AnyObject?) -> Int32
+    private typealias GetClients = @convention(c) (DispatchQueue, @escaping (NSArray?) -> Void) -> Void
+    private typealias GetLocalOrigin = @convention(c) () -> AnyObject?
+    // (command, options, origin, client, command options, queue, completion). The origin comes before the client.
+    private typealias SendToClient = @convention(c) (Int32, CFDictionary?, AnyObject?, AnyObject?, CFDictionary?, DispatchQueue?,
+                                                     @convention(block) (AnyObject?) -> Void) -> Bool
 
     static var available: Bool { function("MRMediaRemoteGetNowPlayingInfo", as: GetInfo.self) != nil }
 
@@ -71,6 +81,27 @@ enum MediaRemote {
         return true
     }
 
+    /// Sends the seek command (kMRSeekToPlaybackPosition) with the time to the player running as `pid`, the way Control
+    /// Center's scrubber does. Browsers take this one, and some of them leave the elapsed time alone.
+    @discardableResult static func seek(to seconds: Double, pid: Int32) -> Bool {
+        guard let bundle, let getClients = function("MRMediaRemoteGetNowPlayingClients", as: GetClients.self),
+              let send = function("MRMediaRemoteSendCommandToClient", as: SendToClient.self),
+              let origin = function("MRMediaRemoteGetLocalOrigin", as: GetLocalOrigin.self)?(),
+              let clientPID = function("MRNowPlayingClientGetProcessIdentifier", as: ClientPID.self),
+              let key = CFBundleGetDataPointerForName(bundle, "kMRMediaRemoteOptionPlaybackPosition" as CFString)
+        else { return false }
+        let options = [key.load(as: CFString.self): max(0, seconds)] as CFDictionary
+        // MediaRemote keeps the completion and calls it later, so it is a block made ahead of the call.
+        let done: @convention(block) (AnyObject?) -> Void = { _ in }
+        getClients(.main) { clients in
+            guard let client = ((clients as? [AnyObject]) ?? []).first(where: { clientPID($0) == pid }) else {
+                return FileHandle.standardError.write(Data("seekclient: no player runs as process \(pid)\n".utf8))
+            }
+            _ = send(24, options, origin, client, nil, nil, done)
+        }
+        return true
+    }
+
     static func read(_ completion: @escaping (Track) -> Void) {
         guard let getInfo = function("MRMediaRemoteGetNowPlayingInfo", as: GetInfo.self) else { return completion(Track()) }
         var track = Track()
@@ -92,9 +123,11 @@ enum MediaRemote {
         }
         if let getClient = function("MRMediaRemoteGetNowPlayingClient", as: GetClient.self),
            let bundleID = function("MRNowPlayingClientGetBundleIdentifier", as: ClientString.self) {
+            let pid = function("MRNowPlayingClientGetProcessIdentifier", as: ClientPID.self)
             group.enter()
             getClient(.main) { client in
                 track.bundleID = client.flatMap { bundleID($0)?.takeUnretainedValue() as String? }
+                track.pid = client.flatMap { pid?($0) }.flatMap { $0 > 0 ? $0 : nil }
                 group.leave()
             }
         }
@@ -174,6 +207,10 @@ case "watch":
             if line == "next" { MediaRemote.skip(1) }
             if line == "previous" { MediaRemote.skip(-1) }
             if line.hasPrefix("seek "), let seconds = Double(line.dropFirst(5)) { MediaRemote.seek(to: seconds) }
+            let words = line.split(separator: " ")
+            if words.count == 3, words[0] == "seekclient", let pid = Int32(words[1]), let seconds = Double(words[2]) {
+                MediaRemote.seek(to: seconds, pid: pid)
+            }
         }
     }
     stdin.resume()
@@ -203,7 +240,18 @@ case "seek":
     RunLoop.main.run(until: Date() + 0.3)
     exit(sent ? 0 : 1)
 
+case "seekclient":
+    let words = CommandLine.arguments.dropFirst(2)
+    guard words.count == 2, let pid = Int32(words.first!), let seconds = Double(words.last!) else {
+        FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) seekclient <pid> <seconds>\n".utf8))
+        exit(64)
+    }
+    let sent = MediaRemote.seek(to: seconds, pid: pid)
+    // The players are listed and the command sent from the main queue, so they are given a moment before the exit.
+    RunLoop.main.run(until: Date() + 0.5)
+    exit(sent ? 0 : 1)
+
 default:
-    FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) get|watch|playpause|pause|next|previous|seek <seconds>\n".utf8))
+    FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) get|watch|playpause|pause|next|previous|seek <seconds>|seekclient <pid> <seconds>\n".utf8))
     exit(64)
 }

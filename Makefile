@@ -111,7 +111,7 @@ $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 	xcrun actool muskey.icon --compile $(@D) --app-icon muskey --platform macosx --target-device mac \
 		--minimum-deployment-target $(MACOS) --output-partial-info-plist $(@D)/icon.plist >/dev/null
 
-$(BUNDLE): Sources/*.swift Sources/*.h Info.plist $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
+$(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
 		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE)
 	rm -rf $@
 	mkdir -p $@/Contents/MacOS $@/Contents/Helpers $@/Contents/Frameworks $@/Contents/Resources
@@ -135,7 +135,9 @@ $(BUNDLE): Sources/*.swift Sources/*.h Info.plist $(BUILD)/obj/ekshim.o $(BUILD)
 	sed "s/1\.0\.1/$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)/" Player/Info.plist > "$(PLAYER_APP)/Contents/Info.plist"
 	cp $(BUILD)/obj/Assets.car $(BUILD)/obj/muskey.icns "$(PLAYER_APP)/Contents/Resources/"
 	$(SIGN) "$(PLAYER_APP)"
-	$(SIGN) $@
+	# Apple Events set the time in players that ignore the seeks from Now Playing, which the hardened runtime allows
+	# only with this entitlement.
+	$(SIGN) --entitlements Muskey.entitlements $@
 
 install: $(BUNDLE)
 	killall "$(APP)" || true

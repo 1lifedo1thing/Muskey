@@ -209,6 +209,8 @@ final class HUDModel: ObservableObject {
     /// A seek would be instant: the stems aren't separated live, the lyrics don't play behind, and the player took
     /// the last seek. The seek keys and their hints exist only then.
     @Published var seekable = false
+    /// The key 0 starts the song over in karaoke: the player took the last seek and the lyrics don't play behind.
+    @Published var restartable = false
     /// The song plays, as the record and its tonearm show it. Space changes it before the player reports the change.
     @Published var playing = false
     /// The last play or pause, for the glyph on the record or over the lyrics.
@@ -541,7 +543,7 @@ struct HUDView: View {
 
             if showsStrip, let key = model.key {
                 HStack(spacing: 16) {
-                    KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, otherMode: key.minor ? "major" : "minor", palette: palette)
+                    KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, otherMode: key.minor ? "major" : "minor", palette: palette)
                         .opacity(model.hintsOpacity)
                     Spacer(minLength: 0)
                     PitchControls(model: model, palette: palette, small: true)
@@ -618,7 +620,7 @@ struct HUDView: View {
                             .frame(maxWidth: Self.focusLyricsWidth)
                     }
                     // FocusDim makes these faint without the pointer, so they get no second dim.
-                    KeyHints(lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
+                    KeyHints(lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
                              palette: palette)
                 }
                 .modifier(FocusDim(on: true))
@@ -651,7 +653,7 @@ struct HUDView: View {
     /// The hints along the bottom edge of the record, no wider than the record: the keys of the lyrics, or the keys
     /// that change the key while the key row shows.
     private var karaokeFooter: some View {
-        KeyHints(style: .footer, lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
+        KeyHints(style: .footer, lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
                  palette: Palette.of(.dark))
             .padding(.horizontal, 12)
             .padding(.top, 4)
@@ -1295,7 +1297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !lyricsDelayed else { return log("karaoke: the song doesn't start over while Whisper writes its lyrics") }
         guard model.stemsEngaged else {
             log("karaoke: the song starts over")
-            return nowPlaying.seek(to: 0)
+            return movePlayer(track, to: 0)
         }
         // Stems that already play for this song are ready, as when karaoke opens again: it opens on them at once,
         // where the song is, with nothing to separate again.
@@ -1311,20 +1313,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func beginKaraokeRestart(to target: Double = 0) {
+        guard let track = nowPlaying.track else { return }
         log(target == 0 ? "karaoke: the song starts over" : String(format: "seek: the stems start over at %.1f s", target))
-        karaokeRestart = .seeking(Date(), target)
+        let asked = Date()
+        karaokeRestart = .seeking(asked, target)
         pitch.awaitingSeek = true
-        nowPlaying.seek(to: target)
         // A player that ignores the move: the song plays on, and rewinds to where karaoke opened.
-        let timeout = DispatchWorkItem { [weak self] in
-            guard let self, case .seeking = karaokeRestart else { return }
+        let giveUp = { [weak self] in
+            guard let self, case let .seeking(at, _) = karaokeRestart, at == asked else { return }
             log(restartsFromStart ? "karaoke: the player didn't move the song to its start" : "seek: the player didn't move the song")
             karaokeRestart = nil
             pitch.awaitingSeek = false
         }
+        let filePlayer = track.bundleID == FilePlayer.bundleID
+        if filePlayer {
+            // Karaoke waits for the report of the move. Now Playing reports a move that it sent at once, while a seek
+            // sent to Muskey Player straight would be read only a few seconds later.
+            nowPlaying.seek(to: target)
+        } else {
+            movePlayer(track, to: target) { moved in if !moved { giveUp() } }
+        }
+        // The Automation question can stay open for long, so the sound comes back after a while without an answer.
+        let timeout = DispatchWorkItem(block: giveUp)
         karaokeRestartTimeout?.cancel()
         karaokeRestartTimeout = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (filePlayer ? 2 : 30), execute: timeout)
     }
 
     /// The player reports the song at its start after karaoke moved it there: the stems start over from that moment.
@@ -2590,7 +2603,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case kVK_LeftArrow where model.seekable && model.lyricsShown && !model.karaokeKeys: seek(by: -5)
         case kVK_RightArrow where model.seekable && model.lyricsShown && !model.karaokeKeys: seek(by: 5)
         // In karaoke, 0 starts the song over in every player, as karaoke's own start does, unless the stems show.
-        case kVK_ANSI_0 where model.lyricsFocus && !option && !(model.stemsAvailable && model.karaokeStems): startOver()
+        case kVK_ANSI_0 where model.restartable && model.lyricsFocus && !option && !(model.stemsAvailable && model.karaokeStems): startOver()
         // Karaoke's arrows change the key only while its key row shows, so they never change it out of sight.
         case kVK_LeftArrow where model.lyricsFocus && !model.karaokeKeys, kVK_RightArrow where model.lyricsFocus && !model.karaokeKeys: break
         default:
@@ -2605,6 +2618,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var seekTarget: (song: [String?], seconds: Double, at: Date)?
     /// Checks that the player moved the song, a few seconds after a seek.
     private var seekCheck: DispatchWorkItem?
+    /// The path that moved the song in each player, which its next seeks take at once.
+    private var seekPaths: [String: SeekPath] = [:]
+    /// `--seek-path elapsed|command|script` sends every seek through that path alone, for testing each one.
+    private static let forcedSeekPath = TestFlags.value("--seek-path").flatMap(SeekPath.init(rawValue:))
+    /// `--seek-ignore elapsed,command` sends nothing through those paths, as a player that ignores them would have it,
+    /// for testing the fallbacks.
+    private static let ignoredSeekPaths = Set((TestFlags.value("--seek-ignore") ?? "").split(separator: ",").compactMap { SeekPath(rawValue: String($0)) })
     /// Players that left the song where it was after a seek. The seek keys leave them alone until Muskey quits.
     private var unseekable: Set<String> = []
 
@@ -2630,9 +2650,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// for them again under a countdown, and the lyrics delay would start over.
     private func syncSeekable() {
         let track = nowPlaying.track
-        let seekable = track?.title?.isEmpty == false && !(track?.bundleID.map(unseekable.contains) ?? false)
-            && !model.stemsEngaged && !lyricsDelayed
-        guard seekable != model.seekable else { return }
+        let restartable = track?.title?.isEmpty == false && !(track?.bundleID.map(unseekable.contains) ?? false) && !lyricsDelayed
+        let seekable = restartable && !model.stemsEngaged
+        guard seekable != model.seekable || restartable != model.restartable else { return }
+        model.restartable = restartable
         model.seekable = seekable
         if Self.logKeys { log("seek keys \(seekable ? "on" : "off")") }
         updateHoverKeys()
@@ -2650,30 +2671,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         seek(to: duration * fraction, flash: "\(Int((fraction * 100).rounded()))%")
     }
 
-    /// Moves the song that plays to `seconds`, through the player's own command, and starts the stems and the lyrics
-    /// delay over from there, since what they hold belongs to the moment before.
+    /// Moves the song that plays to `seconds` and flashes the record with `flash`, a percent or an SF Symbol.
     private func seek(to seconds: Double, flash: String) {
         guard let track = nowPlaying.track, track.title?.isEmpty == false else { return }
         guard model.seekable else { return log("seek: not now, the stems or the lyrics delay would start over") }
         let target = max(0, min(seconds, (track.duration ?? .infinity) - 1))
-        let before = track.position(at: Date())
         seekTarget = (track.song, target, Date())
         log(String(format: "seek to %.1f s", target))
-        if track.bundleID == FilePlayer.bundleID { filePlayer.seek(target) } else { nowPlaying.seek(to: target) }
         if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: flash) }
-        seekCheck?.cancel()
-        let asked = Date()
-        let check = DispatchWorkItem { [weak self] in
-            guard let self, let now = nowPlaying.track, now.song == track.song, let position = now.position(at: Date()) else { return }
-            let passed = now.playing ? Date().timeIntervalSince(asked) * (now.rate ?? 1) : 0
-            // A player that ignored the seek is still near where the song would have been without it.
-            guard let before, abs(position - (target + passed)) > 2, abs(position - (before + passed)) < 1.5, let id = now.bundleID else { return }
-            unseekable.insert(id)
-            log("seek: \(id) left the song where it was")
-            syncSeekable()
+        movePlayer(track, to: target)
+    }
+
+    /// Moves the song in the player of `track` to `target` seconds. Players differ in the seek they take, so the first
+    /// seek in a player sets the elapsed time that Now Playing shows, and when the song didn't move 2.5 seconds later,
+    /// it sends the seek command to the player's process, then sets the time through the player's AppleScript, which
+    /// asks for the Automation permission the first time. The path that moved the song is kept for the player's next
+    /// seeks, and a player that took none goes in `unseekable`. `done` gets whether the song moved.
+    private func movePlayer(_ track: NowPlaying.Track, to target: Double, path: SeekPath? = nil, done: ((Bool) -> Void)? = nil) {
+        guard let id = track.bundleID, id != FilePlayer.bundleID else {
+            if track.bundleID == FilePlayer.bundleID { filePlayer.seek(target) } else { nowPlaying.seek(to: target) }
+            done?(true)
+            return
         }
-        seekCheck = check
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: check)
+        let path = path ?? Self.forcedSeekPath ?? seekPaths[id] ?? .elapsed
+        let asked = Date()
+        let before = track.position(at: asked)
+        seekCheck?.cancel()
+        seekCheck = nil
+        // Checks where the song is a while after the move was sent, and tries the next path when it stayed.
+        let check = { [weak self] (sent: Date) in
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                guard let now = nowPlaying.track, now.song == track.song, let position = now.position(at: Date()) else {
+                    log("seek: another song plays, the move is over")
+                    return done?(false) ?? ()
+                }
+                let rate = now.playing ? now.rate ?? 1 : 0
+                if abs(position - (target + Date().timeIntervalSince(sent) * rate)) <= 2 {
+                    log("seek: \(id) moved the song through the \(path.name)")
+                    seekPaths[id] = path
+                    return done?(true) ?? ()
+                }
+                // A player that ignored the seek is still near where the song would have been without it.
+                guard let before, abs(position - (before + Date().timeIntervalSince(asked) * rate)) < 1.5 else {
+                    log(String(format: "seek: the song is at %.1f s, neither where it was nor where it was sent", position))
+                    return done?(false) ?? ()
+                }
+                if Self.forcedSeekPath == nil, let next = path.next(for: id) {
+                    log("seek: \(id) left the song where it was after the \(path.name), trying the \(next.name)")
+                    return movePlayer(now, to: target, path: next, done: done)
+                }
+                unseekable.insert(id)
+                log("seek: \(id) left the song where it was")
+                syncSeekable()
+                done?(false)
+            }
+            self?.seekCheck = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+        }
+        if Self.ignoredSeekPaths.contains(path), path != .script {
+            log("seek: nothing sent through the \(path.name), for the test")
+            return check(asked)
+        }
+        switch path {
+        case .elapsed:
+            nowPlaying.seek(to: target)
+            check(asked)
+        case .command:
+            guard let pid = track.pid else {
+                log("seek: Now Playing gives no process for \(id)")
+                return path.next(for: id).map { movePlayer(track, to: target, path: $0, done: done) } ?? (done?(false) ?? ())
+            }
+            nowPlaying.seek(to: target, pid: pid)
+            check(asked)
+        case .script:
+            log("seek: asking \(id) through AppleScript")
+            PlayerScript.seek(id, to: target) { [weak self] outcome in
+                guard let self else { return }
+                switch outcome {
+                case .sent:
+                    check(Date())
+                case .refused:
+                    log("seek: Automation for \(id) isn't allowed")
+                    unseekable.insert(id)
+                    syncSeekable()
+                    done?(false)
+                case let .failed(reason):
+                    log("seek: \(reason)")
+                    unseekable.insert(id)
+                    syncSeekable()
+                    done?(false)
+                }
+            }
+        }
     }
 
     /// The keys that change the key: Delete, the arrows and the letters, with Shift for a sharp or a flat and Option
@@ -3332,6 +3422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForKaraoke = false
     private var hoverKeysForSpeed = false
     private var hoverKeysForSeek = false
+    private var hoverKeysForRestart = false
 
     /// Open File… or Open URL… is open. Its text would otherwise reach the keys over the HUD, which are global
     /// hotkeys, whenever the pointer rests on the HUD.
@@ -3345,7 +3436,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The lyrics take fewer keys than the key row, so the keys change when the panel does.
         guard wanted == hoverKeys.isEmpty
             || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
-                || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable))
+                || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
+                || hoverKeysForRestart != model.restartable))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -3355,6 +3447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForKaraoke = model.lyricsFocus
         hoverKeysForSpeed = model.speedAdjustable
         hoverKeysForSeek = model.seekable
+        hoverKeysForRestart = model.restartable
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) }
         if model.stemsAvailable {
@@ -3368,7 +3461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.lyricsShown, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
         // Karaoke seeks with the number keys, and 0 starts the song over in every player.
         if model.lyricsFocus, model.seekable { keys += Self.digitKeys.map { ($0, 0) } }
-        if model.lyricsFocus { keys.append((kVK_ANSI_0, 0)) }
+        if model.lyricsFocus, model.restartable { keys.append((kVK_ANSI_0, 0)) }
         // The key row, and karaoke, change the key by its letter.
         if !model.lyricsShown || model.lyricsFocus {
             keys += Self.letters.keys.flatMap { code in modifiers.map { (code, $0) } }

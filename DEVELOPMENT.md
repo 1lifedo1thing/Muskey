@@ -24,7 +24,17 @@ Since macOS 15.4, only code signed with an Apple identifier can read MediaRemote
 
 The helper also sends two commands to the player: play or pause, for Space over the HUD, and a move to another place in the song, for karaoke and the seek keys.
 
-With the lyrics showing, the keys `←` and `→` seek 5 seconds back or ahead, and in karaoke the keys `0` to `9` move the song to its start or to a tenth of its length. While karaoke's stems show, the number keys stay with the stems. `N` and `P` play the next and the previous song in every layout. A player that leaves the song where it was after a seek is left alone by the seek keys until Muskey quits.
+With the lyrics showing, the keys `←` and `→` seek 5 seconds back or ahead, and in karaoke the keys `0` to `9` move the song to its start or to a tenth of its length. While karaoke's stems show, the number keys stay with the stems. `N` and `P` play the next and the previous song in every layout.
+
+The seek keys and their hints exist only while a seek is instant. While the stems are separated live, a seek would start their countdown again, and while the lyrics play behind the song, it would start the lyrics delay over. In both cases the arrows and the keys `1` to `9` do nothing. The key `0` in karaoke still starts the song over, the same way as Start song from beginning does while the stems play.
+
+Players differ in the move they take, so Muskey tries three in turn:
+
+1. The elapsed time that Now Playing shows, which Spotify, Music and Safari take.
+2. The seek command, sent to the player's process the way Control Center's scrubber sends it, when the song hasn't moved 2.5 seconds after the first.
+3. The player's AppleScript, for Spotify, Music, TV, Swinsian and VLC. macOS asks for the Automation permission the first time Muskey scripts a player, so a player that takes an earlier move never asks.
+
+The move that worked is kept for the player's next seeks until Muskey quits. A player that took none of them, or that Muskey isn't allowed to script, is left alone by the seek keys until Muskey quits. Karaoke's start in Muskey Player always takes the elapsed time, since Now Playing reports that move at once and karaoke waits for the report.
 
 ### Playing files and links
 
@@ -146,6 +156,8 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--glyph-sheet` | Open a window of live records with the play and pause glyph over flat covers and the images of `--glyph-covers A,B,…`, as the pointer over the record shows it and as the pointer over the cover does |
 | `--open-menu-after S` | Open the menu bar menu after S seconds, so that a posted key reaches the open menu |
 | `--speed S` | Play the first song that Muskey Player opens at speed S (0.5 to 1.5), with the pitch correction |
+| `--seek-path elapsed\|command\|script` | Send every seek through that path alone, without trying the others |
+| `--seek-ignore elapsed,command` | Send nothing through those paths, the way a player that ignores them would have it, to test the paths after them |
 | `--tempo FILE` | Print the tempo of the part of FILE that a listen would hear, and quit. `--tempo-at S` moves the start from 45 seconds, and `--seconds S` sets the length |
 | `--render DIR` | Write a PNG of each HUD state and quit |
 | `--log-keys` | Log every key and click that reaches the HUD, with the host time of each line |

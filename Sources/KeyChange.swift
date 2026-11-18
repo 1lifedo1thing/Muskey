@@ -716,6 +716,8 @@ struct KeyHints: View {
     var vocals = false
     /// The arrows and, in karaoke, the number keys seek.
     var seek = false
+    /// The key 0 starts the song over in karaoke.
+    var restart = false
     /// The key row shows in karaoke, and the keys that change the key are listed.
     var karaokeKeys = false
     /// A song in Muskey Player, whose tempo the brackets change.
@@ -743,7 +745,7 @@ struct KeyHints: View {
             (style == .footer && seek ? [] : [Hint(keys: ["L"], name: "keys")]) + [Hint(keys: ["↩"], name: focus ? "lyrics" : "karaoke")]
                 + (vocals ? [Hint(keys: ["V"], name: "vocals")] : [])
                 + [Hint(keys: ["space"], name: "play or pause")]
-                + (focus ? [seek ? Hint(keys: ["0–9"], name: "seek") : Hint(keys: ["0"], name: "start over")] : [])
+                + (focus && seek ? [Hint(keys: ["0–9"], name: "seek")] : focus && restart ? [Hint(keys: ["0"], name: "start over")] : [])
                 + (seek ? [Hint(keys: ["←", "→"], name: "5 s")] : [])
                 + [Hint(keys: ["N", "P"], name: "skip")]
                 + [Hint(keys: ["K"], name: "lock key"), Hint(keys: ["esc"], name: "close")]

@@ -15,6 +15,8 @@ final class NowPlaying {
         var timestamp: Double?
         var rate: Double?
         var bundleID: String?
+        /// The process that Now Playing knows the player by, which the seek command goes to.
+        var pid: Int32?
         var artworkBytes = 0
         /// Sent only when the cover changed, so `NowPlaying.artwork` keeps the last one.
         var artwork: Data?
@@ -34,7 +36,8 @@ final class NowPlaying {
 
         static func == (a: Track, b: Track) -> Bool {
             a.title == b.title && a.artist == b.artist && a.album == b.album && a.duration == b.duration && a.elapsed == b.elapsed
-                && a.timestamp == b.timestamp && a.rate == b.rate && a.bundleID == b.bundleID && a.artworkBytes == b.artworkBytes
+                && a.timestamp == b.timestamp && a.rate == b.rate && a.bundleID == b.bundleID && a.pid == b.pid
+                && a.artworkBytes == b.artworkBytes
         }
     }
 
@@ -116,6 +119,13 @@ final class NowPlaying {
     func seek(to seconds: Double) {
         guard let stdinPipe else { return log("seek: the now playing helper isn't running") }
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data(String(format: "seek %.3f\n", seconds).utf8))
+    }
+
+    /// Sends the seek command with the time to the player running as `pid`, the way Control Center's scrubber does,
+    /// for players that leave the elapsed time alone.
+    func seek(to seconds: Double, pid: Int32) {
+        guard let stdinPipe else { return log("seek: the now playing helper isn't running") }
+        try? stdinPipe.fileHandleForWriting.write(contentsOf: Data(String(format: "seekclient %d %.3f\n", pid, seconds).utf8))
     }
 
     /// Pauses the song that another app plays, before Muskey Player starts one, then calls `done` on the main thread.
