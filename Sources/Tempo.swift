@@ -54,21 +54,16 @@ enum TempoDetector {
         return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
     }
 
-    /// Below this confidence, RhythmExtractor2013 found no steady beat: a rubato ballad, or a part of a song without
-    /// drums. Essentia calls a confidence under 1 very low.
-    static let steady: Float = 1
-
     /// The tempo to show for a listen that heard `heard`, next to Noiseblend's. Spotify's tempo is measured over the
     /// whole song, so it wins when the two agree, and also when the listen found half or double of it, or a third or
     /// three times: the beats were counted at another level, and Spotify's level is the one that people count along
-    /// to. It also wins over a listen that heard no steady beat. A steady tempo far from all of those comes from
-    /// another song, or from a part of the song at another tempo, so the listen's tempo is kept. Without Noiseblend's
-    /// tempo, a listen without a steady beat shows none.
-    static func reconcile(heard: Double, confidence: Float, online: Double?) -> Double? {
-        let steady = confidence >= Self.steady
-        guard let online, online > 0 else { return steady ? heard : nil }
+    /// to. A tempo far from all of those comes from another song, or from a part of the song at another tempo, so the
+    /// listen's tempo is kept. Essentia's confidence decides nothing here, since it doesn't tell a right tempo from a
+    /// wrong one.
+    static func reconcile(heard: Double, online: Double?) -> Double {
+        guard let online, online > 0 else { return heard }
         let related = [1.0, 2, 0.5, 3, 1.0 / 3].contains { abs(heard * $0 - online) / online <= 0.04 }
-        return related || !steady ? online : heard
+        return related ? online : heard
     }
 
     /// Prints the tempo of `seconds` of the file from `start`, mixed to mono and resampled to the 48 kHz of the tap,

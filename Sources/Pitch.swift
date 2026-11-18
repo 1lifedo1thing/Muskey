@@ -751,17 +751,12 @@ enum PitchSelfTest {
         for bpm in [92.0, 128] {
             let started = Date()
             let found = TempoDetector.bpm(drums(bpm: bpm, seconds: 20, rate: 48000), sourceRate: 48000)
-            report(abs((found?.bpm ?? 0) - bpm) / bpm < 0.02 && (found?.confidence ?? 0) >= TempoDetector.steady,
+            report(abs((found?.bpm ?? 0) - bpm) / bpm < 0.02,
                    String(format: "tempo            %.1f BPM at confidence %.2f for a loop at %.0f BPM, in %.2fs", found?.bpm ?? 0, found?.confidence ?? 0, bpm,
                           Date().timeIntervalSince(started)))
         }
-        let pairs: [(heard: Double, confidence: Float, online: Double?, shown: Double?)] = [
-            (121, 3, 120, 120), (60.5, 3, 120, 120), (240, 3, 120, 120), (40.1, 3, 120, 120), (90, 3, 120, 90), (97, 3, nil, 97),
-            // No steady beat: Noiseblend's tempo, or none.
-            (90, 0.6, 120, 120), (97, 0.6, nil, nil),
-        ]
-        let wrongTempos = pairs.filter { TempoDetector.reconcile(heard: $0.heard, confidence: $0.confidence, online: $0.online) != $0.shown }
-            .map { "\($0.heard) at \($0.confidence) with \($0.online ?? 0)" }
+        let pairs: [(heard: Double, online: Double?, shown: Double)] = [(121, 120, 120), (60.5, 120, 120), (240, 120, 120), (40.1, 120, 120), (90, 120, 90), (97, nil, 97)]
+        let wrongTempos = pairs.filter { TempoDetector.reconcile(heard: $0.heard, online: $0.online) != $0.shown }.map { "\($0.heard) with \($0.online ?? 0)" }
         report(wrongTempos.isEmpty, "tempo levels     \(pairs.count) pairs\(wrongTempos.isEmpty ? "" : ", wrong: " + wrongTempos.joined(separator: "; "))")
 
         return failures == 0 ? 0 : 1

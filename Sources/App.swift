@@ -1287,10 +1287,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func heardTempo(_ tempo: (bpm: Double, confidence: Float)?, in song: [String?]?) -> Double? {
         guard let tempo else { return nil }
         let online = prefs.onlineKeys ? song.flatMap(keyLookup.bpm) : nil
-        let shown = TempoDetector.reconcile(heard: tempo.bpm, confidence: tempo.confidence, online: online)
-        log(String(format: "tempo: heard %.1f BPM, confidence %.2f, Noiseblend %@, shown %@", tempo.bpm, tempo.confidence,
-                   online.map { String(format: "%.1f", $0) } ?? "none", shown.map { String(format: "%.1f", $0) } ?? "none"))
-        if let shown, model.track?.song == song { model.tempo = SongTempo(song: song, bpm: shown) }
+        let shown = TempoDetector.reconcile(heard: tempo.bpm, online: online)
+        log(String(format: "tempo: heard %.1f BPM, confidence %.2f, Noiseblend %@, shown %.1f", tempo.bpm, tempo.confidence,
+                   online.map { String(format: "%.1f", $0) } ?? "none", shown))
+        if model.track?.song == song { model.tempo = SongTempo(song: song, bpm: shown) }
         return shown
     }
 
