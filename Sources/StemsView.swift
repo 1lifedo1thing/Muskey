@@ -229,6 +229,8 @@ private struct StemHalo: View {
 
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
+    /// A scroll changed the volume since the pointer came over the stem: its tooltip would cover the volume.
+    @State private var scrolled = false
 
     private var side: CGFloat { crowded ? 28 : compact ? 32 : 40 }
 
@@ -271,8 +273,12 @@ private struct StemHalo: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(on ? "Mute the \(stem.name.lowercased()) (\(key)) · Play only the \(stem.name.lowercased()) (⌥-click)"
+        .onHover { inside in
+            hovering = inside
+            if !inside { scrolled = false }
+        }
+        .onChange(of: adjusting) { if adjusting { scrolled = true } }
+        .help(adjusting || scrolled ? "" : on ? "Mute the \(stem.name.lowercased()) (\(key)) · Play only the \(stem.name.lowercased()) (⌥-click)"
             : "Play the \(stem.name.lowercased()) (\(key)) · Play only the \(stem.name.lowercased()) (⌥-click)")
     }
 }

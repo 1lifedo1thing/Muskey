@@ -714,6 +714,8 @@ struct KeyHints: View {
     var focus = false
     /// V mutes the vocals or plays them again, with the separation model installed.
     var vocals = false
+    /// The arrows and, in karaoke, the number keys seek.
+    var seek = false
     /// The key row shows in karaoke, and the keys that change the key are listed.
     var karaokeKeys = false
     /// A song in Muskey Player, whose tempo the brackets change.
@@ -736,11 +738,13 @@ struct KeyHints: View {
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["esc"], name: "close")]
         case .band where lyrics, .footer:
-            // Karaoke's footer, no wider than its record, leaves out L, which leaves karaoke for the keys.
-            (style == .footer ? [] : [Hint(keys: ["L"], name: "keys")]) + [Hint(keys: ["↩"], name: focus ? "lyrics" : "karaoke")]
+            // Karaoke's footer, no wider than its record, leaves out L, which leaves karaoke for the keys, while the
+            // seek hints need the room.
+            (style == .footer && seek ? [] : [Hint(keys: ["L"], name: "keys")]) + [Hint(keys: ["↩"], name: focus ? "lyrics" : "karaoke")]
                 + (vocals ? [Hint(keys: ["V"], name: "vocals")] : [])
                 + [Hint(keys: ["space"], name: "play or pause")]
-                + (focus ? [Hint(keys: ["0–9"], name: "seek")] : []) + [Hint(keys: ["←", "→"], name: "5 s"), Hint(keys: ["N", "P"], name: "skip")]
+                + (seek && focus ? [Hint(keys: ["0–9"], name: "seek")] : []) + (seek ? [Hint(keys: ["←", "→"], name: "5 s")] : [])
+                + [Hint(keys: ["N", "P"], name: "skip")]
                 + [Hint(keys: ["K"], name: "lock key"), Hint(keys: ["esc"], name: "close")]
         case .band:
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),

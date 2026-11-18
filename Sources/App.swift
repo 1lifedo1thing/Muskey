@@ -206,6 +206,9 @@ final class HUDModel: ObservableObject {
     @Published var speed = 1.0
     /// The song plays in Muskey Player, whose speed the tempo keys and the tempo pill change.
     @Published var speedAdjustable = false
+    /// A seek would be instant: the stems aren't separated live, the lyrics don't play behind, and the player took
+    /// the last seek. The seek keys and their hints exist only then.
+    @Published var seekable = false
     /// The song plays, as the record and its tonearm show it. Space changes it before the player reports the change.
     @Published var playing = false
     /// The last play or pause, for the glyph on the record or over the lyrics.
@@ -538,7 +541,7 @@ struct HUDView: View {
 
             if showsStrip, let key = model.key {
                 HStack(spacing: 16) {
-                    KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, otherMode: key.minor ? "major" : "minor", palette: palette)
+                    KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, otherMode: key.minor ? "major" : "minor", palette: palette)
                         .opacity(model.hintsOpacity)
                     Spacer(minLength: 0)
                     PitchControls(model: model, palette: palette, small: true)
@@ -615,7 +618,8 @@ struct HUDView: View {
                             .frame(maxWidth: Self.focusLyricsWidth)
                     }
                     // FocusDim makes these faint without the pointer, so they get no second dim.
-                    KeyHints(lyrics: true, focus: true, vocals: model.stemsAvailable, karaokeKeys: model.karaokeKeys, otherMode: otherMode, palette: palette)
+                    KeyHints(lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
+                             palette: palette)
                 }
                 .modifier(FocusDim(on: true))
                 // Without the record, the song and the hints show the instruments and vocals.
@@ -647,7 +651,7 @@ struct HUDView: View {
     /// The hints along the bottom edge of the record, no wider than the record: the keys of the lyrics, or the keys
     /// that change the key while the key row shows.
     private var karaokeFooter: some View {
-        KeyHints(style: .footer, lyrics: true, focus: true, vocals: model.stemsAvailable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
+        KeyHints(style: .footer, lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
                  palette: Palette.of(.dark))
             .padding(.horizontal, 12)
             .padding(.top, 4)
@@ -1772,6 +1776,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         nowPlaying.onTrack = { [weak self] in
             self?.syncSpeed()
+            self?.syncSeekable()
             self?.syncPaused()
             self?.checkKaraokeRestart()
             self?.syncTrack()
@@ -2557,15 +2562,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// N and P play the next and the previous song in every layout. With the lyrics, ← and → seek 5 seconds back or
     /// ahead, except while karaoke shows its key row, which takes them for the key. In karaoke, 0 starts the song over
-    /// and 1 to 9 move it to a tenth of its length, except while the stems show, which take the numbers.
+    /// and 1 to 9 move it to a tenth of its length, except while the stems show, which take the numbers. The seeks
+    /// exist only while they are instant (`model.seekable`): a seek while the stems are separated live would start
+    /// their countdown again.
     private func handleSongKey(_ code: Int, option: Bool) -> Bool {
         switch code {
         case kVK_ANSI_N where !option: skip(1)
         case kVK_ANSI_P where !option: skip(-1)
-        case kVK_LeftArrow where model.lyricsShown && !model.karaokeKeys: seek(by: -5)
-        case kVK_RightArrow where model.lyricsShown && !model.karaokeKeys: seek(by: 5)
+        case kVK_LeftArrow where model.seekable && model.lyricsShown && !model.karaokeKeys: seek(by: -5)
+        case kVK_RightArrow where model.seekable && model.lyricsShown && !model.karaokeKeys: seek(by: 5)
+        // Karaoke's arrows change the key only while its key row shows, so they never change it out of sight.
+        case kVK_LeftArrow where model.lyricsFocus && !model.karaokeKeys, kVK_RightArrow where model.lyricsFocus && !model.karaokeKeys: break
         default:
-            guard model.lyricsFocus, !option, !(model.stemsAvailable && model.karaokeStems), let digit = Self.digitKeys.firstIndex(of: code) else { return false }
+            guard model.seekable, model.lyricsFocus, !option, !(model.stemsAvailable && model.karaokeStems), let digit = Self.digitKeys.firstIndex(of: code)
+            else { return false }
             seek(toFraction: Double(digit) / 10)
         }
         return true
@@ -2577,6 +2587,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var seekCheck: DispatchWorkItem?
     /// Players that left the song where it was after a seek. The seek keys leave them alone until Muskey quits.
     private var unseekable: Set<String> = []
+
+    /// Seeks are instant only while nothing plays behind the song: with the stems separated live, a seek would wait
+    /// for them again under a countdown, and the lyrics delay would start over.
+    private func syncSeekable() {
+        let track = nowPlaying.track
+        let seekable = track?.title?.isEmpty == false && !(track?.bundleID.map(unseekable.contains) ?? false)
+            && !model.stemsEngaged && !lyricsDelayed
+        guard seekable != model.seekable else { return }
+        model.seekable = seekable
+        if Self.logKeys { log("seek keys \(seekable ? "on" : "off")") }
+        updateHoverKeys()
+    }
 
     private func seek(by seconds: Double) {
         guard let track = nowPlaying.track else { return }
@@ -2594,26 +2616,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// delay over from there, since what they hold belongs to the moment before.
     private func seek(to seconds: Double, flash: String) {
         guard let track = nowPlaying.track, track.title?.isEmpty == false else { return }
-        if let id = track.bundleID, unseekable.contains(id) { return log("seek: \(id) ignored the last seek, so the keys leave it alone") }
-        // The stems separate from the place of the last move, and karaoke counts down to it, until they play.
-        if case .seeking = karaokeRestart { return log("seek: the last move isn't done yet") }
-        if karaokeRestart == .waitingForModel || pitch.stemsWaited != nil { return log("seek: the stems are still being separated") }
-        // The lyrics delay plays the song 30 seconds behind itself, which a move would undo.
-        guard !lyricsDelayed else { return log("seek: the song plays behind itself while Whisper writes its lyrics") }
+        guard model.seekable else { return log("seek: not now, the stems or the lyrics delay would start over") }
         let target = max(0, min(seconds, (track.duration ?? .infinity) - 1))
         let before = track.position(at: Date())
         seekTarget = (track.song, target, Date())
         log(String(format: "seek to %.1f s", target))
-        if model.stemsEngaged, model.stemsAdjusted, StemModel.prepared {
-            // A muted or quieter stem would be heard again while the stems are separated from the new place. The
-            // output dips while the player moves the song, the song plays as it is from there, and the stems step
-            // back to that place once they are separated, as for karaoke's start.
-            beginKaraokeRestart(to: target)
-        } else {
-            if track.bundleID == FilePlayer.bundleID { filePlayer.seek(target) } else { nowPlaying.seek(to: target) }
-            // Every stem plays as it is, so the song as it plays sounds the same until they are separated again.
-            pitch.restartStems()
-        }
+        if track.bundleID == FilePlayer.bundleID { filePlayer.seek(target) } else { nowPlaying.seek(to: target) }
         if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: flash) }
         seekCheck?.cancel()
         let asked = Date()
@@ -2624,6 +2632,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let before, abs(position - (target + passed)) > 2, abs(position - (before + passed)) < 1.5, let id = now.bundleID else { return }
             unseekable.insert(id)
             log("seek: \(id) left the song where it was")
+            syncSeekable()
         }
         seekCheck = check
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: check)
@@ -2772,6 +2781,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard engaged != model.stemsEngaged || engaged != pitch.stemsEngaged else { return }
         model.stemsEngaged = engaged
         pitch.stemsEngaged = engaged
+        syncSeekable()
         if !engaged {
             model.stemsProgress = nil
             model.karaokeCountdown = nil
@@ -3283,6 +3293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForStems = false
     private var hoverKeysForKaraoke = false
     private var hoverKeysForSpeed = false
+    private var hoverKeysForSeek = false
 
     /// Open File… or Open URL… is open. Its text would otherwise reach the keys over the HUD, which are global
     /// hotkeys, whenever the pointer rests on the HUD.
@@ -3296,7 +3307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The lyrics take fewer keys than the key row, so the keys change when the panel does.
         guard wanted == hoverKeys.isEmpty
             || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
-                || hoverKeysForSpeed != model.speedAdjustable))
+                || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -3305,6 +3316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForStems = model.stemsAvailable
         hoverKeysForKaraoke = model.lyricsFocus
         hoverKeysForSpeed = model.speedAdjustable
+        hoverKeysForSeek = model.seekable
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) }
         if model.stemsAvailable {
@@ -3313,10 +3325,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // A song in Muskey Player plays slower, faster or at its own tempo.
         if model.speedAdjustable { keys += Self.speedKeys.keys.map { ($0, 0) } }
-        // Return shows the lyrics large, or back at their usual size, and the arrows seek.
-        if model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter, kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
+        // Return shows the lyrics large, or back at their usual size, and the arrows seek while a seek is instant.
+        if model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter].map { ($0, 0) } }
+        if model.lyricsShown, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
         // Karaoke seeks with the number keys.
-        if model.lyricsFocus { keys += Self.digitKeys.map { ($0, 0) } }
+        if model.lyricsFocus, model.seekable { keys += Self.digitKeys.map { ($0, 0) } }
         // The key row, and karaoke, change the key by its letter.
         if !model.lyricsShown || model.lyricsFocus {
             keys += Self.letters.keys.flatMap { code in modifiers.map { (code, $0) } }
@@ -3445,6 +3458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setLyricsDelay(_ on: Bool) {
         guard on != lyricsDelayed else { return }
         lyricsDelayed = on
+        syncSeekable()
         // The delay holds the stems until it steps back, so karaoke's silent countdown would outlast it: the song plays
         // from its start as it is, under Whisper's countdown.
         if on, karaokeRestart != nil {
