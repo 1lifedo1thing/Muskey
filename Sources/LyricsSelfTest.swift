@@ -74,6 +74,18 @@ enum LyricsSelfTest {
         let plainTexts = plain?.lines.map(\.text) ?? []
         report(plain?.timing == .estimated && plainTexts == ["One", "Two", "", "Three"], "ttml plain       \(plainTexts)")
 
+        // Lyrics of a version without the 20-second intro of the one that plays: one heard line moves every line by
+        // the intro, and the lines after it keep their spacing of 4 seconds.
+        let texts = ["Drifting slow across the tide", "Every light a little promise", "Burning low on the other side", "Hold the line until the morning",
+                     "Count the boats along the shore"]
+        let aligner = LyricsAligner(texts: texts, estimate: [10, 14, 18, 22, 26], keepsSpacing: true)
+        let heardWords = "Burning low on the other side".split(separator: " ").enumerated().map { index, word in
+            LyricsAligner.Heard(start: 38 + Double(index) * 0.5, end: 38.4 + Double(index) * 0.5, text: String(word))
+        }
+        let shifted = aligner.times(aligner.align(heardWords))
+        let spaced = shifted.count == 5 && abs(shifted[4] - shifted[3] - 4) < 0.01 && abs(shifted[3] - 41.5) < 1.5 && abs(shifted[0] - 29.5) < 1.5
+        report(spaced, "other version    \(shifted.map { String(format: "%.1f", $0) }) (want about 29.5 33.5 37.5 41.5 45.5)")
+
         let credited = Lyrics.parse(lrc: "[00:00.000] 作曲 : Pharrell Williams\n[00:01.000] Lyrics by: Someone\n[00:09.000]吉他：Nile Rodgers\n[00:30.90]Like the legend: of the Phoenix")
         let kept = credited.map(LyricsFinder.withoutCredits)?.lines.map(\.text) ?? []
         report(kept == ["Like the legend: of the Phoenix"], "netease credits  \(kept)")

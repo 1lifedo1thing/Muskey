@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Combine
+import Network
 import ServiceManagement
 import SwiftUI
 
@@ -1571,6 +1572,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ModelDownload.winds.log = { [weak self] in self?.log($0) }
         ModelDownload.whisper.log = { [weak self] in self?.log($0) }
         stopPitchOnSignals()
+        network.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async { self?.networkChanged(online: path.status == .satisfied) }
+        }
+        network.start(queue: .global(qos: .utility))
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app != .current else { return }
             self?.lastOtherApp = app
@@ -2354,7 +2359,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateHoverKeys()
     }
 
-    /// Lyrics added by hand for the song on the record, or LRCLIB's, asked for once per song while the lyrics show.
+    /// Lyrics added by hand for the song on the record, or the lyrics services', asked for once per song while the
+    /// lyrics show.
     private func loadLyrics(again: Bool = false) {
         guard model.lyricsShown, model.shown else { return }
         guard let track = model.track, let song = LyricsFinder.id(track) else {
@@ -2378,6 +2384,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showLyrics(state, song: song, track: track)
             log("lyrics: \(Self.describe(state))")
         }
+    }
+
+    private let network = NWPathMonitor()
+    private var online = true
+
+    /// Lyrics that failed because the Mac was offline are looked up again once it is back online, without Retry.
+    private func networkChanged(online: Bool) {
+        defer { self.online = online }
+        guard online, !self.online, model.lyricsShown, model.lyrics == .failed else { return }
+        log("lyrics: back online, looking them up again")
+        retryLyrics()
     }
 
     /// `--lyrics-plain` drops the times of synced lyrics, to test the timing by listening on any song, and logs how
@@ -2474,7 +2491,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// For the log, which never has the song or its words.
     private static func describe(_ state: LyricsState) -> String {
         switch state {
-        case let .found(lyrics): "\(lyrics.lines.count) lines, \(lyrics.timing == .synced ? "synced" : "estimated timing")\(lyrics.source.map { ", from \($0.name)" } ?? "")"
+        case let .found(lyrics): "\(lyrics.lines.count) lines, \(lyrics.timing == .synced ? "synced" : lyrics.otherVersion ? "times of another version" : "estimated timing")\(lyrics.source.map { ", from \($0.name)" } ?? "")"
         case .instrumental: "instrumental"
         case .notFound: "not found"
         case .failed: "request failed"

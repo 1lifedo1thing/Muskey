@@ -209,7 +209,7 @@ final class LyricsSync {
         end()
         self.song = song
         let texts = lyrics.lines.map(\.text)
-        let aligner = LyricsAligner(texts: texts, estimate: lyrics.lines.map(\.time))
+        let aligner = LyricsAligner(texts: texts, estimate: lyrics.lines.map(\.time), keepsSpacing: lyrics.otherVersion)
         self.aligner = aligner
         stored = store.heard(for: song)
         realign()

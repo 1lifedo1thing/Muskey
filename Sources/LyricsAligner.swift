@@ -36,8 +36,13 @@ struct LyricsAligner {
     /// Seconds per syllable of sung words, for the start of a line whose first words weren't heard.
     private static let syllableSeconds = 0.3
 
-    init(texts: [String], estimate: [Double]) {
+    /// The estimate is the times of a version of the song of another length, like a music video with an intro, so the
+    /// lines keep their spacing after the last line that was heard, instead of taking the time of their syllables.
+    private let keepsSpacing: Bool
+
+    init(texts: [String], estimate: [Double], keepsSpacing: Bool = false) {
         self.estimate = estimate
+        self.keepsSpacing = keepsSpacing
         var tokens: [Token] = []
         var firstToken: [Int?] = []
         for (line, text) in texts.enumerated() {
@@ -145,6 +150,9 @@ struct LyricsAligner {
             var time: Double
             if let start = alignment.lineStart[line] {
                 time = start
+            } else if keepsSpacing, line > lastMatched, let last = points.last {
+                // The other version plays the rest of the song the way it did after the last heard word.
+                time = (firstToken[line].map { tokens[$0].prior } ?? estimate[line]) + last.time - last.prior - Self.lead
             } else if line < lastMatched || times.isEmpty {
                 time = warp(firstToken[line].map { tokens[$0].prior } ?? estimate[line]) - Self.lead
             } else {

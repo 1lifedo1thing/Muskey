@@ -38,9 +38,15 @@ The setting is off by default, for people who want every key found on their own 
 
 ### Lyrics
 
-While the lyrics show, Muskey sends the title, artist, album and length of the song to [LRCLIB](https://lrclib.net), once for each song.
+While the lyrics show, Muskey looks the song up once, on these services at the same time:
 
-When LRCLIB has no synced lyrics for the song, Muskey searches [lrc.red](https://lrc.red) and [NetEase Cloud Music](https://music.163.com) with the artist and the title. For a song that NetEase has, Muskey also asks the [AMLL TTML DB](https://github.com/amll-dev/amll-ttml-db) for word-timed lyrics under NetEase's number for the song. Synced lyrics from these services come before LRCLIB's plain lyrics, and the name of the service shows under the lyrics, with a link to it.
+- [LRCLIB](https://lrclib.net), with the title, artist, album and length of the song
+- [lrc.red](https://lrc.red) and [NetEase Cloud Music](https://music.163.com), with the artist and the title
+- the [AMLL TTML DB](https://github.com/amll-dev/amll-ttml-db), for word-timed lyrics, once NetEase gives its number for the song
+
+Synced lyrics of the version that plays come first: the same title, the same first artist and a length within two seconds. LRCLIB's lyrics are used as soon as they come, and the lyrics of another service wait a moment for a service that comes before it. The name of the service shows under the lyrics, with a link to it.
+
+When no service has that version, Muskey takes the synced lyrics of the version with the closest length, such as the album version of a music video with an intro. Muskey then listens to the song, and the lines move to where it hears them sung.
 
 ### Stems
 

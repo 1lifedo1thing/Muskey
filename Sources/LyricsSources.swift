@@ -29,49 +29,152 @@ enum LyricsSource: Hashable, Sendable {
     static let forced = TestFlags.value("--lyrics-source")
 }
 
-/// The services that Muskey asks after LRCLIB, for a song that LRCLIB has no synced lyrics for: lrc.red, and NetEase
-/// Cloud Music with the AMLL TTML DB, which keeps word-timed lyrics under NetEase's song numbers. A result counts only
-/// with the same rules as LRCLIB's search: the same title, the same first artist and a length within two seconds.
+/// Every service at once: LRCLIB, lrc.red, and NetEase Cloud Music with the AMLL TTML DB, which keeps word-timed
+/// lyrics under NetEase's song numbers. A result counts with the same title once both are cleaned and the same first
+/// artist. Within two seconds of the length that the player reports, it is this version of the song. A version that is
+/// longer or shorter, like a music video with an intro, is used when no service has this one: its lines keep their
+/// spacing, and the song is heard to find where they start.
 extension LyricsFinder {
-    /// The best lyrics that the other services have, `synced` before `plain`.
-    struct Others: Sendable {
-        var synced: Lyrics?
-        var plain: Lyrics?
+    struct Candidate: Sendable {
+        let rank: Int
+        var lyrics: Lyrics
+        /// This version of the song, as opposed to one of another length.
+        let exact: Bool
+        /// Seconds between the length of this version and the length of the song that plays, which orders the
+        /// candidates of the same rank.
+        var off = 0.0
+    }
+
+    /// The lyrics that one service has for the song.
+    struct Candidates: Sendable {
+        var list: [Candidate] = []
         var instrumental = false
-        /// Every service failed or ran out of time, as opposed to having no lyrics for the song.
+        /// LRCLIB says that this version of the song is an instrumental, which nothing else changes.
+        var decisive = false
         var failed = false
+    }
+
+    /// The services in the order they are preferred in, for lyrics of the same kind: LRCLIB, AMLL's word-timed files
+    /// that people wrote by hand, lrc.red, NetEase's own lyrics, then the lyrics that lrc.red marks as written by a model.
+    private enum Service: Int { case lrclib, amll, lrcRed, netease, lrcRedModel }
+
+    /// Synced lyrics of this version first, then synced lyrics of another version, then plain lyrics, which are timed
+    /// by ear from an estimate.
+    private static func candidate(_ lyrics: Lyrics, _ service: Service, exact: Bool, length: Double?, duration: Double?) -> Candidate {
+        Candidate(rank: (lyrics.timing == .synced ? 0 : 20) + (exact ? 0 : 10) + service.rawValue, lyrics: lyrics, exact: exact,
+                  off: abs((length ?? duration ?? 0) - (duration ?? 0)))
     }
 
     /// lrc.red asks every app for its name, a link and a contact address in the User-Agent.
     private static let lrcRedAgent = "Muskey/\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1") (https://lowtechguys.com/muskey; support@lowtechguys.com)"
 
-    func others(_ song: (title: String, artist: String), duration: Double?, only: String?) async -> Others {
-        // Whisper starts only once the lookup ends, so the services get nine seconds between them.
-        let found = await Self.within(9) { [self] in
-            async let red = only == nil || only == "lrcred" ? lrcRed(song, duration: duration) : Candidates()
-            async let ncm = only == nil || only == "netease" || only == "amll" ? netease(song, duration: duration, amllOnly: only == "amll") : Candidates()
-            return await [red, ncm]
+    /// Asks the services at once. LRCLIB's synced lyrics end the wait as soon as they come. Synced lyrics of this
+    /// version from another service wait 0.6 seconds more for a service that is preferred to it. Whisper starts only
+    /// once the lookup ends, so the lookup ends after nine seconds with what came by then. A service that fails or
+    /// takes too long only leaves its lyrics out, and the lookup fails only when every service failed.
+    func lookup(title: String, artist: String, album: String?, duration: Double?) async -> LyricsState {
+        let song = Self.clean(title, artist: artist)
+        let only = LyricsSource.forced
+        let found: [Candidates] = await withTaskGroup(of: Candidates?.self) { group in
+            var running = 0
+            if only == nil || only == "lrclib" {
+                running += 1
+                group.addTask { await self.lrclib(title: title, artist: artist, album: album, duration: duration, song: song) }
+            }
+            if only == nil || only == "lrcred" {
+                running += 1
+                group.addTask { await self.lrcRed(song, duration: duration) }
+            }
+            if only == nil || only == "netease" || only == "amll" {
+                running += 1
+                group.addTask { await self.netease(song, duration: duration, amllOnly: only == "amll") }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(9))
+                return nil
+            }
+            var found: [Candidates] = []
+            var waiting = false
+            while running > 0, let next = await group.next() {
+                // The nine seconds, or the moment that preferred services got, are over.
+                guard let next else { break }
+                running -= 1
+                found.append(next)
+                if next.decisive || next.list.contains(where: { $0.rank == 0 }) { break }
+                if !waiting, found.contains(where: { $0.list.contains { $0.rank < 10 } }) {
+                    waiting = true
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(0.6))
+                        return nil
+                    }
+                }
+            }
+            group.cancelAll()
+            return found
         }
-        guard let found else { return Others(failed: true) }
-        let all = found.flatMap(\.list).sorted { $0.rank < $1.rank }
-        var others = Others()
-        others.synced = all.first { $0.lyrics.timing == .synced }?.lyrics
-        others.plain = all.first { $0.lyrics.timing != .synced }?.lyrics
-        others.instrumental = found.contains { $0.instrumental }
-        others.failed = all.isEmpty && !others.instrumental && found.allSatisfy(\.failed)
-        return others
+
+        if found.contains(where: \.decisive) { return .instrumental }
+        let all = found.flatMap(\.list).sorted { ($0.rank, $0.off) < ($1.rank, $1.off) }
+        if var best = all.first, best.lyrics.timing == .synced {
+            if !best.exact {
+                // Another version's times are off by its intro, so the song is heard to find where the lines start.
+                best.lyrics.timing = .estimated
+                best.lyrics.otherVersion = true
+            }
+            return .found(best.lyrics)
+        }
+        if found.contains(where: \.instrumental) { return .instrumental }
+        if let plain = all.first { return .found(plain.lyrics) }
+        return found.allSatisfy(\.failed) ? .failed : .notFound
     }
 
-    /// Lyrics from one service, each with its place in the order that the services are preferred in.
-    struct Candidates: Sendable {
-        var list: [(rank: Int, lyrics: Lyrics)] = []
-        var instrumental = false
-        var failed = false
+    // MARK: LRCLIB
+
+    /// The exact song and a search at once. The exact song needs the album and the length to match. The search finds an
+    /// album that LRCLIB names differently or a title that a video site decorates.
+    private func lrclib(title: String, artist: String, album: String?, duration: Double?, song: (title: String, artist: String)) async -> Candidates {
+        var result = Candidates()
+        async let exact = exactRecord(title: title, artist: artist, album: album, duration: duration)
+        async let searched = searchRecords(song)
+        var records: [(record: Record, exact: Bool)] = []
+        var failures = 0
+        do {
+            if let record = try await exact { records.append((record, true)) }
+        } catch { failures += 1 }
+        do {
+            for record in try await searched {
+                if let exact = Self.match(title: record.trackName, artist: record.artistName, length: record.duration, song: song, duration: duration) {
+                    records.append((record, exact))
+                }
+            }
+        } catch { failures += 1 }
+        result.failed = failures == 2
+        for (record, exact) in records {
+            if record.instrumental == true {
+                if exact { result.instrumental = true; result.decisive = true }
+                continue
+            }
+            if let synced = record.syncedLyrics, var lyrics = Lyrics.parse(lrc: synced) {
+                lyrics.source = .lrclib
+                result.list.append(Self.candidate(lyrics, .lrclib, exact: exact, length: record.duration, duration: duration))
+            } else if let plain = record.plainLyrics, let length = duration ?? record.duration, var lyrics = Lyrics.estimate(plain: plain, duration: length) {
+                lyrics.source = .lrclib
+                result.list.append(Self.candidate(lyrics, .lrclib, exact: exact, length: record.duration, duration: duration))
+            }
+        }
+        return result
     }
 
-    // The order: AMLL's word-timed files that people wrote by hand, then lrc.red, then NetEase's own lyrics, then the
-    // lyrics that lrc.red marks as written by a model.
-    private static let amllRank = 0, lrcRedRank = 1, neteaseRank = 2, lrcRedModelRank = 3
+    private func exactRecord(title: String, artist: String, album: String?, duration: Double?) async throws -> Record? {
+        guard let duration, let album, !album.isEmpty else { return nil }
+        return try await get("get", ["track_name": title, "artist_name": artist, "album_name": album, "duration": String(Int(duration.rounded()))])
+    }
+
+    private func searchRecords(_ song: (title: String, artist: String)) async throws -> [Record] {
+        let records: [Record] = try await get("search", ["track_name": song.title, "artist_name": song.artist]) ?? []
+        if !records.isEmpty { return records }
+        return try await get("search", ["q": "\(song.artist) \(song.title)"]) ?? []
+    }
 
     // MARK: lrc.red
 
@@ -87,7 +190,7 @@ extension LyricsFinder {
         let hits: [Hit]?
     }
 
-    /// Searches lrc.red, then reads the TTML of the matching recordings, which carries the timing and the text.
+    /// Searches lrc.red, then reads the TTML of the closest recordings, which carries the timing and the text.
     private func lrcRed(_ song: (title: String, artist: String), duration: Double?) async -> Candidates {
         var result = Candidates()
         do {
@@ -96,20 +199,27 @@ extension LyricsFinder {
             guard let data = try await fetch(search.url!, agent: Self.lrcRedAgent) else { return result }
             let hits = try JSONDecoder().decode(RedSearch.self, from: data).hits ?? []
             // An ISRC is twelve letters and digits, and it goes into the address of the file.
-            let matches = hits.filter { hit in
-                guard let isrc = hit.isrc, isrc.wholeMatch(of: Self.isrcPattern) != nil else { return false }
-                return Self.matches(title: hit.title, artist: hit.artist, length: hit.duration, song: song, duration: duration)
+            let matches = hits.compactMap { hit -> (hit: RedSearch.Hit, isrc: String, exact: Bool)? in
+                guard let isrc = hit.isrc, isrc.wholeMatch(of: Self.isrcPattern) != nil,
+                      let exact = Self.match(title: hit.title, artist: hit.artist, length: hit.duration, song: song, duration: duration) else { return nil }
+                return (hit, isrc, exact)
             }
-            .sorted { ($0.byModel == true ? 1 : 0) < ($1.byModel == true ? 1 : 0) }
-            for hit in matches.prefix(2) {
-                guard let isrc = hit.isrc, let file = try await fetch(URL(string: "https://lrc.red/s/\(isrc).ttml")!, agent: Self.lrcRedAgent),
-                      var lyrics = TTML.lyrics(file, duration: duration ?? hit.duration) else { continue }
-                lyrics.source = .lrcRed(isrc: isrc)
-                result.list.append((hit.byModel == true ? Self.lrcRedModelRank : Self.lrcRedRank, lyrics))
+            .sorted { a, b in
+                let order = { (m: (hit: RedSearch.Hit, isrc: String, exact: Bool)) in
+                    (m.exact ? 0 : 1, m.hit.byModel == true ? 1 : 0, abs((m.hit.duration ?? 0) - (duration ?? 0)))
+                }
+                return order(a) < order(b)
+            }
+            for match in matches.prefix(2) {
+                guard let file = try await fetch(URL(string: "https://lrc.red/s/\(match.isrc).ttml")!, agent: Self.lrcRedAgent),
+                      var lyrics = TTML.lyrics(file, duration: duration ?? match.hit.duration) else { continue }
+                lyrics.source = .lrcRed(isrc: match.isrc)
+                result.list.append(Self.candidate(lyrics, match.hit.byModel == true ? .lrcRedModel : .lrcRed, exact: match.exact, length: match.hit.duration,
+                                                  duration: duration))
                 if lyrics.timing == .synced { break }
             }
         } catch {
-            result.failed = true
+            result.failed = result.list.isEmpty
         }
         return result
     }
@@ -147,42 +257,50 @@ extension LyricsFinder {
                                  URLQueryItem(name: "limit", value: "10")]
             guard let data = try await fetch(search.url!) else { return result }
             let songs = try JSONDecoder().decode(NeteaseSearch.self, from: data).result?.songs ?? []
-            let ids = songs.filter { found in
+            // This version first, then the others by how close their length is.
+            let ids = songs.compactMap { found -> (id: Int, exact: Bool, length: Double?)? in
                 let artists = (found.ar ?? []).compactMap(\.name).joined(separator: ", ")
-                return Self.matches(title: found.name, artist: artists, length: found.dt.map { $0 / 1000 }, song: song, duration: duration)
-            }.map(\.id)
+                let length = found.dt.map { $0 / 1000 }
+                guard let exact = Self.match(title: found.name, artist: artists, length: length, song: song, duration: duration) else { return nil }
+                return (found.id, exact, length)
+            }
+            .sorted { a, b in
+                (a.exact ? 0 : 1, abs((a.length ?? 0) - (duration ?? 0))) < (b.exact ? 0 : 1, abs((b.length ?? 0) - (duration ?? 0)))
+            }
             guard let first = ids.first else { return result }
 
             async let amll = withTaskGroup(of: (Int, Lyrics?).self) { group in
-                for id in ids.prefix(3) {
+                for match in ids.prefix(3) {
                     group.addTask { [self] in
-                        let url = URL(string: "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/refs/heads/main/ncm-lyrics/\(id).ttml")!
-                        return (id, (try? await fetch(url)).flatMap { TTML.lyrics($0, duration: duration) })
+                        let url = URL(string: "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/refs/heads/main/ncm-lyrics/\(match.id).ttml")!
+                        return (match.id, (try? await fetch(url)).flatMap { TTML.lyrics($0, duration: duration) })
                     }
                 }
                 var found: [(Int, Lyrics)] = []
                 for await (id, lyrics) in group { if let lyrics { found.append((id, lyrics)) } }
-                // The first match on NetEase is the likeliest version.
-                return found.min { a, b in ids.firstIndex(of: a.0)! < ids.firstIndex(of: b.0)! }
+                return found.min { a, b in
+                    (ids.firstIndex { $0.id == a.0 } ?? 0) < (ids.firstIndex { $0.id == b.0 } ?? 0)
+                }
             }
-            async let own: Data? = amllOnly ? nil : fetch(URL(string: "https://music.163.com/api/song/lyric?id=\(first)&lv=1")!)
+            async let own = amllOnly ? nil : try? fetch(URL(string: "https://music.163.com/api/song/lyric?id=\(first.id)&lv=1")!)
 
             if let best = await amll, best.1.timing == .synced {
                 var lyrics = best.1
                 lyrics.source = .amll(neteaseID: best.0)
-                result.list.append((Self.amllRank, lyrics))
+                let match = ids.first { $0.id == best.0 }
+                result.list.append(Self.candidate(lyrics, .amll, exact: match?.exact ?? false, length: match?.length, duration: duration))
             }
-            if let data = try await own, let text = try JSONDecoder().decode(NeteaseLyric.self, from: data).lrc?.lyric {
+            if let data = await own ?? nil, let text = (try? JSONDecoder().decode(NeteaseLyric.self, from: data))?.lrc?.lyric {
                 // NetEase's words for an instrumental: "pure music, please enjoy".
                 if text.contains("纯音乐，请欣赏") {
-                    result.instrumental = true
+                    result.instrumental = first.exact
                 } else if var lyrics = Lyrics.parse(lrc: text).map(Self.withoutCredits), lyrics.lines.contains(where: { !$0.text.isEmpty }) {
-                    lyrics.source = .netease(id: first)
-                    result.list.append((Self.neteaseRank, lyrics))
+                    lyrics.source = .netease(id: first.id)
+                    result.list.append(Self.candidate(lyrics, .netease, exact: first.exact, length: first.length, duration: duration))
                 }
             }
         } catch {
-            result.failed = true
+            result.failed = result.list.isEmpty
         }
         return result
     }
@@ -208,12 +326,15 @@ extension LyricsFinder {
 
     // MARK: Shared
 
-    /// The rule of LRCLIB's search, for every service: the same title once both are cleaned, the same first artist,
-    /// and a length within two seconds of the one that the player reports.
-    static func matches(title: String?, artist: String?, length: Double?, song: (title: String, artist: String), duration: Double?) -> Bool {
-        guard normalized(clean(title ?? "", artist: artist ?? "").title) == normalized(song.title), sameArtist(artist ?? "", song.artist) else { return false }
+    /// Whether a result is the song: nil for another song, true for this version of it, and false for a version
+    /// whose length is off by more than two seconds and less than 45 seconds or a third of the song.
+    static func match(title: String?, artist: String?, length: Double?, song: (title: String, artist: String), duration: Double?) -> Bool? {
+        guard normalized(clean(title ?? "", artist: artist ?? "").title) == normalized(song.title), sameArtist(artist ?? "", song.artist) else { return nil }
         guard let duration else { return true }
-        return length.map { abs($0 - duration) <= 2 } ?? false
+        guard let length else { return false }
+        let off = abs(length - duration)
+        if off <= 2 { return true }
+        return off <= max(45, duration / 3) ? false : nil
     }
 
     /// The answer of a service, nil for a 404. Other answers fail.
@@ -225,20 +346,6 @@ extension LyricsFinder {
         if status == 404 { return nil }
         guard status == 200, data.count <= Self.maxBytes else { throw URLError(.badServerResponse) }
         return data
-    }
-
-    /// The result of `work`, or nil when it takes longer than `seconds`.
-    static func within<T: Sendable>(_ seconds: Double, _ work: @escaping @Sendable () async -> T) async -> T? {
-        await withTaskGroup(of: T?.self) { group in
-            group.addTask { await work() }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(seconds))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
     }
 }
 
