@@ -133,17 +133,13 @@ final class Preferences: ObservableObject {
     @Published var karaokeBackdrop: Bool {
         didSet { defaults.set(karaokeBackdrop, forKey: "karaokeBackdrop") }
     }
-    /// Karaoke shows the record with the song's cover, title, artist and album, rising from the bottom of the glass.
-    @Published var karaokeRecord: Bool {
-        didSet { defaults.set(karaokeRecord, forKey: "karaokeRecord") }
-    }
     /// The base URL of the Whisper server, up to `/v1`.
     @Published var whisperServer: String {
         didSet { defaults.set(whisperServer, forKey: "whisperServer") }
     }
 
     private init() {
-        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "karaokeRecord": true])
+        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always
@@ -159,6 +155,5 @@ final class Preferences: ObservableObject {
         karaokeRestarts = defaults.bool(forKey: "karaokeRestarts")
         rewindEffect = defaults.string(forKey: "rewindEffect").flatMap(RewindEffect.init) ?? .scratch
         karaokeBackdrop = defaults.bool(forKey: "karaokeBackdrop")
-        karaokeRecord = defaults.bool(forKey: "karaokeRecord")
     }
 }

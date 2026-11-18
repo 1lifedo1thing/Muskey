@@ -212,8 +212,6 @@ final class HUDModel: ObservableObject {
     @Published var keysActive = false
     /// The hints are already lighter than the buttons, so 0.45 of that comes close to the buttons that FocusDim dims.
     var hintsOpacity: Double { keysActive ? 1 : 0.45 }
-    /// Karaoke shows the record with the song on it (Settings > Lyrics > Show record in karaoke).
-    @Published var karaokeRecord = true
     /// The pointer is over the key at the top of karaoke, which shows the key row in its place.
     @Published var karaokeKeys = false
     /// The pointer is over the cover in the middle of karaoke's record, which shows the instruments and vocals.
@@ -352,12 +350,11 @@ struct HUDView: View {
                                     isOn: model.lyricsShown, palette: palette, action: model.onLyrics)
                             .transition(.opacity)
                     }
-                    // Karaoke has a button too, besides Return, so that it can be found and clicked like the lyrics.
-                    if model.lyricsShown {
-                        RoundButton(symbol: "music.microphone", help: focus ? "Close karaoke (↩)" : "Open karaoke (↩)", label: "Karaoke",
-                                    key: "↩", isOn: focus, size: focus ? 26 : 20, palette: palette, action: model.onKaraoke)
-                            .transition(.opacity)
-                    }
+                    // Karaoke has a button too, besides Return and ⌘K, so that it can be found and clicked like the lyrics.
+                    // Return opens it while the lyrics show, and ⌘K from the keys.
+                    RoundButton(symbol: "music.microphone", help: focus ? "Close karaoke (↩)" : model.lyricsShown ? "Open karaoke (↩)" : "Open karaoke (⌘K)",
+                                label: "Karaoke", key: model.lyricsShown ? "↩" : "⌘K", isOn: focus, size: focus ? 26 : 20, palette: palette,
+                                action: model.onKaraoke)
                     if !focus {
                         RoundButton(symbol: model.card ? "rectangle" : "rectangle.portrait", help: model.card ? "Switch to the wide layout (S)" : "Switch to the card layout (S)",
                                     label: model.card ? "Wide style" : "Card style", key: "S", palette: palette, action: model.onLayout)
@@ -509,10 +506,10 @@ struct HUDView: View {
 
     /// Karaoke: the lyrics large in a glass as tall as the screen allows, with the key at the top and the record
     /// rising from the bottom edge. The key turns into the key row while the pointer is over it, and the cover in the
-    /// middle of the record shows the instruments and vocals. Without the record, the song and the hints sit under
-    /// the lyrics, dimmed until the pointer is over them.
+    /// middle of the record shows the instruments and vocals. With no song playing there is no record, and the hints
+    /// sit under the lyrics, dimmed until the pointer is over them.
     private func lyricsFocus(_ palette: Palette) -> some View {
-        let track = model.karaokeRecord ? deckTrack : nil
+        let track = deckTrack
         return VStack(spacing: 0) {
             // The key's place in the top row, which the overlay fills.
             Color.clear.frame(height: Self.focusRowHeight).padding(.top, Self.focusRowTop)
@@ -1005,12 +1002,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var karaokeChange: AnyCancellable?
     private var backdropChange: AnyCancellable?
     /// Blurs and dims the screen around the karaoke glass, and a click on it closes karaoke.
-    private lazy var karaokeBackdrop: KaraokeBackdrop = {
-        let backdrop = KaraokeBackdrop()
+    private lazy var karaokeBackdrop: KaraokeBackdrops = {
+        let backdrop = KaraokeBackdrops()
         backdrop.onClick = { [weak self] in
             guard let self, model.lyricsFocus else { return }
             log("click outside karaoke")
-            toggleLyricsFocus()
+            toggleKaraoke()
         }
         return backdrop
     }()
@@ -1110,10 +1107,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log(model.lyricsFocus ? "karaoke" : "lyrics at their usual size")
     }
 
+    /// Karaoke opened from the keys, by its button or ⌘K, which closes back to the keys.
+    private var karaokeFromKeys = false
+
+    /// The karaoke button and ⌘K: karaoke from the keys or from the lyrics, and back to where it opened from.
+    private func toggleKaraoke() {
+        if model.lyricsFocus {
+            let back = karaokeFromKeys
+            model.lyricsFocus = false
+            log("karaoke closed")
+            if back, model.lyricsShown { toggleLyrics() }
+            return
+        }
+        let fromKeys = !model.lyricsShown
+        if fromKeys {
+            toggleLyrics()
+            guard model.lyricsShown else { return }
+        }
+        model.lyricsFocus = true
+        karaokeFromKeys = fromKeys
+        log(fromKeys ? "karaoke from the keys" : "karaoke")
+    }
+
     /// Karaoke mutes the vocals it finds playing, when Settings has it, and plays them again once it closes, by
     /// Return, L or the HUD closing. Vocals that were muted before, or that V changed during karaoke, stay as they are.
     private func karaokeChanged(_ on: Bool) {
         if !on {
+            karaokeFromKeys = false
             model.karaokeKeys = false
             model.karaokeStems = false
             endKaraokeRestart()
@@ -1143,7 +1163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var karaokeRestart: KaraokeRestart?
     private var karaokeRestartTimeout: DispatchWorkItem?
 
-    /// Karaoke starts the song over (Settings > Lyrics > Restart song in karaoke). While the stems play, the output dips
+    /// Karaoke starts the song over (Settings > Lyrics > Karaoke > Start song from beginning). While the stems play, the output dips
     /// while the player moves the song to its start, and the song plays from there with its vocals while the stems of
     /// the start are separated, under the countdown. Then it rewinds to the start without them. Without the stems, the
     /// song only moves to its start.
@@ -1509,7 +1529,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.store(in: &prefChanges)
         prefs.$launchAtLogin.sink { [weak self] in self?.updateLoginItem($0) }.store(in: &prefChanges)
         prefs.$relativeKeys.sink { [weak self] in self?.model.relativeKeys = $0 }.store(in: &prefChanges)
-        prefs.$karaokeRecord.sink { [weak self] in self?.model.karaokeRecord = $0 }.store(in: &prefChanges)
         prefs.$rewindEffect.sink { [weak self] in self?.pitch.fadeSteps = $0 == .fade }.store(in: &prefChanges)
         prefs.$menuBarIcon.combineLatest(prefs.$hotkey).sink { [weak self] _ in
             DispatchQueue.main.async { self?.refreshStatus() }
@@ -1550,7 +1569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onLyrics = { [weak self] in self?.toggleLyrics() }
         model.onKaraoke = { [weak self] in
             if Self.logKeys { self?.log("click karaoke") }
-            self?.toggleLyricsFocus()
+            self?.toggleKaraoke()
         }
         model.onLyricsRetry = { [weak self] in self?.retryLyrics() }
         model.onLyricsEdit = { [weak self] in self?.editLyrics() }
@@ -1674,9 +1693,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: panel, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            karaokeBackdrop.follow(panel)
             // Only a drag: the moves that keep the glass on the screen aren't a new place for it.
             guard NSEvent.pressedMouseButtons & 1 != 0 else { return }
-            self?.panelMoved()
+            panelMoved()
         }
         pitch.onFailure = { [weak self] error in self?.pitchFailed("\(error)") }
         pitch.onStemsFailure = { [weak self] error in self?.stemsFailed("\(error)") }
@@ -2202,6 +2223,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let urls = Self.pastedURLs()
                 guard !urls.isEmpty else { return event }
                 self.open(urls)
+                return nil
+            }
+            // ⌘K opens karaoke, or closes it.
+            if let self, self.model.picking, event.window === self.panel, flags.contains(.command), !flags.contains(.option),
+               Int(event.keyCode) == kVK_ANSI_K {
+                self.toggleKaraoke()
                 return nil
             }
             // Typing in the lyrics editor stays in the editor.
@@ -2919,6 +2946,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
             }
         }
+        if let karaoke = try? HotKey(keyCode: kVK_ANSI_K, modifiers: cmdKey, action: { [weak self] in self?.toggleKaraoke() }) {
+            hoverKeys.append(karaoke)
+        }
     }
 
     /// Starts, changes or stops the pitch change. While the picker is open, going back to the original key keeps
@@ -3166,7 +3196,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -3204,11 +3234,9 @@ extension EnvironmentValues {
                 model.lyricsWriting = variant.hasSuffix("-waiting")
                 model.lyricsWaiting = variant.hasSuffix("-waiting") ? 23 : nil
                 model.lyricsFocus = variant.hasPrefix("-lyrics-focus")
-                // The key row and the instruments as the pointer over the key or the cover shows them, and karaoke
-                // with Show record in karaoke off.
+                // The key row and the instruments as the pointer over the key or the cover shows them.
                 model.karaokeKeys = variant == "-lyrics-focus-keys"
                 model.karaokeStems = variant == "-lyrics-focus-stems" || variant == "-lyrics-focus-separate"
-                model.karaokeRecord = variant != "-lyrics-focus-plain"
                 model.lyricLine = 3
                 // Karaoke's countdown while the vocals are separated: before the song rewinds to where karaoke opened,
                 // before it starts over, and while the model loads.

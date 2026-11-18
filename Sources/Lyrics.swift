@@ -294,7 +294,7 @@ struct KaraokeCountdown: Equatable {
     /// Seconds that the whole countdown lasts, which its ring empties over.
     var total: Int
     /// The song started over when karaoke opened, and rewinds to its beginning after the countdown (Settings > Lyrics >
-    /// Restart song in karaoke).
+    /// Karaoke > Start song from beginning).
     var restart: Bool
     /// Seconds that the song rewinds after the countdown, back to the moment karaoke opened; nil while the model loads.
     var rewind: Int?

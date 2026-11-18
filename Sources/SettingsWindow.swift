@@ -404,13 +404,12 @@ private struct LyricsPane: View {
             Section("Karaoke") {
                 // Muting the vocals takes the common instruments model, so the toggle waits for it.
                 Toggle(isOn: $prefs.karaokeMutesVocals) {
-                    Text("Mute vocals in karaoke")
+                    Text("Mute vocals")
                     if !stemDownload.installed { Text("Needs the common instruments model") }
                 }
                 .disabled(!stemDownload.installed)
-                Toggle("Restart song in karaoke", isOn: $prefs.karaokeRestarts)
-                Toggle("Blur screen in karaoke", isOn: $prefs.karaokeBackdrop)
-                Toggle("Show record in karaoke", isOn: $prefs.karaokeRecord)
+                Toggle("Start song from beginning", isOn: $prefs.karaokeRestarts)
+                Toggle("Blur screen", isOn: $prefs.karaokeBackdrop)
             }
         }
         .formStyle(.grouped)

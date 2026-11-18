@@ -669,7 +669,7 @@ struct KeyHints: View {
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥"], name: otherMode), Hint(keys: ["⇧"], name: "♯ or ♭"),
              Hint(keys: ["←", "→"], name: "fifth"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["K"], name: "lock key"),
-             Hint(keys: ["L"], name: "lyrics"), Hint(keys: ["S"], name: "wide style"), Hint(keys: ["space"], name: "play or pause"),
+             Hint(keys: ["L"], name: "lyrics"), Hint(keys: ["⌘", "K"], name: "karaoke"), Hint(keys: ["S"], name: "wide style"), Hint(keys: ["space"], name: "play or pause"),
              Hint(keys: ["esc"], name: "close")]
         case .stems:
             // The lyrics list V in their own hints, so the tray under them leaves it out.

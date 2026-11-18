@@ -42,6 +42,9 @@ final class KaraokeBackdrop: NSPanel {
 
     override var canBecomeKey: Bool { false }
 
+    /// The screen that the backdrop covers.
+    var coveredFrame: CGRect { frame }
+
     /// Covers the screen of `panel` and fades in under it, or fades out. Karaoke opens with a short ease-out, and the
     /// way back is quicker.
     func show(_ shown: Bool, below panel: NSWindow) {
@@ -63,5 +66,30 @@ final class KaraokeBackdrop: NSPanel {
             guard let self, !shown, alphaValue == 0 else { return }
             orderOut(nil)
         }
+    }
+}
+
+/// The backdrop of karaoke on the HUD's screen. A HUD moved to another screen takes the blur with it: the backdrop fades
+/// out on the old screen while a second one fades in on the new screen.
+final class KaraokeBackdrops {
+    var onClick: () -> Void = {} {
+        didSet { panels.forEach { $0.onClick = onClick } }
+    }
+
+    private let panels = [KaraokeBackdrop(), KaraokeBackdrop()]
+    private var current = 0
+    private var shown = false
+
+    func show(_ on: Bool, below panel: NSWindow) {
+        shown = on
+        panels[current].show(on, below: panel)
+    }
+
+    /// The HUD moved. A backdrop that shows on another screen than the HUD's swaps to the HUD's screen.
+    func follow(_ panel: NSWindow) {
+        guard shown, let screen = panel.screen, screen.frame != panels[current].coveredFrame else { return }
+        panels[current].show(false, below: panel)
+        current = 1 - current
+        panels[current].show(true, below: panel)
     }
 }
