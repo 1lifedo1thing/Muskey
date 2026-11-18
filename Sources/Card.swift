@@ -174,6 +174,7 @@ struct ScrollLifted<Content: View>: View {
     /// Gets the extra lift of the contents in points, and whether a scroll adjusts it now.
     @ViewBuilder let content: (CGFloat, Bool) -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var token = UUID()
 
     var body: some View {
         let active = scroll.region == region
@@ -184,8 +185,8 @@ struct ScrollLifted<Content: View>: View {
             // The lift follows the fingers closely, and the growth and the return settle with a soft spring.
             .animation(.interactiveSpring(response: 0.16, dampingFraction: 0.82), value: lift)
             .animation(.spring(response: 0.3, dampingFraction: 0.66), value: active)
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { scroll.frames[region] = $0 }
-            .onDisappear { scroll.frames[region] = nil }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { scroll.place(region, at: $0, by: token) }
+            .onDisappear { scroll.remove(by: token) }
     }
 }
 

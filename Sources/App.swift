@@ -334,8 +334,13 @@ final class ScrollFeel: ObservableObject {
     @Published var region: ScrollRegion?
     /// How far the fingers moved since the scroll began, from −1 down to 1 up, which lifts what they adjust.
     @Published var lift: CGFloat = 0
-    /// Where each adjustable thing is in the HUD, in the coordinates of the HUD's window from its top left.
-    var frames: [ScrollRegion: CGRect] = [:]
+    /// Where each adjustable thing is in the HUD, in the coordinates of the HUD's window from its top left, by the
+    /// view that shows it. The stems that fade out under the lyrics and the ones that fade in under the keys are both
+    /// there for a moment, and each takes only its own place away.
+    private(set) var frames: [UUID: (region: ScrollRegion, frame: CGRect)] = [:]
+
+    func place(_ region: ScrollRegion, at frame: CGRect, by owner: UUID) { frames[owner] = (region, frame) }
+    func remove(by owner: UUID) { frames[owner] = nil }
 }
 
 struct HUDView: View {
@@ -1259,7 +1264,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Karaoke starting the song over: waiting for the model to be ready, waiting for the player to report the song at
     /// its start since the moment the move was asked for, or started over.
-    private enum KaraokeRestart: Equatable { case waitingForModel, seeking(Date), started }
+    /// The song moves to its start for karaoke, or to the place that a seek key asked for while the stems play:
+    /// waiting for the model, waiting for the player's report of the move, and moved, with the place in seconds.
+    private enum KaraokeRestart: Equatable { case waitingForModel, seeking(Date, Double), started(Double) }
+
+    /// The move goes to the start of the song, as karaoke's, and not to the place of a seek.
+    private var restartsFromStart: Bool {
+        switch karaokeRestart {
+        case let .seeking(_, target), let .started(target): target == 0
+        case .waitingForModel: true
+        case nil: false
+        }
+    }
     private var karaokeRestart: KaraokeRestart?
     private var karaokeRestartTimeout: DispatchWorkItem?
 
@@ -1290,15 +1306,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         beginKaraokeRestart()
     }
 
-    private func beginKaraokeRestart() {
-        log("karaoke: the song starts over")
-        karaokeRestart = .seeking(Date())
+    private func beginKaraokeRestart(to target: Double = 0) {
+        log(target == 0 ? "karaoke: the song starts over" : String(format: "seek: the stems start over at %.1f s", target))
+        karaokeRestart = .seeking(Date(), target)
         pitch.awaitingSeek = true
-        nowPlaying.seek(to: 0)
+        nowPlaying.seek(to: target)
         // A player that ignores the move: the song plays on, and rewinds to where karaoke opened.
         let timeout = DispatchWorkItem { [weak self] in
             guard let self, case .seeking = karaokeRestart else { return }
-            log("karaoke: the player didn't move the song to its start")
+            log(restartsFromStart ? "karaoke: the player didn't move the song to its start" : "seek: the player didn't move the song")
             karaokeRestart = nil
             pitch.awaitingSeek = false
         }
@@ -1309,16 +1325,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The player reports the song at its start after karaoke moved it there: the stems start over from that moment.
     private func checkKaraokeRestart() {
-        guard case let .seeking(asked) = karaokeRestart, let track = nowPlaying.track, track.playing,
-              let position = track.position(at: Date()), position < 3,
+        guard case let .seeking(asked, target) = karaokeRestart, let track = nowPlaying.track, track.playing,
+              let position = track.position(at: Date()), position >= target - 0.5, position < target + 3,
               // A report from before the move would place the start at the wrong moment.
               (track.timestamp ?? .infinity) >= asked.timeIntervalSince1970 - 0.05 else { return }
         karaokeRestartTimeout?.cancel()
-        karaokeRestart = .started
-        log(String(format: "karaoke: the song started over %.2f s ago", position))
+        karaokeRestart = .started(target)
+        log(target == 0 ? String(format: "karaoke: the song started over %.2f s ago", position)
+            : String(format: "seek: the song moved to %.1f s, %.2f s ago", target, position - target))
         // The player's timestamp can be a little early, and the start is better 50 ms late than in the moment
         // before the move.
-        pitch.restartStems(back: max(0, position - 0.05))
+        pitch.restartStems(back: max(0, position - target - 0.05))
         if model.shown { model.rewinds += 1 }
     }
 
@@ -1341,12 +1358,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The countdown starts at the seconds that the song rewinds by, rounded the same way.
         let total = Int(Self.stemsWait.rounded())
         guard case .separating = progress, let waited = pitch.stemsWaited else {
-            return KaraokeCountdown(seconds: nil, total: total, restart: karaokeRestart != nil, rewind: nil)
+            return KaraokeCountdown(seconds: nil, total: total, restart: restartsFromStart, rewind: nil)
         }
         let left = max(1, Int((Self.stemsWait - waited).rounded()))
         // The song rewinds as far as the stems took to start: the estimate, unless they run late.
         let rewind = Int(max(Self.stemsWait, waited + 0.5).rounded())
-        return KaraokeCountdown(seconds: left, total: total, restart: karaokeRestart != nil, rewind: rewind)
+        return KaraokeCountdown(seconds: left, total: total, restart: restartsFromStart, rewind: rewind)
     }
 
     /// The V key, in every layout: the vocals muted, or playing again.
@@ -1963,6 +1980,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The scroll over the tempo or a stem that goes on: what it adjusts, the value when it began, and the fingers'
     /// travel since then, in points, up as positive.
     private var adjusting: (region: ScrollRegion, start: Double, travel: CGFloat)?
+    /// A trackpad scroll that began over the tempo or a stem, until its first points say whether it goes up and down,
+    /// which adjusts, or sideways, which is a swipe.
+    private var adjustCandidate: (region: ScrollRegion, start: Double, travel: CGSize)?
     /// Ends a scroll of a mouse wheel, which has no phases, a moment after its last notch.
     private var adjustEnd: DispatchWorkItem?
     /// The last adjusting scroll ended: its momentum still belongs to it.
@@ -1977,26 +1997,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The momentum after the fingers lift isn't the hand's, so it adjusts nothing, and scrolls nothing else.
         if !event.momentumPhase.isEmpty { return adjusting != nil || Date().timeIntervalSince(adjustedAt) < 0.5 }
         if event.phase == .ended || event.phase == .cancelled {
+            adjustCandidate = nil
             guard adjusting != nil else { return false }
             endAdjusting()
             return true
         }
-        // A trackpad scroll picks what it adjusts when it begins, and a wheel at each notch, keeping the last one
-        // while the pointer is over nothing to adjust.
-        if event.phase == .began || (!precise && event.phase.isEmpty) {
+        let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
+        if event.phase == .began, precise {
             if let region = scrollRegion(at: event), let value = adjustedValue(region) {
-                if adjusting?.region != region {
-                    adjusting = (region, value, 0)
-                    model.scroll.region = region
-                }
-            } else if precise {
                 adjusting = nil
+                adjustCandidate = (region, value, .zero)
+                if Self.logKeys { log("scroll begins over \(region)") }
+            } else if Self.logKeys {
+                log("scroll begins over nothing to adjust (\(model.scroll.frames.count) places)")
             }
         }
+        if var candidate = adjustCandidate {
+            candidate.travel.width += abs(event.scrollingDeltaX)
+            candidate.travel.height += sign * event.scrollingDeltaY
+            guard candidate.travel.width + abs(candidate.travel.height) > 6 else {
+                adjustCandidate = candidate
+                return false
+            }
+            adjustCandidate = nil
+            // Sideways: the swipe has seen every event so far and goes on.
+            if Self.logKeys { log(abs(candidate.travel.height) > candidate.travel.width ? "the scroll adjusts" : "the scroll is a swipe") }
+            guard abs(candidate.travel.height) > candidate.travel.width else { return false }
+            adjusting = (candidate.region, candidate.start, candidate.travel.height)
+            model.scroll.region = candidate.region
+            return applyAdjusting()
+        }
+        // A trackpad scroll picks what it adjusts when it begins, above, and a wheel at each notch, keeping the last
+        // one while the pointer is over nothing to adjust.
+        if event.phase == .began {
+            adjusting = nil
+        } else if !precise, event.phase.isEmpty, let region = scrollRegion(at: event), let value = adjustedValue(region), adjusting?.region != region {
+            adjusting = (region, value, 0)
+            model.scroll.region = region
+        }
         guard var current = adjusting else { return false }
-        let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
         current.travel += sign * event.scrollingDeltaY * (precise ? 1 : 8)
         adjusting = current
+        let handled = applyAdjusting()
+        if !precise {
+            adjustEnd?.cancel()
+            let end = DispatchWorkItem { [weak self] in self?.endAdjusting() }
+            adjustEnd = end
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: end)
+        }
+        return handled
+    }
+
+    /// Sets the tempo or the volume from the travel so far, and the lift that goes with it.
+    private func applyAdjusting() -> Bool {
+        guard let current = adjusting else { return false }
         model.scroll.lift = tanh(current.travel / 60)
         switch current.region {
         case .tempo:
@@ -2005,12 +2059,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case let .stem(stem):
             let volume = min(max(((current.start + Double(current.travel) / 300) * 100).rounded() / 100, 0), 1.5)
             if volume != model.stemVolumes[stem] ?? 1 { setStemVolume(stem, volume) }
-        }
-        if !precise {
-            adjustEnd?.cancel()
-            let end = DispatchWorkItem { [weak self] in self?.endAdjusting() }
-            adjustEnd = end
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: end)
         }
         return true
     }
@@ -2032,7 +2080,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let view = panel.contentView else { return nil }
         let local = view.convert(event.locationInWindow, from: nil)
         let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
-        return model.scroll.frames.first { region, frame in frame.contains(point) && adjustedValue(region) != nil }?.key
+        return model.scroll.frames.values.first { $0.frame.contains(point) && adjustedValue($0.region) != nil }?.region
     }
 
     /// The value that a scroll over `region` starts from, or nil while it can't be adjusted.
@@ -2547,12 +2595,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func seek(to seconds: Double, flash: String) {
         guard let track = nowPlaying.track, track.title?.isEmpty == false else { return }
         if let id = track.bundleID, unseekable.contains(id) { return log("seek: \(id) ignored the last seek, so the keys leave it alone") }
+        // The stems separate from the place of the last move, and karaoke counts down to it, until they play.
+        if case .seeking = karaokeRestart { return log("seek: the last move isn't done yet") }
+        if karaokeRestart == .waitingForModel || pitch.stemsWaited != nil { return log("seek: the stems are still being separated") }
+        // The lyrics delay plays the song 30 seconds behind itself, which a move would undo.
+        guard !lyricsDelayed else { return log("seek: the song plays behind itself while Whisper writes its lyrics") }
         let target = max(0, min(seconds, (track.duration ?? .infinity) - 1))
         let before = track.position(at: Date())
         seekTarget = (track.song, target, Date())
         log(String(format: "seek to %.1f s", target))
-        if track.bundleID == FilePlayer.bundleID { filePlayer.seek(target) } else { nowPlaying.seek(to: target) }
-        pitch.restartStems()
+        if model.stemsEngaged, model.stemsAdjusted, StemModel.prepared {
+            // A muted or quieter stem would be heard again while the stems are separated from the new place. The
+            // output dips while the player moves the song, the song plays as it is from there, and the stems step
+            // back to that place once they are separated, as for karaoke's start.
+            beginKaraokeRestart(to: target)
+        } else {
+            if track.bundleID == FilePlayer.bundleID { filePlayer.seek(target) } else { nowPlaying.seek(to: target) }
+            // Every stem plays as it is, so the song as it plays sounds the same until they are separated again.
+            pitch.restartStems()
+        }
         if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: flash) }
         seekCheck?.cancel()
         let asked = Date()
@@ -2746,6 +2807,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stemsFailed(_ reason: String) {
         log("stems failed: \(reason)")
         model.stemsMuted = []
+        model.stemVolumes = [:]
+        pitch.stemVolumes = [:]
         model.stemsFailed = true
         engageStems(false)
         refreshStatus()
@@ -3456,7 +3519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshStatus() {
         statusItem.update(shift: model.shift, from: shiftBase, heard: shiftBase.map { model.shown($0.transposed(by: model.shift)) }, kept: keptKey,
                           current: currentKey,
-                          stems: model.stemsMuted.isEmpty ? nil : Stem.shown.filter { !model.stemsMuted.contains($0) },
+                          stems: model.stemsAdjusted ? Stem.shown.filter { !model.stemsMuted.contains($0) } : nil,
                           alwaysShown: prefs.menuBarIcon == .always, playing: filePlayer.hasSong, hotkey: prefs.hotkey)
     }
 

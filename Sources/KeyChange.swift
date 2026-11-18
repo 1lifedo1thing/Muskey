@@ -1033,7 +1033,9 @@ final class StatusItem: NSObject {
             menu.addItem(keep)
             if let stems {
                 let item = menuItem("Play All Stems", #selector(playAllStems))
-                item.toolTip = stems.isEmpty ? "Every stem is muted" : "Playing only \(stems.map(\.name).joined(separator: ", "))"
+                // Every stem plays when only their volumes changed.
+                item.toolTip = stems.isEmpty ? "Every stem is muted"
+                    : stems.count == Stem.shown.count ? "Stems at their own volumes" : "Playing only \(stems.map(\.name).joined(separator: ", "))"
                 menu.addItem(item)
             }
             if shift != 0 || kept != nil { menu.addItem(menuItem("Stop Pitch Change", #selector(stop))) }
