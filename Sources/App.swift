@@ -2013,8 +2013,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 adjusting = nil
                 adjustCandidate = (region, value, .zero)
                 if Self.logKeys { log("scroll begins over \(region)") }
-            } else if Self.logKeys {
-                log("scroll begins over nothing to adjust (\(model.scroll.frames.count) places)")
+            } else if Self.logKeys, let view = panel.contentView {
+                let local = view.convert(event.locationInWindow, from: nil)
+                let places = model.scroll.frames.values.map { String(format: "%.0f,%.0f %.0fx%.0f", $0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height) }
+                log(String(format: "scroll begins over nothing to adjust at %.0f,%.0f (flipped %@, height %.0f): ", local.x, local.y, view.isFlipped ? "yes" : "no", view.bounds.height)
+                    + places.joined(separator: " | "))
             }
         }
         if var candidate = adjustCandidate {
@@ -2030,6 +2033,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard abs(candidate.travel.height) > candidate.travel.width else { return false }
             adjusting = (candidate.region, candidate.start, candidate.travel.height)
             model.scroll.region = candidate.region
+            Self.hideToolTip()
             return applyAdjusting()
         }
         // A trackpad scroll picks what it adjusts when it begins, above, and a wheel at each notch, keeping the last
@@ -2039,6 +2043,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if !precise, event.phase.isEmpty, let region = scrollRegion(at: event), let value = adjustedValue(region), adjusting?.region != region {
             adjusting = (region, value, 0)
             model.scroll.region = region
+            Self.hideToolTip()
         }
         guard var current = adjusting else { return false }
         current.travel += sign * event.scrollingDeltaY * (precise ? 1 : 8)
@@ -2066,6 +2071,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if volume != model.stemVolumes[stem] ?? 1 { setStemVolume(stem, volume) }
         }
         return true
+    }
+
+    /// AppKit keeps a tooltip on screen through a scroll that the monitor takes, even after the view drops its text,
+    /// so the one over a stem is put away when the scroll starts to change the volume.
+    private static func hideToolTip() {
+        guard let manager = NSClassFromString("NSToolTipManager") as? NSObject.Type,
+              manager.responds(to: NSSelectorFromString("sharedToolTipManager")),
+              let shared = manager.perform(NSSelectorFromString("sharedToolTipManager"))?.takeUnretainedValue() as? NSObject
+        else { return }
+        for name in ["abortToolTip", "orderOutToolTip"] where shared.responds(to: NSSelectorFromString(name)) {
+            shared.perform(NSSelectorFromString(name))
+            return
+        }
     }
 
     private func endAdjusting() {
@@ -2571,6 +2589,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case kVK_ANSI_P where !option: skip(-1)
         case kVK_LeftArrow where model.seekable && model.lyricsShown && !model.karaokeKeys: seek(by: -5)
         case kVK_RightArrow where model.seekable && model.lyricsShown && !model.karaokeKeys: seek(by: 5)
+        // In karaoke, 0 starts the song over in every player, as karaoke's own start does, unless the stems show.
+        case kVK_ANSI_0 where model.lyricsFocus && !option && !(model.stemsAvailable && model.karaokeStems): startOver()
         // Karaoke's arrows change the key only while its key row shows, so they never change it out of sight.
         case kVK_LeftArrow where model.lyricsFocus && !model.karaokeKeys, kVK_RightArrow where model.lyricsFocus && !model.karaokeKeys: break
         default:
@@ -2587,6 +2607,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var seekCheck: DispatchWorkItem?
     /// Players that left the song where it was after a seek. The seek keys leave them alone until Muskey quits.
     private var unseekable: Set<String> = []
+
+    /// The key 0 in karaoke: the song starts over, at once while the stems are off, and with karaoke's own start
+    /// while they play: the sound dips, the song plays from its start under the countdown, and it rewinds to the start
+    /// without the muted stems.
+    private func startOver() {
+        guard let track = nowPlaying.track, track.title?.isEmpty == false else { return }
+        if let id = track.bundleID, unseekable.contains(id) { return log("start over: \(id) ignored the last seek") }
+        if case .seeking = karaokeRestart { return log("start over: the last move isn't done yet") }
+        guard !lyricsDelayed else { return log("start over: the song plays behind itself while Whisper writes its lyrics") }
+        guard model.stemsEngaged else { return seek(to: 0, flash: "0%") }
+        if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: "0%") }
+        guard StemModel.prepared else {
+            log("karaoke: the song starts over once the model is ready")
+            karaokeRestart = .waitingForModel
+            return
+        }
+        beginKaraokeRestart()
+    }
 
     /// Seeks are instant only while nothing plays behind the song: with the stems separated live, a seek would wait
     /// for them again under a countdown, and the lyrics delay would start over.
@@ -3328,8 +3366,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Return shows the lyrics large, or back at their usual size, and the arrows seek while a seek is instant.
         if model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter].map { ($0, 0) } }
         if model.lyricsShown, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
-        // Karaoke seeks with the number keys.
+        // Karaoke seeks with the number keys, and 0 starts the song over in every player.
         if model.lyricsFocus, model.seekable { keys += Self.digitKeys.map { ($0, 0) } }
+        if model.lyricsFocus { keys.append((kVK_ANSI_0, 0)) }
         // The key row, and karaoke, change the key by its letter.
         if !model.lyricsShown || model.lyricsFocus {
             keys += Self.letters.keys.flatMap { code in modifiers.map { (code, $0) } }

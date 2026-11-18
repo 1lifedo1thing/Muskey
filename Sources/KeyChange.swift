@@ -743,7 +743,8 @@ struct KeyHints: View {
             (style == .footer && seek ? [] : [Hint(keys: ["L"], name: "keys")]) + [Hint(keys: ["↩"], name: focus ? "lyrics" : "karaoke")]
                 + (vocals ? [Hint(keys: ["V"], name: "vocals")] : [])
                 + [Hint(keys: ["space"], name: "play or pause")]
-                + (seek && focus ? [Hint(keys: ["0–9"], name: "seek")] : []) + (seek ? [Hint(keys: ["←", "→"], name: "5 s")] : [])
+                + (focus ? [seek ? Hint(keys: ["0–9"], name: "seek") : Hint(keys: ["0"], name: "start over")] : [])
+                + (seek ? [Hint(keys: ["←", "→"], name: "5 s")] : [])
                 + [Hint(keys: ["N", "P"], name: "skip")]
                 + [Hint(keys: ["K"], name: "lock key"), Hint(keys: ["esc"], name: "close")]
         case .band:
