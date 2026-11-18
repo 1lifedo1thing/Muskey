@@ -180,15 +180,16 @@ extension EnvironmentValues {
     @Entry var recordHovered = false
     /// The buttons show on the record, so the glyph that a play, a pause or a skip flashes on it doesn't.
     @Entry var recordButtonsShown = false
+    /// The pointer is over the cover, which shows this glyph.
+    @Entry var recordGlyph: RecordGlyph?
 }
 
 /// A click on the record plays or pauses the song, as Space does. The pointer over the record shrinks its cover a
-/// little, which widens the rim around it, and shows previous and next as bare glyphs on the rim, at half past ten and
-/// half past one: the tonearm crosses the rim lower on the right, and karaoke shows only the top half of its record.
-/// The cover itself is the play and pause button: the pointer over it tints it faintly and shows the glyph in its
-/// middle. Nothing gets a cap or a plate, so the cover art stays the thing to look at. `diameter` is the record's
-/// width, `label` the cover's width against it, and `lift` how far above the centre the play glyph sits, for
-/// karaoke's record.
+/// little, which widens the rim around it, and shows previous and next as bare glyphs on the rim, on the same line
+/// as the play glyph. On the deck they are drawn over the tonearm. The cover itself is the play and pause button: the
+/// pointer over it tints it faintly and shows the glyph in its middle. Nothing gets a cap or a plate, so the cover art
+/// stays the thing to look at. `diameter` is the record's width, `label` the cover's width against it, and `lift` how
+/// far above the centre the glyphs sit, for karaoke's record, which shows its top half only.
 struct RecordControls: ViewModifier {
     let diameter: CGFloat
     let label: CGFloat
@@ -197,6 +198,7 @@ struct RecordControls: ViewModifier {
     @Environment(\.recordPlaying) private var playing
     @Environment(\.recordHovered) private var previewHover
     @State private var hovering = false
+    @State private var coverHovered = false
     @State private var leave: Task<Void, Never>?
 
     /// The cover's width while the pointer is over the record.
@@ -207,11 +209,17 @@ struct RecordControls: ViewModifier {
     private var spread: CGFloat { diameter * (label * Self.shrink + 1) / 4 }
     private var rim: CGFloat { min(34, diameter * (1 - label * Self.shrink) / 2 * 0.86) }
 
+    private var glyph: RecordGlyph? {
+        guard (hovering && coverHovered) || previewHover else { return nil }
+        return RecordGlyph(symbol: playing ? "pause.fill" : "play.fill", size: min(lift > 0 ? 40 : 54, cover * 0.36), lift: lift)
+    }
+
     func body(content: Content) -> some View {
         let shown = hovering || previewHover
         content
             // The record shrinks its cover, and the glyph that Space flashes on it stays hidden behind the buttons.
             .environment(\.recordButtonsShown, shown)
+            .environment(\.recordGlyph, glyph)
             .preference(key: RecordButtonsShown.self, value: shown)
             .contentShape(Circle())
             .onTapGesture { actions.playPause() }
@@ -223,11 +231,11 @@ struct RecordControls: ViewModifier {
             .overlay {
                 if shown {
                     ZStack {
-                        CoverButton(size: cover, glyphLift: lift, playing: playing, action: actions.playPause)
+                        CoverButton(size: cover, glyph: glyph, playing: playing, action: actions.playPause) { coverHovered = $0 }
                         RimGlyph(symbol: "backward.end.fill", size: rim, help: "Play the previous song", label: "Previous song") { actions.skip(-1) }
-                            .offset(x: -spread * 0.7071, y: -spread * 0.7071)
+                            .offset(x: -spread, y: -lift)
                         RimGlyph(symbol: "forward.end.fill", size: rim, help: "Play the next song", label: "Next song") { actions.skip(1) }
-                            .offset(x: spread * 0.7071, y: -spread * 0.7071)
+                            .offset(x: spread, y: -lift)
                     }
                     .onHover(perform: hover)
                     .transition(.opacity)
@@ -253,62 +261,49 @@ struct RecordButtonsShown: PreferenceKey {
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
 
-/// How the play and pause glyph keeps readable on any cover, for `--render` to compare.
-enum CoverGlyphStyle: String, CaseIterable {
-    /// White, with a soft dark halo.
-    case halo
-    /// White, drawn in the difference blend mode, which turns it into the opposite of the cover under it.
-    case difference
+/// The play or pause glyph in the middle of the cover, drawn in the difference blend mode: white turned into the
+/// opposite of the cover under it, so it reads on a white cover as on a black one. The spinning record draws it in its
+/// own layer tree, since SwiftUI can't blend with the layer that turns.
+struct RecordGlyph: Equatable {
+    let symbol: String
+    let size: CGFloat
+    /// Points above the middle of the cover, on karaoke's record.
+    let lift: CGFloat
+
+    /// The triangle's weight sits left of its box, so it moves right to look centred.
+    var nudge: CGFloat { symbol == "play.fill" ? size * 0.07 : 0 }
+
+    var image: some View {
+        Image(systemName: symbol).font(.system(size: size, weight: .bold)).foregroundStyle(.white)
+    }
 }
 
-extension EnvironmentValues {
-    @Entry var coverGlyphStyle = CoverGlyphStyle.difference
-}
-
-/// The shrunk cover as the play and pause button: a faint tint over it and the glyph in its middle while the pointer
-/// is over it, and nothing otherwise.
+/// The shrunk cover as the play and pause button: a faint tint over it and a thin ring while the pointer is over it,
+/// and nothing otherwise. The glyph is drawn with the record, except in `--render`, where the record doesn't turn.
 private struct CoverButton: View {
     let size: CGFloat
-    let glyphLift: CGFloat
+    let glyph: RecordGlyph?
     let playing: Bool
     let action: () -> Void
-    @Environment(\.recordHovered) private var previewHover
-    @Environment(\.coverGlyphStyle) private var glyphStyle
-    @State private var hovered = false
+    let hover: (Bool) -> Void
+    @Environment(\.renderingPreview) private var renderingPreview
 
     var body: some View {
-        let lit = hovered || previewHover
+        let lit = glyph != nil
         Button(action: action) {
             ZStack {
                 Circle().fill(.black.opacity(lit ? 0.24 : 0))
                 Circle().strokeBorder(.white.opacity(lit ? 0.22 : 0), lineWidth: 1)
-                if lit { glyph.transition(.opacity) }
             }
             .frame(width: size, height: size)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .focusable(false)
-        .onHover { hovered = $0 }
+        .onHover(perform: hover)
         .animation(.easeOut(duration: 0.12), value: lit)
         .help(playing ? "Pause" : "Play")
         .accessibilityLabel(playing ? "Pause" : "Play")
-    }
-
-    @ViewBuilder private var glyph: some View {
-        let image = Image(systemName: playing ? "pause.fill" : "play.fill")
-            .font(.system(size: min(glyphLift > 0 ? 40 : 54, size * 0.3), weight: .bold))
-            .foregroundStyle(.white)
-            // The triangle's weight sits left of its box, so it moves right to look centred.
-            .offset(x: playing ? 0 : size * 0.02, y: -glyphLift)
-        switch glyphStyle {
-        case .halo:
-            image
-                .shadow(color: .black.opacity(0.55), radius: 6)
-                .shadow(color: .black.opacity(0.35), radius: 1.5)
-        case .difference:
-            image.blendMode(.difference)
-        }
     }
 }
 
@@ -428,6 +423,7 @@ private struct Record: View {
     /// The spinning record draws the vinyl and the cover apart, so the cover can shrink while it turns with it.
     var part = Part.whole
     @Environment(\.recordButtonsShown) private var buttonsShown
+    @Environment(\.recordGlyph) private var glyph
 
     var body: some View {
         GeometryReader { geometry in
@@ -450,6 +446,9 @@ private struct Record: View {
                         cover(side * label)
                             .scaleEffect(buttonsShown ? RecordControls.shrink : 1)
                             .animation(.easeOut(duration: 0.18), value: buttonsShown)
+                        if let glyph {
+                            glyph.image.blendMode(.difference).offset(x: glyph.nudge, y: -glyph.lift)
+                        }
                     }
                 }
                 .frame(width: side, height: side)
@@ -515,6 +514,7 @@ private struct SpinningRecord: NSViewRepresentable {
             view.cover.contents = cover.cgImage
         }
         view.shrunk = context.environment.recordButtonsShown
+        view.show(context.environment.recordGlyph)
         let rewinds = context.environment.recordRewinds
         if let seen = context.coordinator.rewinds, rewinds > seen { view.rewind() }
         context.coordinator.rewinds = rewinds
@@ -527,6 +527,9 @@ private struct SpinningRecord: NSViewRepresentable {
         let record = CALayer()
         /// The cover, in a layer of its own that turns with the record and shrinks while the pointer is over it.
         let cover = CALayer()
+        /// The play or pause glyph, which stays upright over the turning cover and blends with it.
+        private let glyph = CALayer()
+        private var shownGlyph: RecordGlyph?
         private let label: CGFloat
 
         init(period: Double, label: CGFloat) {
@@ -538,6 +541,10 @@ private struct SpinningRecord: NSViewRepresentable {
             cover.contentsGravity = .resizeAspect
             layer?.addSublayer(record)
             record.addSublayer(cover)
+            glyph.compositingFilter = "differenceBlendMode"
+            glyph.contentsGravity = .center
+            glyph.opacity = 0
+            layer?.addSublayer(glyph)
             // Clockwise, one turn every `period` seconds.
             let turn = CABasicAnimation(keyPath: "transform.rotation.z")
             turn.fromValue = 0
@@ -559,7 +566,40 @@ private struct SpinningRecord: NSViewRepresentable {
             record.position = CGPoint(x: bounds.midX, y: bounds.midY)
             cover.bounds = CGRect(x: 0, y: 0, width: bounds.width * label, height: bounds.height * label)
             cover.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            placeGlyph()
             CATransaction.commit()
+        }
+
+        /// Shows the glyph over the cover, or fades it out with nil.
+        func show(_ new: RecordGlyph?) {
+            guard new != shownGlyph else { return }
+            if let new, new.symbol != shownGlyph?.symbol || new.size != shownGlyph?.size {
+                let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+                let renderer = ImageRenderer(content: new.image)
+                renderer.scale = scale
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                glyph.contents = renderer.cgImage
+                glyph.contentsScale = scale
+                if let image = renderer.cgImage {
+                    glyph.bounds = CGRect(x: 0, y: 0, width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+                }
+                CATransaction.commit()
+            }
+            if let new { shownGlyph = new }
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.12)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+            placeGlyph()
+            glyph.opacity = new == nil ? 0 : 1
+            CATransaction.commit()
+            if new == nil { shownGlyph = nil }
+        }
+
+        private func placeGlyph() {
+            let lift = shownGlyph?.lift ?? 0
+            // The view isn't flipped, so a lift is a move up in its coordinates.
+            glyph.position = CGPoint(x: bounds.midX + (shownGlyph?.nudge ?? 0), y: bounds.midY + lift)
         }
 
         var shrunk = false {
@@ -835,7 +875,8 @@ struct KaraokeRecord<Footer: View>: View {
                 .frame(width: side, height: side)
                 // On the part of the record above the edge of the glass, beside the cover. Over the cover's hover area
                 // too, which would take the clicks of the middle button otherwise.
-                // The play glyph sits in the top half of the cover, which shows above the hints along the edge of the glass.
+                // The glyphs sit in the top half of the cover and of the rim, which show above the hints along the edge of the
+                // glass.
                 .modifier(RecordControls(diameter: side, label: Self.label, lift: side * Self.label * RecordControls.shrink * 0.3))
             }
             .frame(width: side + 2 * Self.margin, height: side + 2 * Self.margin)

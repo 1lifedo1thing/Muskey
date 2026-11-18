@@ -3166,7 +3166,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-skip-halo", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -3263,7 +3263,6 @@ extension EnvironmentValues {
                 .environment(\.renderingPreview, true)
                 .environment(\.cornerLabelsShown, variant == "-labels")
                 .environment(\.recordHovered, variant.contains("-skip"))
-                .environment(\.coverGlyphStyle, variant.hasSuffix("-halo") ? .halo : .difference)
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
