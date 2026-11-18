@@ -125,14 +125,16 @@ final class KeyAnalyzer {
         }
     }
 
-    func finish(_ completion: @escaping (EKResult, Float) -> Void) {
+    /// The final key, the peak, and the tempo of everything heard, which only the final estimate looks for.
+    func finish(_ completion: @escaping (EKResult, Float, Double?) -> Void) {
         queue.async { [self] in
             guard !finished else { return }
             finished = true
             let result = analyze()
+            let tempo = peak >= 0.0005 ? TempoDetector.bpm(samples, sourceRate: rate)?.bpm : nil
             if let wavPath { writeWAV(samples, rate: UInt32(rate.rounded()), to: wavPath) }
             let peak = peak
-            DispatchQueue.main.async { completion(result, peak) }
+            DispatchQueue.main.async { completion(result, peak, tempo) }
         }
     }
 
@@ -180,6 +182,9 @@ final class HUDModel: ObservableObject {
     @Published var pending: DetectedKey?
     /// The song that the Mac plays and its cover, for the record beside the key.
     @Published var track: NowPlaying.Track?
+    /// The tempo of a song, from a listen or from Noiseblend. It shows while that song plays.
+    @Published var tempo: SongTempo?
+    var shownTempo: SongTempo? { tempo.flatMap { $0.song == track?.song ? $0 : nil } }
     /// The song plays, as the record and its tonearm show it. Space changes it before the player reports the change.
     @Published var playing = false
     /// The last play or pause, for the glyph on the record or over the lyrics.
@@ -1262,6 +1267,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    /// The tempo known for a song without a listen: the one that a full listen found, or else Noiseblend's.
+    private func knownTempo(for song: [String?]) -> SongTempo? {
+        if prefs.rememberKeys, let bpm = keyCache.bpm(for: song) { return SongTempo(song: song, bpm: bpm) }
+        if prefs.onlineKeys, let bpm = keyLookup.bpm(for: song) { return SongTempo(song: song, bpm: bpm, online: true) }
+        return nil
+    }
+
+    /// The pill under the key shows the tempo of the song that plays, once it is known.
+    private func showTempo() {
+        let song = model.track?.song
+        guard model.tempo?.song != song || model.tempo == nil else { return }
+        let known = song.flatMap(knownTempo)
+        if model.tempo != known { model.tempo = known }
+    }
+
+    /// A listen heard `bpm` in `song`. Noiseblend's tempo picks the level at which the beats are counted, and the
+    /// tempo is kept with the song's key.
+    private func heardTempo(_ bpm: Double?, in song: [String?]?) -> Double? {
+        guard let bpm else { return nil }
+        let online = prefs.onlineKeys ? song.flatMap(keyLookup.bpm) : nil
+        let shown = TempoDetector.reconcile(heard: bpm, online: online)
+        log(String(format: "tempo: heard %.1f BPM%@", bpm, online.map { String(format: ", Noiseblend %.1f, shown %.1f", $0, shown) } ?? ""))
+        if model.track?.song == song { model.tempo = SongTempo(song: song, bpm: shown) }
+        return shown
+    }
+
     /// Asks Noiseblend for the key of a song that a listen starts on. The answer shows in the menu bar unless a listen
     /// found the song's key first, and a listen in the HUD starts on it if no estimate came before it. The listen goes
     /// on either way, and its key counts over Noiseblend's.
@@ -1269,7 +1300,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard prefs.onlineKeys, Self.lyricsTest == nil else { return }
         let song = track.song
         keyLookup.find(track) { [weak self] key in
-            guard let self, key != nil, nowPlaying.track?.song == song else { return }
+            guard let self, nowPlaying.track?.song == song else { return }
+            showTempo()
+            guard key != nil else { return }
             if songKey?.song != song, let known = knownKey(for: song) { songKey = (song, known.key, true, known.online) }
             startOnKnownKey()
         }
@@ -1315,7 +1348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoTap?.stop()
         autoTap = nil
         let current = autoSession
-        analyzer.finish { [weak self] result, peak in
+        analyzer.finish { [weak self] result, peak, bpm in
             guard let self, autoSession == current else { return }
             autoAnalyzer = nil
             autoSong = nil
@@ -1326,7 +1359,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard nowPlaying.track?.song == song else { return syncSongKey() }
             log(String(format: "always listening: %@  strength %.3f", key.name, result.strength))
             autoTries[song] = nil
-            if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, for: song)) }
+            let tempo = heardTempo(bpm, in: song)
+            if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, bpm: tempo, for: song)) }
             keyLookup.heard(key, for: song)
             // A pitch change that runs on into this song starts from its key.
             if pitch.running, keptKey == nil { shiftBase = key }
@@ -1390,6 +1424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // that Space asked for already shows, and a report against it is from before the player took it.
         let sameSong = model.track?.song == nowPlaying.track?.song
         if model.track != nowPlaying.track { model.track = nowPlaying.track }
+        showTempo()
         if model.artwork !== nowPlaying.artwork { model.artwork = nowPlaying.artwork }
         if let track = nowPlaying.track, playGuess == nil || playGuess?.playing == track.playing {
             showPlaying(track.playing, flash: sameSong && Date().timeIntervalSince(shownAt) > 0.6)
@@ -1450,6 +1485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let spec = Self.stringOption("--lyrics-lookup") { return lookUpLyrics(spec) }
         if let spec = Self.stringOption("--key-lookup") { return lookUpKeyForTesting(spec) }
+        if let path = Self.stringOption("--tempo") { return tempoForTesting(path) }
         if let path = Self.stringOption("--whisper-file") { return WhisperTest.run(file: path, model: Self.stringOption("--whisper-model") ?? "") }
         if let path = Self.stringOption("--lyrics-transcribe") {
             return LyricsTranscribeTest.run(file: path, server: Self.stringOption("--whisper-server"), vocals: !TestFlags.has("--no-vocals"))
@@ -1494,6 +1530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyCache.onForget = { [weak self] id in
             guard let self else { return }
             if let id { keyLookup.forget(id) } else { keyLookup.clear() }
+            if let song = model.tempo?.song, id == nil || id == KeyCache.id(song) { model.tempo = nil }
             guard let song = songKey?.song, id == nil || id == KeyCache.id(song) else { return }
             songKey = nil
             autoTries[song] = nil
@@ -2070,7 +2107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let current = session
         let elapsed = Date().timeIntervalSince(startedAt)
 
-        analyzer.finish { [self] result, peak in
+        analyzer.finish { [self] result, peak, bpm in
             guard session == current else { return }
             let target = follow
             let byPerson = followByPerson
@@ -2094,8 +2131,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             log(String(format: "%@ (relative %@)  strength %.3f  %.1fs", key.name, key.relative.name, result.strength, elapsed))
             if let remembered, remembered != key { log("the full listen found \(key.name), not the \(remembered.name) that it started on") }
+            let tempo = heardTempo(bpm, in: listenSong ?? nowPlaying.track?.song)
             if let song = listenSong, let track = nowPlaying.track, track.playing, track.song == song {
-                if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, for: song)) }
+                if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, bpm: tempo, for: song)) }
                 keyLookup.heard(key, for: song)
             }
             updateHoverKeys()
@@ -2788,6 +2826,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// `--tempo FILE` finds the tempo of the part of FILE that a listen would hear: `--seconds` (20 by default) from
+    /// `--tempo-at` (45 by default). Prints the tempo and quits.
+    private func tempoForTesting(_ path: String) {
+        let seconds = Self.stringOption("--seconds").flatMap(Double.init) ?? 20
+        let start = Self.stringOption("--tempo-at").flatMap(Double.init) ?? 45
+        exit(TempoDetector.printTempo(of: path, from: start, seconds: seconds))
+    }
+
     /// `--lyrics-test FILE` plays a made-up song with the lyrics in FILE (LRC, or plain text for estimated timing),
     /// from `--lyrics-at` seconds or from `--lyrics-since`, and opens the lyrics, for testing them where nothing plays. `--lyrics-test failed`
     /// starts on a request that failed, and its Retry asks LRCLIB for the made-up song.
@@ -3197,6 +3243,8 @@ extension EnvironmentValues {
             model.keepKey = keep
             model.track = song
             model.artwork = artwork
+            // A finished listen found the tempo of the song, and a listen still running hasn't yet.
+            if phase == .done { model.tempo = SongTempo(song: song?.song, bpm: 124) }
             // The arm on the record, or lifted off it with the pause glyph that Space shows.
             model.playing = !variant.hasSuffix("-paused")
             if variant.hasSuffix("-paused") { model.playFlash = PlayFlash(playing: false, id: 1) }

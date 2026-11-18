@@ -91,8 +91,8 @@ struct TitleLine: View {
     }
 }
 
-/// The pills under the title: the shift and the move that Lock Key made, the kept key that a new song waits for, or
-/// a pitch change that failed.
+/// The pills under the title: the song's tempo, then the shift and the move that Lock Key made, or the kept key that
+/// a new song waits for. A pitch change that failed takes the place of all of them.
 struct ShiftPills: View {
     @ObservedObject var model: HUDModel
     let palette: Palette
@@ -100,22 +100,30 @@ struct ShiftPills: View {
     var body: some View {
         if model.pitchFailed {
             ShiftPill(text: "Pitch change failed", palette: palette)
-        } else if let pending = model.pending {
-            // In the red of Lock Key, which turns it into the move once the song's key is found.
-            ShiftPill(text: "→ \(pending.name)", hue: .red, waiting: true, palette: palette)
-                .transition(.opacity)
-        } else if model.shift != 0 || model.moved != nil {
+        } else {
             HStack(spacing: 6) {
-                if model.shift != 0 {
-                    ShiftPill(text: Shift.text(model.shift), hue: model.shift > 0 ? StripColors.up : StripColors.down, palette: palette)
-                        .contentTransition(.numericText(value: Double(model.shift)))
+                if let tempo = model.shownTempo {
+                    ShiftPill(text: tempo.text, palette: palette)
+                        .contentTransition(.numericText(value: tempo.bpm))
+                        .transition(.opacity)
                 }
-                // In the red of Lock Key, which made the change.
-                if let moved = model.moved {
-                    ShiftPill(text: moved, hue: .red, palette: palette)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                if let pending = model.pending {
+                    // In the red of Lock Key, which turns it into the move once the song's key is found.
+                    ShiftPill(text: "→ \(pending.name)", hue: .red, waiting: true, palette: palette)
+                        .transition(.opacity)
+                } else {
+                    if model.shift != 0 {
+                        ShiftPill(text: Shift.text(model.shift), hue: model.shift > 0 ? StripColors.up : StripColors.down, palette: palette)
+                            .contentTransition(.numericText(value: Double(model.shift)))
+                    }
+                    // In the red of Lock Key, which made the change.
+                    if let moved = model.moved {
+                        ShiftPill(text: moved, hue: .red, palette: palette)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    }
                 }
             }
+            .animation(.snappy(duration: 0.25), value: model.shownTempo)
         }
     }
 }

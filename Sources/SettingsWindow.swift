@@ -274,7 +274,7 @@ private struct ListeningPane: View {
             Section("Song keys") {
                 Toggle(isOn: $prefs.onlineKeys) {
                     Text("Online key lookup")
-                    Text("Fetch keys from noiseblend.com by song title and artist")
+                    Text("Fetch keys and tempos from noiseblend.com by song title and artist")
                 }
                 Toggle(isOn: $prefs.rememberKeys) {
                     Text("Remember song keys")
@@ -365,6 +365,7 @@ private struct SongKeyRow: View {
                 }
             }
             Spacer(minLength: 12)
+            if let bpm = song.bpm { Pill(text: "\(Int(bpm.rounded())) BPM", color: .secondary) }
             Pill(text: song.key.name, color: .secondary)
             Button(action: forget) { Image(systemName: "trash") }
                 .buttonStyle(.borderless)

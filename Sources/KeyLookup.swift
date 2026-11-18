@@ -1,9 +1,9 @@
 import Foundation
 
-/// Keys looked up on noiseblend.com by the title, artist, album and length that macOS's Now Playing info reports.
-/// Noiseblend answers with the key that Spotify lists for the song, so a song that Muskey hasn't heard before can
-/// start on its key before the first estimate of a listen. The listen still runs, and a key that a full listen found
-/// counts over a looked-up one.
+/// Keys and tempos looked up on noiseblend.com by the title, artist, album and length that macOS's Now Playing info
+/// reports. Noiseblend answers with the key and tempo that Spotify lists for the song, so a song that Muskey hasn't
+/// heard before can start on its key before the first estimate of a listen. The listen still runs, and a key that a
+/// full listen found counts over a looked-up one.
 ///
 /// A song is asked for once. Answers are kept in `~/Library/Application Support/Muskey/online-keys.json`, and a song
 /// that Noiseblend doesn't know is asked for again after 30 days. A failed request is kept nowhere, so the song is
@@ -16,6 +16,13 @@ final class KeyLookup: @unchecked Sendable {
         var date: Date
         /// A full listen found another key, so Noiseblend's key is not used again.
         var overruled: Bool?
+        /// Spotify's tempo in beats per minute, or 0 when Noiseblend gave none. Nil in an answer kept before Muskey
+        /// read tempos, and a song with such an answer is asked for once more.
+        var tempo: Double?
+
+        /// Noiseblend found the song with a key, even if a listen overruled the key since.
+        var found: Bool { pitchClass != nil }
+        var bpm: Double? { tempo.flatMap { $0 > 0 ? $0 : nil } }
 
         var key: DetectedKey? {
             guard overruled != true, let pitchClass, (0 ..< 12).contains(pitchClass), let minor else { return nil }
@@ -24,7 +31,7 @@ final class KeyLookup: @unchecked Sendable {
     }
 
     enum Answer: Equatable {
-        case found(DetectedKey)
+        case found(DetectedKey, tempo: Double?)
         /// Noiseblend doesn't know the song, or knows it without a key.
         case unknown
         /// Too many requests: none until the delay is over.
@@ -63,12 +70,17 @@ final class KeyLookup: @unchecked Sendable {
         KeyCache.id(song).flatMap { load()[$0]?.key }
     }
 
+    /// The tempo that Noiseblend gave for the song before. It stays known after a listen overruled the key.
+    func bpm(for song: [String?]) -> Double? {
+        KeyCache.id(song).flatMap { load()[$0]?.bpm }
+    }
+
     /// Calls `done` with the song's key, from an earlier answer or from a request, or with nil when Noiseblend doesn't
     /// know it or the request failed. A song that is asked for while its request runs waits for the same answer.
     func find(_ track: NowPlaying.Track, done: @escaping (DetectedKey?) -> Void) {
         // A title alone matches too many songs, so a song without an artist is never asked for.
         guard let id = KeyCache.id(track.song), let title = track.title, let artist = track.artist, !artist.isEmpty else { return done(nil) }
-        if let entry = load()[id], entry.key != nil || Date().timeIntervalSince(entry.date) < Self.askAgainAfter {
+        if let entry = load()[id], entry.found ? entry.tempo != nil : Date().timeIntervalSince(entry.date) < Self.askAgainAfter {
             return done(entry.key)
         }
         guard Date() >= pausedUntil else { return done(nil) }
@@ -83,12 +95,12 @@ final class KeyLookup: @unchecked Sendable {
                 let elapsed = Date().timeIntervalSince(started)
                 var key: DetectedKey?
                 switch answer {
-                case let .found(found):
-                    key = found
-                    store(found, for: id)
-                    log?(String(format: "online key: %@ (%.2fs)", found.name, elapsed))
+                case let .found(found, tempo):
+                    store(found, tempo: tempo, for: id)
+                    key = load()[id]?.key
+                    log?(String(format: "online key: %@, %@ (%.2fs)", found.name, tempo.map { String(format: "%.1f BPM", $0) } ?? "no tempo", elapsed))
                 case .unknown:
-                    store(nil, for: id)
+                    store(nil, tempo: nil, for: id)
                     log?(String(format: "online key: song not known (%.2fs)", elapsed))
                 case let .wait(seconds):
                     pausedUntil = Date() + seconds
@@ -156,6 +168,7 @@ final class KeyLookup: @unchecked Sendable {
         let key: String?
         let pitchClass: Int?
         let minor: Bool?
+        let tempo: Double?
     }
 
     /// What an answer of Noiseblend means. Only a 404 says that the song is unknown: any other failure is asked
@@ -166,19 +179,22 @@ final class KeyLookup: @unchecked Sendable {
             guard body.count <= maxBytes, let response = try? JSONDecoder().decode(Response.self, from: body) else {
                 return .failed("unreadable answer")
             }
+            let tempo = response.tempo.flatMap { $0.isFinite && (20 ... 400).contains($0) ? $0 : nil }
             if let pitchClass = response.pitchClass, (0 ..< 12).contains(pitchClass), let minor = response.minor {
-                return .found(DetectedKey(pitchClass: pitchClass, minor: minor))
+                return .found(DetectedKey(pitchClass: pitchClass, minor: minor), tempo: tempo)
             }
-            return response.key.flatMap(DetectedKey.init(camelot:)).map(Answer.found) ?? .unknown
+            return response.key.flatMap(DetectedKey.init(camelot:)).map { .found($0, tempo: tempo) } ?? .unknown
         case 404: return .unknown
         case 429: return .wait(retryAfter.flatMap(TimeInterval.init).map { min(max($0, 1), 3600) } ?? 60)
         default: return .failed("HTTP \(status)")
         }
     }
 
-    private func store(_ key: DetectedKey?, for id: String) {
+    /// Keeps the answer. A song asked for again only for its tempo keeps a listen's overruling of the same key.
+    private func store(_ key: DetectedKey?, tempo: Double?, for id: String) {
         var entries = load()
-        entries[id] = Entry(pitchClass: key?.pitchClass, minor: key?.minor, date: Date())
+        let overruled = entries[id].flatMap { $0.pitchClass == key?.pitchClass && $0.minor == key?.minor ? $0.overruled : nil }
+        entries[id] = Entry(pitchClass: key?.pitchClass, minor: key?.minor, date: Date(), overruled: overruled, tempo: key == nil ? nil : tempo ?? 0)
         if entries.count > Self.limit {
             for (old, _) in entries.sorted(by: { $0.value.date < $1.value.date }).prefix(entries.count - Self.limit) { entries[old] = nil }
         }

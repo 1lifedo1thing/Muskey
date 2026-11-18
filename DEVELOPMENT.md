@@ -44,9 +44,15 @@ The hotkey is registered with Carbon's `RegisterEventHotKey`, which works withou
 
 ### Keys from Noiseblend
 
-With **Online key lookup** turned on in Settings, Muskey asks [Noiseblend](https://www.noiseblend.com) for the key of a song that it hasn't heard before. Muskey sends the title, artist, album and length of the song, and Noiseblend answers with the key that Spotify lists for it.
+With **Online key lookup** turned on in Settings, Muskey asks [Noiseblend](https://www.noiseblend.com) for the key of a song that it hasn't heard before. Muskey sends the title, artist, album and length of the song, and Noiseblend answers with the key and the tempo that Spotify lists for it.
 
 Muskey asks once for each song. The listen still runs, and when the listen finds another key, Muskey uses that key.
+
+### Tempo
+
+At the end of a listen, Muskey finds the tempo of what it heard with Essentia's RhythmExtractor2013, and shows it in a pill under the key, as in `124 BPM`. The tempo is remembered with the key of the song.
+
+Spotify measures the tempo over the whole song, while a listen hears 10 to 30 seconds of it. A listen sometimes counts half or double the beats that people count along to. So when Noiseblend knows the tempo of the song, and the listen found the same tempo or half, double, a third or three times of it, the pill shows Spotify's tempo.
 
 The setting is off by default, for people who want every key found on their own Mac.
 
@@ -127,6 +133,7 @@ Builds made with `make` or `make install` take these flags, and release builds i
 | Flag | Action |
 |---|---|
 | `--key-lookup "Title\|Artist\|Album\|Seconds"` | Ask Noiseblend for the key of that song, print the answer and quit |
+| `--tempo FILE` | Print the tempo of the part of FILE that a listen would hear, and quit. `--tempo-at S` moves the start from 45 seconds, and `--seconds S` sets the length |
 | `--render DIR` | Write a PNG of each HUD state and quit |
 | `--log-keys` | Log every key and click that reaches the HUD, with the host time of each line |
 

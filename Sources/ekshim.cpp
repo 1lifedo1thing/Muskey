@@ -3,6 +3,7 @@
 #include <essentia/algorithmfactory.h>
 #include <essentia/essentia.h>
 
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>
@@ -16,13 +17,16 @@ static const std::map<std::string, int> pitchClasses = {
     {"Gb", 6}, {"G", 7}, {"G#", 8}, {"Ab", 8}, {"A", 9}, {"A#", 10}, {"Bb", 10}, {"B", 11},
 };
 
+static void initEssentia() {
+    if (essentia::isInitialized()) return;
+    essentia::infoLevelActive = false;
+    essentia::warningLevelActive = false;
+    essentia::init();
+}
+
 EKResult ek_key(const float *samples, unsigned int count, double rate, const char *profile) {
     EKResult result = {-1, 0, 0};
-    if (!essentia::isInitialized()) {
-        essentia::infoLevelActive = false;
-        essentia::warningLevelActive = false;
-        essentia::init();
-    }
+    initEssentia();
 
     std::vector<Real> audio(samples, samples + count);
     std::string key, scale;
@@ -44,5 +48,37 @@ EKResult ek_key(const float *samples, unsigned int count, double rate, const cha
     result.pitchClass = found->second;
     result.minor = scale == "minor";
     result.strength = strength;
+    return result;
+}
+
+EKTempo ek_tempo(const float *samples, unsigned int count, const char *method) {
+    EKTempo result = {0, 0};
+    initEssentia();
+
+    std::vector<Real> audio(samples, samples + count);
+    Real bpm = 0, confidence = 0;
+    try {
+        if (std::string(method) == "percival") {
+            std::unique_ptr<Algorithm> estimator(AlgorithmFactory::create("PercivalBpmEstimator", "sampleRate", 44100));
+            estimator->input("signal").set(audio);
+            estimator->output("bpm").set(bpm);
+            estimator->compute();
+        } else {
+            std::vector<Real> ticks, estimates, intervals;
+            std::unique_ptr<Algorithm> extractor(AlgorithmFactory::create("RhythmExtractor2013", "method", std::string(method)));
+            extractor->input("signal").set(audio);
+            extractor->output("bpm").set(bpm);
+            extractor->output("ticks").set(ticks);
+            extractor->output("confidence").set(confidence);
+            extractor->output("estimates").set(estimates);
+            extractor->output("bpmIntervals").set(intervals);
+            extractor->compute();
+        }
+    } catch (const std::exception &) {
+        return result;
+    }
+    if (!(bpm > 0) || !std::isfinite(bpm)) return result;
+    result.bpm = bpm;
+    result.confidence = std::isfinite(confidence) ? confidence : 0;
     return result;
 }

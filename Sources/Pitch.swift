@@ -735,8 +735,9 @@ enum PitchSelfTest {
         let misread = keys.filter { DetectedKey(camelot: $0.camelot) != $0 }.map(\.name)
         report(misread.isEmpty, "camelot codes    24 keys read back\(misread.isEmpty ? "" : ", wrong: " + misread.joined(separator: ", "))")
         let answers: [(Int, String?, String, KeyLookup.Answer)] = [
-            (200, nil, #"{"key":"8A","pitchClass":9,"minor":true,"tempo":120.1}"#, .found(DetectedKey(pitchClass: 9, minor: true))),
-            (200, nil, #"{"key":"1B"}"#, .found(DetectedKey(pitchClass: 11, minor: false))),
+            (200, nil, #"{"key":"8A","pitchClass":9,"minor":true,"tempo":120.1}"#, .found(DetectedKey(pitchClass: 9, minor: true), tempo: 120.1)),
+            (200, nil, #"{"key":"1B"}"#, .found(DetectedKey(pitchClass: 11, minor: false), tempo: nil)),
+            (200, nil, #"{"key":"1B","tempo":0}"#, .found(DetectedKey(pitchClass: 11, minor: false), tempo: nil)),
             (200, nil, #"{"key":null}"#, .unknown),
             (404, nil, #"{"error":"no match"}"#, .unknown),
             (429, "30", "", .wait(30)),
@@ -746,10 +747,41 @@ enum PitchSelfTest {
         let wrongAnswers = answers.filter { KeyLookup.answer(status: $0.0, retryAfter: $0.1, body: Data($0.2.utf8)) != $0.3 }.map { "\($0.0) \($0.2)" }
         report(wrongAnswers.isEmpty, "online keys      \(answers.count) answers read\(wrongAnswers.isEmpty ? "" : ", wrong: " + wrongAnswers.joined(separator: "; "))")
 
+        // The tempo of a drum loop at the tap's rate, which the detector resamples to 44.1 kHz first.
+        for bpm in [92.0, 128] {
+            let started = Date()
+            let found = TempoDetector.bpm(drums(bpm: bpm, seconds: 20, rate: 48000), sourceRate: 48000)?.bpm ?? 0
+            report(abs(found - bpm) / bpm < 0.02, String(format: "tempo            %.1f BPM for a loop at %.0f BPM, in %.2fs", found, bpm, Date().timeIntervalSince(started)))
+        }
+        let pairs: [(heard: Double, online: Double?, shown: Double)] = [(121, 120, 120), (60.5, 120, 120), (240, 120, 120), (40.1, 120, 120), (90, 120, 90), (97, nil, 97)]
+        let wrongTempos = pairs.filter { TempoDetector.reconcile(heard: $0.heard, online: $0.online) != $0.shown }.map { "\($0.heard) with \($0.online ?? 0)" }
+        report(wrongTempos.isEmpty, "tempo levels     \(pairs.count) pairs\(wrongTempos.isEmpty ? "" : ", wrong: " + wrongTempos.joined(separator: "; "))")
+
         return failures == 0 ? 0 : 1
     }
 
     static func hz(_ semitones: Int) -> Double { 440 * pow(2, Double(semitones) / 12) }
+
+    /// A mono drum loop: a kick on every beat, a noise snare on two and four, and a short hat on every eighth.
+    static func drums(bpm: Double, seconds: Double, rate: Double) -> [Float] {
+        var out = [Float](repeating: 0, count: Int(seconds * rate))
+        var noise = SystemRandomNumberGenerator()
+        let beat = 60 / bpm
+        for step in 0 ..< Int(seconds / beat * 2) {
+            let start = Int(Double(step) * beat / 2 * rate)
+            let onBeat = step % 2 == 0
+            let snare = step % 4 == 2
+            for i in 0 ..< Int(0.2 * rate) where start + i < out.count {
+                let t = Double(i) / rate
+                var sample = 0.0
+                if onBeat { sample += 0.8 * sin(2 * .pi * (50 + 80 * exp(-t * 30)) * t) * exp(-t * 12) }
+                if snare { sample += 0.5 * Double.random(in: -1 ... 1, using: &noise) * exp(-t * 25) }
+                sample += 0.15 * Double.random(in: -1 ... 1, using: &noise) * exp(-t * 120)
+                out[start + i] += Float(sample)
+            }
+        }
+        return out
+    }
 
     /// Feeds the shifter the way the IOProc does, `chunk` frames of interleaved stereo in and out per call: half a
     /// second of silence, then the sine (or tone bursts every 250 ms). Each change sets another shift at that

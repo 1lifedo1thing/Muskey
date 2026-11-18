@@ -12,6 +12,8 @@ final class KeyCache: ObservableObject {
         /// Full listens that found this key.
         var count: Int
         var date: Date
+        /// The tempo that the last full listen found, in beats per minute.
+        var bpm: Double?
 
         var key: DetectedKey { DetectedKey(pitchClass: pitchClass, minor: minor) }
     }
@@ -23,6 +25,7 @@ final class KeyCache: ObservableObject {
         let artist: String?
         let album: String?
         let key: DetectedKey
+        let bpm: Double?
         let date: Date
 
         /// `Artist – Album`, with the parts that Now Playing reported.
@@ -56,10 +59,15 @@ final class KeyCache: ObservableObject {
         Self.id(song).flatMap { load()[$0]?.key }
     }
 
+    func bpm(for song: [String?]) -> Double? {
+        Self.id(song).flatMap { load()[$0]?.bpm }
+    }
+
     /// A full listen of the song found `key`. A listen that finds another key replaces the remembered one only when
     /// it is at least as sure of its key as the listen that found the remembered one, since the Mac may have played
-    /// something other than the song that Now Playing named. Returns a line for the log.
-    func store(_ key: DetectedKey, strength: Float, for song: [String?]) -> String {
+    /// something other than the song that Now Playing named, and the tempo goes with the key that is kept. Returns a
+    /// line for the log.
+    func store(_ key: DetectedKey, strength: Float, bpm: Double? = nil, for song: [String?]) -> String {
         guard let id = Self.id(song) else { return "no title to remember the key by" }
         // JSONEncoder refuses NaN, which would make every later save fail.
         let strength = strength.isFinite ? strength : 0
@@ -70,16 +78,17 @@ final class KeyCache: ObservableObject {
                 entry.count += 1
                 entry.strength = max(entry.strength, strength)
                 entry.date = Date()
+                entry.bpm = bpm ?? entry.bpm
                 entries[id] = entry
                 result = "confirmed the remembered \(key.name), found by \(entry.count) listens"
             } else if strength >= entry.strength {
-                entries[id] = Entry(pitchClass: key.pitchClass, minor: key.minor, strength: strength, count: 1, date: Date())
+                entries[id] = Entry(pitchClass: key.pitchClass, minor: key.minor, strength: strength, count: 1, date: Date(), bpm: bpm ?? entry.bpm)
                 result = String(format: "remembered %@ instead of %@ (strength %.3f, was %.3f)", key.name, entry.key.name, strength, entry.strength)
             } else {
                 result = String(format: "kept the remembered %@ over %@ (strength %.3f, this listen %.3f)", entry.key.name, key.name, entry.strength, strength)
             }
         } else {
-            entries[id] = Entry(pitchClass: key.pitchClass, minor: key.minor, strength: strength, count: 1, date: Date())
+            entries[id] = Entry(pitchClass: key.pitchClass, minor: key.minor, strength: strength, count: 1, date: Date(), bpm: bpm)
             result = "remembered \(key.name)"
         }
         if entries.count > Self.limit {
@@ -100,7 +109,7 @@ final class KeyCache: ObservableObject {
             let parts = id.split(separator: "\u{1F}", omittingEmptySubsequences: false).map { $0.isEmpty ? nil : String($0) }
             guard let title = parts.first ?? nil else { return nil }
             return Song(id: id, title: title, artist: parts.count > 1 ? parts[1] : nil, album: parts.count > 2 ? parts[2] : nil,
-                        key: entry.key, date: entry.date)
+                        key: entry.key, bpm: entry.bpm, date: entry.date)
         }
         .sorted { $0.date > $1.date }
         songList = list
