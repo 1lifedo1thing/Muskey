@@ -516,6 +516,19 @@ enum PitchSelfTest {
             report(hush < 0.01 * playing && resumed > 8 && spun.isEmpty && abs(resumedHz / 660 - 1) < 0.01,
                    String(format: "restart again    at most %.1f%% level until %.2f s, %d spins, then %.1f Hz", hush / playing * 100, resumed, spun.count, resumedHz))
 
+            // A player that ignores the move: the app ends the silence after 2 seconds, the song comes back at once, and
+            // the stems take over later with a backspin to where they were turned on.
+            let ignored = renderTimeline(seconds: 12, tone: { $0 < 6 ? 440 : 660 }, events: [
+                (1, { ps_stems_quiet_lead($0, 1); ps_stems_enable($0, 1) }), (3, { ps_stems_quiet_lead($0, 0) }),
+            ], separator: true).out
+            let before = rms(ignored[Int(rate * 0.4) ..< Int(rate * 0.9)])
+            let hushed = rms(ignored[Int(rate * 1.6) ..< Int(rate * 3.0)])
+            let returned = rms(ignored[Int(rate * 3.6) ..< Int(rate * 4.0)])
+            let whirls = stride(from: 3.5, to: 11.8, by: window).filter { pitch(ignored, from: $0, to: $0 + window) > 1000 }
+            report(hushed < 0.01 * before && returned > 0.8 * before && !whirls.isEmpty && whirls[0] > 3.6,
+                   String(format: "move ignored     %.1f%% level until the app gives up, %.0f%% 0.6 s after, a backspin from %.2f s",
+                          hushed / before * 100, returned / before * 100, whirls.first ?? 0))
+
             let unanswered = renderTimeline(seconds: 22, tone: { _ in 440 }, events: [(1, { ps_stems_quiet_lead($0, 1); ps_stems_enable($0, 1) })], separator: true).out
             let level = { (from: Double, to: Double) in rms(unanswered[Int(rate * from) ..< Int(rate * to)]) }
             report(level(2, 15.5) < 0.01 * level(0.4, 0.9) && level(16.6, 17.5) > 0.8 * level(0.4, 0.9),

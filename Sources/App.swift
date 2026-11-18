@@ -2686,6 +2686,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setLyricsDelay(_ on: Bool) {
         guard on != lyricsDelayed else { return }
         lyricsDelayed = on
+        // The delay holds the stems until it steps back, so karaoke's silent countdown would outlast it: the song plays
+        // from its start as it is, under Whisper's countdown.
+        if on, karaokeRestart != nil {
+            log("karaoke: Whisper writes the lyrics of the start, the song plays during its countdown")
+            endKaraokeRestart()
+        }
         pitch.lyricsDelay = on ? Self.lyricsLead : 0
         log(on ? "lyrics: the song plays 30 seconds behind while Whisper writes them" : "lyrics: the song plays without the delay")
         if !on, model.lyricsWaiting != nil { model.lyricsWaiting = nil }
