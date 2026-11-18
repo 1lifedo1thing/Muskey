@@ -5,9 +5,10 @@ import Foundation
 // signs this helper as com.apple.controlcenter.Muskey.
 //
 //   watch   a line at start and after every change, until stdin closes or the parent process exits. A line
-//           `playpause` on stdin plays or pauses the song.
+//           `playpause` on stdin plays or pauses the song, and `seek <seconds>` moves it to that time.
 //   get     one line, then exit
 //   playpause  plays or pauses the song, then exits
+//   seek <seconds>  moves the song to that time, then exits
 
 struct Track: Encodable, Equatable {
     var title: String?
@@ -37,6 +38,7 @@ enum MediaRemote {
     private typealias ClientString = @convention(c) (AnyObject?) -> Unmanaged<CFString>?
     private typealias Register = @convention(c) (DispatchQueue) -> Void
     private typealias SendCommand = @convention(c) (UInt32, CFDictionary?) -> Bool
+    private typealias SetElapsed = @convention(c) (Double) -> Void
 
     static var available: Bool { function("MRMediaRemoteGetNowPlayingInfo", as: GetInfo.self) != nil }
 
@@ -47,6 +49,13 @@ enum MediaRemote {
     /// The play or pause command that the media keys send to the player of the song (kMRTogglePlayPause).
     @discardableResult static func togglePlayPause() -> Bool {
         function("MRMediaRemoteSendCommand", as: SendCommand.self)?(2, nil) ?? false
+    }
+
+    /// Moves the song to `seconds` into it, the way dragging the time in Control Center does.
+    @discardableResult static func seek(to seconds: Double) -> Bool {
+        guard let setElapsed = function("MRMediaRemoteSetElapsedTime", as: SetElapsed.self) else { return false }
+        setElapsed(max(0, seconds))
+        return true
     }
 
     static func read(_ completion: @escaping (Track) -> Void) {
@@ -148,6 +157,7 @@ case "watch":
             let line = pending[..<end]
             pending = String(pending[pending.index(after: end)...])
             if line == "playpause" { MediaRemote.togglePlayPause() }
+            if line.hasPrefix("seek "), let seconds = Double(line.dropFirst(5)) { MediaRemote.seek(to: seconds) }
         }
     }
     stdin.resume()
@@ -159,7 +169,17 @@ case "watch":
 case "playpause":
     exit(MediaRemote.togglePlayPause() ? 0 : 1)
 
+case "seek":
+    guard let seconds = CommandLine.arguments.dropFirst(2).first.flatMap(Double.init) else {
+        FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) seek <seconds>\n".utf8))
+        exit(64)
+    }
+    let sent = MediaRemote.seek(to: seconds)
+    // The command is sent from the main queue, so it is given a moment to leave before the helper exits.
+    RunLoop.main.run(until: Date() + 0.3)
+    exit(sent ? 0 : 1)
+
 default:
-    FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) get|watch|playpause\n".utf8))
+    FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) get|watch|playpause|seek <seconds>\n".utf8))
     exit(64)
 }

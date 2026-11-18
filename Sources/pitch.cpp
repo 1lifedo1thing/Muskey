@@ -290,6 +290,19 @@ struct PSShifter {
     double spinAt = 0;
     float spinLowLeft = 0, spinLowRight = 0;
     std::atomic<uint32_t> spins{0};
+    // Karaoke that starts the song over: the output is silent from the moment the stems are turned on until they
+    // start, and they start without a backspin, since the player moved the song to its start meanwhile. 1 while that
+    // move is awaited, when the stems may not start, and 2 once the timeline starts over at the song's start. The
+    // silence lasts 15 seconds at most, so a separation that never starts can't leave the Mac silent.
+    std::atomic<int> quietLead{0};
+    float leadGain = 1;
+    size_t leadFrames = 0;
+    // Frames before the moment that plays that the next restart starts from: the song started over a moment before
+    // the player reported it.
+    std::atomic<uint64_t> restartBack{0};
+    // A restart while the stems play waits for them to fade out over 10 ms, for a few callbacks at most.
+    bool restartFading = false;
+    int restartWaits = 0;
     std::vector<float> stemLeft, stemRight, rawLeft, rawRight;
 
     // The song can also play a fixed time behind itself, while lyrics are written by ear, so each line is written
@@ -347,9 +360,11 @@ struct PSShifter {
     void updateTimeline(bool stemsWanted, uint64_t delay, bool restart) {
         bool engaged = stemsWanted || delay > 0;
         uint64_t now = captured.written.load(std::memory_order_relaxed);
+        uint64_t back = restart ? restartBack.exchange(0, std::memory_order_relaxed) : 0;
         if (engaged && (!engagedWas || restart)) {
             // A new timeline, even while the last one still fades out: the song plays as it is until the stems or the
-            // delay are ready, and they start from this moment.
+            // delay are ready, and they start from this moment, or from a moment before it within this timeline.
+            uint64_t start = engagedWas ? now - std::min(back, now - std::min(now, timelineStart)) : now;
             skipFrom = skipTo = rewindPending = 0;
             jumpPending = false;
             spinLeft = 0;
@@ -357,11 +372,16 @@ struct PSShifter {
             stemsStarted.store(false, std::memory_order_relaxed);
             delayed = false;
             sourceMix = 0;
-            timelineStart = now;
-            stemsPlayed.store(now, std::memory_order_relaxed);
-            anchor.store(now, std::memory_order_relaxed);
+            timelineStart = start;
+            stemsPlayed.store(start, std::memory_order_relaxed);
+            anchor.store(start, std::memory_order_relaxed);
             anchorPending.store(delay > 0, std::memory_order_relaxed);
-            if (stemsWanted) beginStems(now);
+            if (restart && quietLead.load(std::memory_order_relaxed) == 1) {
+                // The song started over: silent from here until the stems of its start are separated.
+                quietLead.store(2, std::memory_order_relaxed);
+                leadGain = 0;
+            }
+            if (stemsWanted) beginStems(start);
             else stemsLive = false;
         } else if (engaged) {
             bool started = stemsStarted.load(std::memory_order_relaxed);
@@ -441,6 +461,8 @@ struct PSShifter {
         }
         if (!started) {
             if (anchorPending.load(std::memory_order_relaxed) || !stemsWanted) return quiet();
+            // Karaoke that starts the song over waits for the player to move the song to its start.
+            if (quietLead.load(std::memory_order_relaxed) == 1) return quiet();
             // The song plays as it is until the first block is there and the margin after it has passed.
             if (!current || ready <= stemsStart.load(std::memory_order_relaxed)) return quiet();
             if (stemsFirstReady == 0) stemsFirstReady = now;
@@ -448,8 +470,14 @@ struct PSShifter {
             stemsStarted.store(true, std::memory_order_relaxed);
             stemsLive = true;
             settleStemGains();
-            // The stems start seconds before the moment that plays.
-            startSpin(now);
+            if (quietLead.exchange(0, std::memory_order_relaxed) == 2) {
+                // After karaoke's silent countdown the song comes in from its start, with no backspin.
+                stemsMix.store(1, std::memory_order_relaxed);
+                holdGain = 0;
+            } else {
+                // The stems start seconds before the moment that plays.
+                startSpin(now);
+            }
         }
         uint64_t at = stemsPlayed.load(std::memory_order_relaxed);
         if (skipTo > skipFrom && at >= skipFrom && at < skipTo) at = skipTo;
@@ -609,20 +637,31 @@ struct PSShifter {
         if (spinLeft > 0) return renderSpin(n, playing);
         if (playing) {
             const float holdStep = 1.0f / (0.01f * float(rate));
-            float target = holding || jumpPending ? 0.0f : 1.0f;
+            float target = holding || jumpPending || restartFading ? 0.0f : 1.0f;
             for (size_t f = 0; f < n; f++) {
                 holdGain += std::clamp(target - holdGain, -holdStep, holdStep);
                 stemLeft[f] *= holdGain;
                 stemRight[f] *= holdGain;
             }
         }
-        float target = on && stemsStarted.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        bool started = stemsStarted.load(std::memory_order_relaxed);
+        float target = on && started ? 1.0f : 0.0f;
+        // Karaoke's countdown before the song starts over is silent, for 15 seconds at most.
+        bool quiet = on && !started && quietLead.load(std::memory_order_relaxed) != 0;
+        // A pause holds the stems, and the player is silent then anyway, so it doesn't count.
+        if (!quiet) {
+            leadFrames = 0;
+        } else if (!holding && (leadFrames += n) > size_t(rate * 15)) {
+            quietLead.store(0, std::memory_order_relaxed);
+            quiet = false;
+        }
         float mix = stemsMix.load(std::memory_order_relaxed);
         const float step = 1.0f / (0.3f * float(rate));
         constexpr float quarter = float(M_PI / 2);
         for (size_t f = 0; f < n; f++) {
             mix += std::clamp(target - mix, -step, step);
-            float song = mix <= 0 ? 1.0f : mix >= 1 ? 0.0f : std::cos(mix * quarter);
+            leadGain += std::clamp((quiet ? 0.0f : 1.0f) - leadGain, -step, step);
+            float song = (mix <= 0 ? 1.0f : mix >= 1 ? 0.0f : std::cos(mix * quarter)) * leadGain;
             float timeline = mix <= 0 ? 0.0f : mix >= 1 ? 1.0f : std::sin(mix * quarter);
             // A gap in the stems plays silence rather than the song seconds ahead.
             float stemL = playing ? stemLeft[f] : 0.0f, stemR = playing ? stemRight[f] : 0.0f;
@@ -630,7 +669,8 @@ struct PSShifter {
             inRight[f] = inRight[f] * song + stemR * timeline;
         }
         stemsMix.store(mix, std::memory_order_relaxed);
-        if (!on && mix <= 0) {
+        // The song fades back in after the silence before the output stops mixing.
+        if (!on && mix <= 0 && leadGain >= 1) {
             stemsPlaying = false;
             stemsStarted.store(false, std::memory_order_relaxed);
         }
@@ -874,6 +914,15 @@ void ps_stems_restart(PSShifter *s) {
     s->restartStems.store(true, std::memory_order_relaxed);
 }
 
+void ps_stems_restart_back(PSShifter *s, double seconds) {
+    s->restartBack.store(uint64_t(std::max(0.0, seconds) * s->rate), std::memory_order_relaxed);
+    s->restartStems.store(true, std::memory_order_release);
+}
+
+void ps_stems_quiet_lead(PSShifter *s, int on) {
+    s->quietLead.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
 void ps_stems_set_gain(PSShifter *s, int stem, float gain) {
     if (stem >= 0 && stem < PSShifter::stemCount) s->stemGain[stem].store(gain, std::memory_order_relaxed);
 }
@@ -930,8 +979,18 @@ size_t ps_recording(PSShifter *shifter, const float **pairs) {
 }
 
 void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *output) {
-    // Turning the stems or the delay on starts a new timeline, and so does a song that changed during a pause.
-    bool restart = s->restartStems.exchange(false, std::memory_order_relaxed);
+    // Turning the stems or the delay on starts a new timeline, and so does a song that changed during a pause or that
+    // karaoke started over. Stems that play fade out first, so they don't stop with a click.
+    bool restart = s->restartStems.load(std::memory_order_acquire);
+    if (restart && s->stemsStarted.load(std::memory_order_relaxed) && s->stemsMix.load(std::memory_order_relaxed) > 0 && s->holdGain > 0 && s->restartWaits < 8) {
+        s->restartFading = true;
+        s->restartWaits++;
+        restart = false;
+    } else if (restart) {
+        restart = s->restartStems.exchange(false, std::memory_order_acquire);
+        s->restartFading = false;
+        s->restartWaits = 0;
+    }
     uint64_t delay = s->delayFrames.load(std::memory_order_relaxed);
     s->updateTimeline(s->stemsOn.load(std::memory_order_relaxed), delay, restart);
     bool stems = s->stemsOn.load(std::memory_order_relaxed) || delay > 0;

@@ -112,6 +112,11 @@ final class Preferences: ObservableObject {
     @Published var karaokeMutesVocals: Bool {
         didSet { defaults.set(karaokeMutesVocals, forKey: "karaokeMutesVocals") }
     }
+    /// Karaoke starts the song over from its beginning, after a countdown while the vocals are separated. Without it,
+    /// karaoke goes back only to the moment it opened, once the vocals are separated.
+    @Published var karaokeRestarts: Bool {
+        didSet { defaults.set(karaokeRestarts, forKey: "karaokeRestarts") }
+    }
     /// Karaoke blurs and dims the rest of the screen around the glass.
     @Published var karaokeBackdrop: Bool {
         didSet { defaults.set(karaokeBackdrop, forKey: "karaokeBackdrop") }
@@ -126,7 +131,7 @@ final class Preferences: ObservableObject {
     }
 
     private init() {
-        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeBackdrop": true, "karaokeRecord": true])
+        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "karaokeRecord": true])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always
@@ -139,6 +144,7 @@ final class Preferences: ObservableObject {
         lyricsTranscription = defaults.string(forKey: "lyricsTranscription").flatMap(LyricsTranscription.init) ?? .apple
         whisperServer = defaults.string(forKey: "whisperServer") ?? ""
         karaokeMutesVocals = defaults.bool(forKey: "karaokeMutesVocals")
+        karaokeRestarts = defaults.bool(forKey: "karaokeRestarts")
         karaokeBackdrop = defaults.bool(forKey: "karaokeBackdrop")
         karaokeRecord = defaults.bool(forKey: "karaokeRecord")
     }

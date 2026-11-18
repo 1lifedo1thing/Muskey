@@ -22,6 +22,8 @@ macOS has no public API for Now Playing. Muskey reads it from the private MediaR
 
 Since macOS 15.4, only code signed with an Apple identifier can read MediaRemote. For that reason, the helper is signed as `com.apple.controlcenter.Muskey`.
 
+The helper also sends two commands to the player: play or pause, for Space over the HUD, and a move to the start of the song, for karaoke.
+
 ### Hotkey
 
 The hotkey is registered with Carbon's `RegisterEventHotKey`, which works without the Accessibility permission.
@@ -43,6 +45,8 @@ While the lyrics show, Muskey sends the title, artist, album and length of the s
 Muskey separates the song into six stems with [BS-RoFormer](https://arxiv.org/abs/2309.02612). It uses the BS-Roformer-SW checkpoint, converted to Core ML and run on the GPU.
 
 Muskey separates the song in windows of 4.5 seconds that overlap by a second, and crossfades the windows. It plays the mix of the stems that are on, with the same pitch change as the song.
+
+The first window is separated a few seconds after a stem is muted. Until then the song plays as it is, and then Muskey steps back to the moment of the mute with a backspin. Karaoke counts down to that step back. With **Restart song in karaoke**, the player moves the song to its start instead, and the Mac stays silent through the countdown until the first seconds of the song are separated.
 
 The Winds stem comes from a second model: the woodwind and brass heads of [MVSep](https://mvsep.com)'s 53-stem BS-RoFormer. Muskey runs it on the same windows, and takes the winds that it finds out of the Other stem.
 

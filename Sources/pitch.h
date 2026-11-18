@@ -59,6 +59,13 @@ float ps_stems_level(PSShifter *shifter, int stem);
 double ps_stems_delay(PSShifter *shifter);
 // How long the next mute or unmute of a stem takes, in seconds.
 void ps_stems_set_fade(PSShifter *shifter, double seconds);
+// Karaoke that starts the song over. 1 makes the output silent until the stems start, which they don't until a
+// restart from ps_stems_restart_back, and then start with no backspin. 0 ends the silence, and the stems start as
+// they usually do. The silence lasts 15 seconds at most. Any thread.
+void ps_stems_quiet_lead(PSShifter *shifter, int on);
+// Starts the stems over as ps_stems_restart does, from `seconds` before the moment that plays, within the frames
+// captured since the stems were turned on.
+void ps_stems_restart_back(PSShifter *shifter, double seconds);
 // How many backspins the output has played: one each time it stepped back in the song.
 uint32_t ps_spins(PSShifter *shifter);
 // While the stems are on and the song still plays as it is, waiting for the first separated block: the seconds

@@ -105,6 +105,12 @@ final class NowPlaying {
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data("playpause\n".utf8))
     }
 
+    /// Moves the song to `seconds` into it, the way dragging the time in Control Center does, through the helper.
+    func seek(to seconds: Double) {
+        guard let stdinPipe else { return log("seek: the now playing helper isn't running") }
+        try? stdinPipe.fileHandleForWriting.write(contentsOf: Data(String(format: "seek %.3f\n", seconds).utf8))
+    }
+
     private func stop() {
         pending?.cancel()
         pending = nil

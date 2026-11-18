@@ -227,6 +227,8 @@ final class HUDModel: ObservableObject {
     @Published var lyricsSkipped = false
     /// Seconds until the song steps back 30 seconds, so the lines that Whisper writes come before they are sung.
     @Published var lyricsWaiting: Int?
+    /// Karaoke's countdown while the vocals are separated, before the song rewinds or starts over.
+    @Published var karaokeCountdown: KaraokeCountdown?
 
     /// The model that separates the stems is on the Mac, so the HUD offers to separate the song.
     @Published var stemsAvailable = false
@@ -477,8 +479,8 @@ struct HUDView: View {
             Color.clear.frame(height: Self.focusRowHeight).padding(.top, Self.focusRowTop)
             GeometryReader { space in
                 LyricsPanel(state: model.lyrics, line: model.lyricLine, palette: palette, width: Self.focusLyricsWidth, height: space.size.height, large: true,
-                            downloading: model.lyricsDownloading, writing: model.lyricsWriting && !model.lyricsSkipped, waiting: model.lyricsWaiting, retry: model.onLyricsRetry,
-                            add: model.onLyricsEdit, edit: model.onLyricsEdit)
+                            downloading: model.lyricsDownloading, writing: model.lyricsWriting && !model.lyricsSkipped, waiting: model.lyricsWaiting,
+                            rewind: model.karaokeCountdown, retry: model.onLyricsRetry, add: model.onLyricsEdit, edit: model.onLyricsEdit)
                     .overlay { if track == nil { PlayFlashView(flash: model.playFlash, size: 80) } }
             }
             .frame(width: Self.focusLyricsWidth)
@@ -1055,14 +1057,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !on {
             model.karaokeKeys = false
             model.karaokeStems = false
+            endKaraokeRestart()
         }
         // Karaoke takes the keys that change the key, which the lyrics at their usual size don't.
         updateHoverKeys()
         if on {
-            guard prefs.karaokeMutesVocals, model.stemsAvailable, !model.stemsMuted.contains(.vocals) else { return }
-            karaokeMutedVocals = true
-            log("karaoke: vocals muted")
-            setStems(model.stemsMuted.union([.vocals]), fade: true)
+            if prefs.karaokeMutesVocals, model.stemsAvailable, !model.stemsMuted.contains(.vocals) {
+                karaokeMutedVocals = true
+                log("karaoke: vocals muted")
+                setStems(model.stemsMuted.union([.vocals]), fade: true)
+            }
+            if prefs.karaokeRestarts { restartForKaraoke() }
         } else if karaokeMutedVocals {
             karaokeMutedVocals = false
             guard model.stemsMuted.contains(.vocals) else { return }
@@ -1072,6 +1077,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var karaokeMutedVocals = false
+
+    /// Karaoke starting the song over: waiting for the model to be ready, waiting for the player to report the song at
+    /// its start since the moment the move was asked for, or started over.
+    private enum KaraokeRestart: Equatable { case waitingForModel, seeking(Date), started }
+    private var karaokeRestart: KaraokeRestart?
+    private var karaokeRestartTimeout: DispatchWorkItem?
+
+    /// Karaoke starts the song over (Settings > Lyrics > Restart song in karaoke). While the stems play, the output
+    /// stays silent from here: the player moves the song to its start, the stems of the start are separated, and the
+    /// countdown shows meanwhile. Without the stems, the song only moves to its start.
+    private func restartForKaraoke() {
+        guard let track = nowPlaying.track, track.title?.isEmpty == false, track.playing else {
+            return log("karaoke: no song plays, nothing to start over")
+        }
+        // The lyrics delay plays the song 30 seconds behind on the same timeline, with a countdown of its own.
+        guard !lyricsDelayed else { return log("karaoke: the song doesn't start over while Whisper writes its lyrics") }
+        guard model.stemsEngaged else {
+            log("karaoke: the song starts over")
+            return nowPlaying.seek(to: 0)
+        }
+        // Core ML prepares the model for an unknown time, which the Mac would spend silent, so the song plays on and
+        // starts over once the model is ready.
+        guard StemModel.prepared else {
+            log("karaoke: the song starts over once the model is ready")
+            karaokeRestart = .waitingForModel
+            return
+        }
+        beginKaraokeRestart()
+    }
+
+    private func beginKaraokeRestart() {
+        log("karaoke: the song starts over, silent until its vocals are separated")
+        karaokeRestart = .seeking(Date())
+        pitch.quietLead = true
+        nowPlaying.seek(to: 0)
+        // A player that ignores the move: the song plays again, and rewinds to where karaoke opened.
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, case .seeking = karaokeRestart else { return }
+            log("karaoke: the player didn't move the song to its start")
+            karaokeRestart = nil
+            pitch.quietLead = false
+        }
+        karaokeRestartTimeout?.cancel()
+        karaokeRestartTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+    }
+
+    /// The player reports the song at its start after karaoke moved it there: the stems start over from that moment.
+    private func checkKaraokeRestart() {
+        guard case let .seeking(asked) = karaokeRestart, let track = nowPlaying.track, track.playing,
+              let position = track.position(at: Date()), position < 3,
+              // A report from before the move would place the start at the wrong moment.
+              (track.timestamp ?? .infinity) >= asked.timeIntervalSince1970 - 0.05 else { return }
+        karaokeRestartTimeout?.cancel()
+        karaokeRestart = .started
+        log(String(format: "karaoke: the song started over %.2f s ago", position))
+        // The player's timestamp can be a little early, and the start is better 50 ms late than in the moment
+        // before the move.
+        pitch.restartStems(back: max(0, position - 0.05))
+        if model.shown { model.rewinds += 1 }
+    }
+
+    private func endKaraokeRestart() {
+        karaokeRestartTimeout?.cancel()
+        karaokeRestartTimeout = nil
+        karaokeRestart = nil
+        pitch.quietLead = false
+    }
+
+    /// The seconds that the stems take to start once the model is ready: the first window, the margin after it, and
+    /// about the time that a window takes to separate.
+    private static var stemsWait: Double { StemModel.chunkSeconds + 0.75 + (StemModel.isInstalled(.winds) ? 1.2 : 0.6) }
+
+    /// Karaoke counts down while the stems are separated, and says how far the song rewinds after it. Nothing shows
+    /// while the player is asked to move the song to its start, which takes a moment.
+    private func karaokeCountdown(_ progress: StemsProgress?) -> KaraokeCountdown? {
+        guard model.lyricsFocus, let progress else { return nil }
+        if case .seeking = karaokeRestart { return nil }
+        let total = Int(Self.stemsWait.rounded(.up))
+        guard case .separating = progress, let waited = pitch.stemsWaited else {
+            return KaraokeCountdown(seconds: nil, total: total, restart: karaokeRestart != nil, rewind: nil)
+        }
+        let left = max(1, Int((Self.stemsWait - waited).rounded(.up)))
+        return KaraokeCountdown(seconds: left, total: total, restart: karaokeRestart != nil, rewind: Int(waited.rounded(.down)) + left)
+    }
 
     /// The V key, in every layout: the vocals muted, or playing again.
     private func toggleVocals() {
@@ -1413,11 +1503,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onSettings = { [weak self] in self?.settingsWindow.show() }
         nowPlaying.log = { [weak self] in self?.log($0) }
         nowPlaying.onSongChange = { [weak self] in
+            // Another song during karaoke's countdown plays as it comes.
+            if self?.karaokeRestart != nil { self?.endKaraokeRestart() }
             self?.songArrives()
             self?.songChanged($0)
         }
         nowPlaying.onTrack = { [weak self] in
             self?.syncPaused()
+            self?.checkKaraokeRestart()
             self?.syncTrack()
             self?.startOnKnownKey()
             self?.syncSongKey()
@@ -2022,7 +2115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard engaged != model.stemsEngaged || engaged != pitch.stemsEngaged else { return }
         model.stemsEngaged = engaged
         pitch.stemsEngaged = engaged
-        if !engaged { model.stemsProgress = nil }
+        if !engaged {
+            model.stemsProgress = nil
+            model.karaokeCountdown = nil
+            endKaraokeRestart()
+        }
         updateWatching(shown: model.shown)
         updateStemMeters(shown: model.shown)
         if pitchWanted, !pitch.running {
@@ -2126,6 +2223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stemMeterClock?.invalidate()
             stemMeterClock = nil
             if model.stemsProgress != nil { model.stemsProgress = nil }
+            if model.karaokeCountdown != nil { model.karaokeCountdown = nil }
             if model.stemMeters.levels.contains(where: { $0 != 0 }) { model.stemMeters.levels = Array(repeating: 0, count: Stem.allCases.count) }
             return
         }
@@ -2133,10 +2231,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self else { return }
             let progress = pitch.stemsWaited.map { waited -> StemsProgress in
-                // The first block, the margin after it, and about the time that a block takes to separate.
-                StemModel.prepared ? .separating(min(0.97, waited / (StemModel.chunkSeconds + 0.75 + (StemModel.isInstalled(.winds) ? 1.2 : 0.6)))) : .loading
+                StemModel.prepared ? .separating(min(0.97, waited / Self.stemsWait)) : .loading
             }
             if model.stemsProgress != progress { model.stemsProgress = progress }
+            if karaokeRestart == .waitingForModel, StemModel.prepared { beginKaraokeRestart() }
+            let countdown = karaokeCountdown(progress)
+            if model.karaokeCountdown != countdown { model.karaokeCountdown = countdown }
             model.stemMeters.levels = Stem.allCases.map { self.pitch.stemLevel($0) }
             checkSpins()
         }
@@ -2776,7 +2876,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-lyrics-focus-plain", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -2817,6 +2917,14 @@ extension EnvironmentValues {
                 model.karaokeStems = variant == "-lyrics-focus-stems" || variant == "-lyrics-focus-separate"
                 model.karaokeRecord = variant != "-lyrics-focus-plain"
                 model.lyricLine = 3
+                // Karaoke's countdown while the vocals are separated: before the song rewinds to where karaoke opened,
+                // before it starts over, and while the model loads.
+                model.karaokeCountdown = switch variant {
+                case "-lyrics-focus-rewind": KaraokeCountdown(seconds: 4, total: 6, restart: false, rewind: 6)
+                case "-lyrics-focus-restart": KaraokeCountdown(seconds: 4, total: 6, restart: true, rewind: 6)
+                case "-lyrics-focus-loading": KaraokeCountdown(seconds: nil, total: 6, restart: false, rewind: nil)
+                default: nil
+                }
             }
             if variant.contains("-stems") || variant == "-lyrics-focus-separate" {
                 model.stemsAvailable = true

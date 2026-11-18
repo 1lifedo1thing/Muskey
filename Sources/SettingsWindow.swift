@@ -397,6 +397,7 @@ private struct LyricsPane: View {
                     if !stemDownload.installed { Text("Needs the common instruments model") }
                 }
                 .disabled(!stemDownload.installed)
+                Toggle("Restart song in karaoke", isOn: $prefs.karaokeRestarts)
                 Toggle("Blur screen in karaoke", isOn: $prefs.karaokeBackdrop)
                 Toggle("Show record in karaoke", isOn: $prefs.karaokeRecord)
             }

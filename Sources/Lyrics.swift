@@ -253,6 +253,18 @@ final class LyricsFinder: @unchecked Sendable {
     }
 }
 
+/// Karaoke's countdown while the vocals are separated, before the song rewinds or starts over.
+struct KaraokeCountdown: Equatable {
+    /// Seconds left, nil while the model loads.
+    var seconds: Int?
+    /// Seconds that the whole countdown lasts, which its ring empties over.
+    var total: Int
+    /// The song starts over from its beginning after the countdown (Settings > Lyrics > Restart song in karaoke).
+    var restart: Bool
+    /// Seconds that the song rewinds after the countdown, back to the moment karaoke opened; nil while the model loads.
+    var rewind: Int?
+}
+
 /// The lyrics in place of the key, scrolling with the song so the line sung now stays a third of the way down.
 /// Scrolling by hand stops that for a few seconds after the scroll ends.
 struct LyricsPanel: View {
@@ -270,6 +282,8 @@ struct LyricsPanel: View {
     var writing = false
     /// Seconds until the song steps back so the written lines come before they are sung.
     var waiting: Int?
+    /// Karaoke's countdown while the vocals are separated, in place of the lines.
+    var rewind: KaraokeCountdown?
     var retry: () -> Void = {}
     var add: () -> Void = {}
     var edit: () -> Void = {}
@@ -286,41 +300,53 @@ struct LyricsPanel: View {
 
     var body: some View {
         Group {
-            switch state {
-            // The song plays as it is while Whisper collects the first 30 seconds, then steps back: the countdown
-            // takes the place of the lines, which would be heard only after the step back.
-            case let .found(lyrics) where lyrics.timing == .written && writing && waiting != nil:
-                countdown(waiting ?? 0)
-            case let .found(lyrics) where lyrics.lines.isEmpty:
-                // Whisper listens for the first phrase of a song that LRCLIB doesn't have.
-                VStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    pill(lyrics.timing)
-                }
-            case let .found(lyrics): lines(lyrics)
-            case .loading: ProgressView().controlSize(.small)
-            case .instrumental: empty("Instrumental")
-            case .none: empty("No song playing")
-            case .notFound:
-                VStack(spacing: 10) {
-                    empty("No lyrics found")
-                    Button("Add lyrics", action: add)
-                        .controlSize(.small)
-                }
-            case .failed:
-                HStack(spacing: 8) {
-                    Text("Lyrics unavailable")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(StripColors.text(.red, colorScheme))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
-                    Button("Retry", action: retry)
-                        .controlSize(.small)
-                }
+            if let rewind {
+                // The lines heard during the countdown are heard again after it, or the song hasn't started yet.
+                countdown(rewind.seconds, of: rewind.total,
+                          title: rewind.seconds == nil ? "Loading the common instruments model" : "Separating instruments and vocals",
+                          detail: rewind.restart ? "Song will start from the beginning after the countdown"
+                              : rewind.rewind.map { "Song will rewind \($0) seconds after the countdown" } ?? "Song will rewind after the countdown")
+            } else {
+                content
             }
         }
         .frame(width: width, height: height)
+    }
+
+    @ViewBuilder private var content: some View {
+        switch state {
+        // The song plays as it is while Whisper collects the first 30 seconds, then steps back: the countdown
+        // takes the place of the lines, which would be heard only after the step back.
+        case let .found(lyrics) where lyrics.timing == .written && writing && waiting != nil:
+            countdown(waiting ?? 0, of: Self.collectSeconds, title: "Collecting song data for transcribing lyrics", detail: "Song will rewind after the countdown")
+        case let .found(lyrics) where lyrics.lines.isEmpty:
+            // Whisper listens for the first phrase of a song that LRCLIB doesn't have.
+            VStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                pill(lyrics.timing)
+            }
+        case let .found(lyrics): lines(lyrics)
+        case .loading: ProgressView().controlSize(.small)
+        case .instrumental: empty("Instrumental")
+        case .none: empty("No song playing")
+        case .notFound:
+            VStack(spacing: 10) {
+                empty("No lyrics found")
+                Button("Add lyrics", action: add)
+                    .controlSize(.small)
+            }
+        case .failed:
+            HStack(spacing: 8) {
+                Text("Lyrics unavailable")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(StripColors.text(.red, colorScheme))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
+                Button("Retry", action: retry)
+                    .controlSize(.small)
+            }
+        }
     }
 
     private func empty(_ text: String) -> some View {
@@ -372,12 +398,12 @@ struct LyricsPanel: View {
     /// How long Whisper collects the song before the song steps back, which the ring of the countdown empties over.
     static let collectSeconds = 30
 
-    /// The seconds left before the song steps back, large in a ring that empties, with what happens meanwhile and
-    /// after it under them.
-    private func countdown(_ seconds: Int) -> some View {
+    /// The seconds left before the song steps back, large in a ring that empties over `total` seconds, with what happens
+    /// meanwhile and after it under them. A spinner takes the place of the seconds while they aren't known yet.
+    private func countdown(_ seconds: Int?, of total: Int, title: String, detail: String) -> some View {
         // The wide layout's lyrics can be as short as 144 points, under the stems.
         let ring = min(large ? 150 : 92, max(52, height * 0.42))
-        let fraction = min(1, CGFloat(seconds) / CGFloat(Self.collectSeconds))
+        let fraction = seconds.map { min(1, CGFloat($0) / CGFloat(max(1, total))) } ?? 0
         let accent = Color(red: 0.97, green: 0.71, blue: 0.36)
         return VStack(spacing: ring * 0.12) {
             ZStack {
@@ -389,19 +415,30 @@ struct LyricsPanel: View {
                     .rotationEffect(.degrees(-90))
                     .shadow(color: accent.opacity(0.6), radius: ring * 0.04)
                     .animation(.linear(duration: 1), value: fraction)
-                Text("\(seconds)s")
-                    .font(.system(size: ring * 0.32, weight: .heavy, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(palette.ink)
-                    .contentTransition(.numericText(countsDown: true))
-                    .animation(.snappy(duration: 0.3), value: seconds)
+                if let seconds {
+                    Text("\(seconds)s")
+                        .font(.system(size: ring * 0.32, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(palette.ink)
+                        .contentTransition(.numericText(countsDown: true))
+                        .animation(.snappy(duration: 0.3), value: seconds)
+                } else {
+                    // The seconds aren't known while the model loads, so a quarter of the ring turns instead.
+                    TimelineView(.animation) { context in
+                        Circle()
+                            .trim(from: 0, to: 0.25)
+                            .stroke(accent, style: StrokeStyle(lineWidth: ring * 0.05, lineCap: .round))
+                            .rotationEffect(.degrees(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360))
+                            .shadow(color: accent.opacity(0.6), radius: ring * 0.04)
+                    }
+                }
             }
             .frame(width: ring, height: ring)
             VStack(spacing: 3) {
-                Text("Collecting song data for transcribing lyrics")
+                Text(title)
                     .font(.system(size: large ? 15 : 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(palette.ink.opacity(0.85))
-                Text("Song will rewind after the countdown")
+                Text(detail)
                     .font(.system(size: large ? 13 : 11, weight: .medium, design: .rounded))
                     .foregroundStyle(palette.muted)
             }

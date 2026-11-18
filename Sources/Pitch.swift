@@ -32,7 +32,16 @@ final class PitchChanger {
     /// The stems are separated and played: while any is muted, and while the HUD shows them after every stem plays
     /// again, so that muting another one doesn't wait for the first block again.
     var stemsEngaged = false {
-        didSet { if stemsEngaged != oldValue { applyStems() } }
+        didSet {
+            if !stemsEngaged { quietLead = false }
+            if stemsEngaged != oldValue { applyStems() }
+        }
+    }
+
+    /// Karaoke starts the song over: the output stays silent until the stems start, and they wait for
+    /// `restartStems(back:)`, which the player moving the song to its start calls. The silence lasts 15 seconds at most.
+    var quietLead = false {
+        didSet { if let shifter { ps_stems_quiet_lead(shifter, quietLead ? 1 : 0) } }
     }
 
     /// Called on the main thread when the stems can't be separated; the stems are back on by then.
@@ -50,6 +59,11 @@ final class PitchChanger {
     /// start over, and the song plays as it is until the first block is separated.
     func restartStems() {
         if let shifter, stemsOn || lyricsDelay > 0 { ps_stems_restart(shifter) }
+    }
+
+    /// The song started over `back` seconds ago: the stems start over from that moment.
+    func restartStems(back: Double) {
+        if let shifter, stemsOn || lyricsDelay > 0 { ps_stems_restart_back(shifter, back) }
     }
 
     /// Seconds that the song plays behind itself while lyrics are written by ear, so each line is written before it
@@ -462,6 +476,36 @@ enum PitchSelfTest {
                    && abs(before / 660 - 1) < 0.01 && abs(after / 660 - 1) < 0.01 && run.delay > 1.5,
                    String(format: "stems backspin   %.1f Hz, a spin from %.2f s, then %.1f Hz, lowest %.0f%% after it, %.0f%% and a rise of %.1fx as it ends, %.1f s behind",
                           before, spinStart, after, lowest / steady * 100, handover / steady * 100, rise, run.delay))
+        }
+
+        // Karaoke that starts the song over: the stems are turned on at 1 s with the output silent, the player moves the
+        // song to its start at 3 s (440 Hz before, 660 Hz from its start) and reports it 0.3 s later. The output stays
+        // silent until the stems of the start are separated, then plays them with no backspin and none of the 440 Hz.
+        // Without the report, the silence ends after 15 seconds and the stems take over as usual. The output plays the
+        // song from its start at 3 s, so it is as far behind as the stems took to start, less the shifter's latency of
+        // about 0.1 s; a restart from the moment of the report would be 0.3 s less behind.
+        do {
+            let run = renderTimeline(seconds: 10, tone: { $0 < 3 ? 440 : 660 }, events: [
+                (1, { ps_stems_quiet_lead($0, 1); ps_stems_enable($0, 1) }), (3.3, { ps_stems_restart_back($0, 0.3) }),
+            ], separator: true)
+            let out = run.out
+            let steady = rms(out[Int(rate * 0.4) ..< Int(rate * 0.9)])
+            let window = 0.02
+            let levels = stride(from: 1.5, to: 9.9, by: window).map { (at: $0, level: rms(out[Int(rate * $0) ..< Int(rate * ($0 + window))])) }
+            let back = levels.first { $0.level > 0.1 * steady }?.at ?? 10
+            let silence = rms(out[Int(rate * 1.5) ..< Int(rate * max(1.5, back - 0.05))])
+            let fast = stride(from: 1.5, to: 9.8, by: window).filter { pitch(out, from: $0, to: $0 + window) > 1000 }
+            let first = pitch(out, from: back + 0.02, to: back + 0.3), after = pitch(out, from: back + 0.5, to: 9.9)
+            let lowest = levels.filter { $0.at > back + 0.1 }.map(\.level).min() ?? 0
+            report(run.gaps == 0 && silence < 0.01 * steady && back > 5 && fast.isEmpty && abs(first / 660 - 1) < 0.01 && abs(after / 660 - 1) < 0.01
+                   && lowest > 0.8 * steady && abs(run.delay - (back - 3.1)) < 0.15,
+                   String(format: "karaoke restart  %.1f%% level until %.2f s, %d spins, %.1f Hz at first, then %.1f Hz, lowest %.0f%%, %.1f s behind",
+                          silence / steady * 100, back, fast.count, first, after, lowest / steady * 100, run.delay))
+
+            let unanswered = renderTimeline(seconds: 22, tone: { _ in 440 }, events: [(1, { ps_stems_quiet_lead($0, 1); ps_stems_enable($0, 1) })], separator: true).out
+            let level = { (from: Double, to: Double) in rms(unanswered[Int(rate * from) ..< Int(rate * to)]) }
+            report(level(2, 15.5) < 0.01 * level(0.4, 0.9) && level(16.6, 17.5) > 0.8 * level(0.4, 0.9),
+                   String(format: "restart unheard  %.1f%% level for 15 s, %.0f%% after", level(2, 15.5) / level(0.4, 0.9) * 100, level(16.6, 17.5) / level(0.4, 0.9) * 100))
         }
 
         // Karaoke's vocals fade out over about 450 ms instead of cutting out, while a stem muted by its key or a click
