@@ -957,7 +957,7 @@ final class StatusItem: NSObject {
         }
         menu.addItem(.separator())
         menu.addItem(menuItem("Open File…", #selector(openFile), key: "o"))
-        menu.addItem(menuItem("Open Location…", #selector(openLocation), key: "l"))
+        menu.addItem(menuItem("Open URL…", #selector(openLocation), key: "l"))
         if playing { menu.addItem(menuItem("Stop Playing", #selector(stopPlaying))) }
         menu.addItem(.separator())
         menu.addItem(menuItem("Settings…", #selector(settings), key: ","))

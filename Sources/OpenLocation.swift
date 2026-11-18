@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Open Location: a field for a link or the path of a file, in a glass bar like the HUD's near the top of the screen,
+/// Open URL: a field for a link or the path of a file, in a glass bar like the HUD's near the top of the screen,
 /// with the songs downloaded from links before listed under it. It closes when another window is clicked, and the
 /// app that was in front gets the keyboard back.
 final class OpenLocationPanel: NSObject, NSWindowDelegate {
@@ -54,7 +54,7 @@ final class OpenLocationPanel: NSObject, NSWindowDelegate {
         panel.makeKeyAndOrderFront(nil)
         model.focus += 1
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
-            onLog("open location: key \(panel.isKeyWindow), Muskey in front \(NSApp.isActive), first responder \(panel.firstResponder.map { String(describing: type(of: $0)) } ?? "none")")
+            onLog("open url: key \(panel.isKeyWindow), Muskey in front \(NSApp.isActive), first responder \(panel.firstResponder.map { String(describing: type(of: $0)) } ?? "none")")
         }
     }
 
@@ -77,7 +77,7 @@ final class OpenLocationPanel: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_: Notification) {
-        onLog("open location: lost the keyboard to \(NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "another app")")
+        onLog("open url: lost the keyboard to \(NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "another app")")
         close()
     }
 
@@ -378,7 +378,7 @@ private struct Shake: GeometryEffect {
     }
 }
 
-/// The text field of Open Location. An AppKit field, since its field editor reports the arrows, Return and Esc,
+/// The text field of Open URL. An AppKit field, since its field editor reports the arrows, Return and Esc,
 /// and selects the text that the clipboard filled in.
 private struct LocationField: NSViewRepresentable {
     @Binding var text: String

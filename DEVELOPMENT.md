@@ -26,13 +26,13 @@ The helper also sends two commands to the player: play or pause, for Space over 
 
 ### Playing files and links
 
-Muskey plays the songs that are opened in it: dropped on the HUD, pasted with Command-V over it, picked with **Open File…** or **Open Location…** in the menu, or opened with Muskey in Finder. A small app inside Muskey, Muskey Player, plays them and tells Now Playing about them. Muskey's taps leave out the audio that the Muskey app plays, so the player is a separate app. The key, the pitch change, the stems and the lyrics then work as they do with any other player. Before a song plays, Muskey pauses the song that another app plays.
+Muskey plays the songs that are opened in it: dropped on the HUD, pasted with Command-V over it, picked with **Open File…** or **Open URL…** in the menu, or opened with Muskey in Finder. A small app inside Muskey, Muskey Player, plays them and tells Now Playing about them. Muskey's taps leave out the audio that the Muskey app plays, so the player is a separate app. The key, the pitch change, the stems and the lyrics then work as they do with any other player. Before a song plays, Muskey pauses the song that another app plays.
 
 A link to an audio or video file is downloaded directly. Muskey downloads any other link with [yt-dlp](https://github.com/yt-dlp/yt-dlp), from Homebrew, pipx or Muskey's folder. Without yt-dlp, the pill at the top right of the screen offers **Install yt-dlp**, which downloads the official build for macOS from yt-dlp's GitHub releases and checks it against the SHA-256 sums published with it. When a download with that copy fails, Muskey updates it once with `yt-dlp -U` and tries again.
 
 yt-dlp takes only the audio. With ffmpeg, it converts any audio to M4A. Without ffmpeg, it takes M4A, MP3 or MP4, and Muskey copies the audio into a new M4A, since AVFoundation reads the DASH M4A of YouTube as twice as long as it is. Muskey keeps up to 2 GB of downloaded songs in `~/Library/Caches/Muskey/Links`, so a link opened again plays at once.
 
-**Open Location…** shows a field for a link or the path of a file, in a glass bar like the HUD's, with the songs downloaded from links before listed under it. Several files opened together play one after another. **Stop Playing**, in the menu bar menu and in the File menu while a song plays in Muskey Player, quits the player.
+**Open URL…** shows a field for a link or the path of a file, in a glass bar like the HUD's, with the songs downloaded from links before listed under it. Several files opened together play one after another. **Stop Playing**, in the menu bar menu and in the File menu while a song plays in Muskey Player, quits the player.
 
 ### Controls on the record
 
@@ -135,7 +135,6 @@ Builds made with `make` or `make install` take these flags, and release builds i
 | `--key-lookup "Title\|Artist\|Album\|Seconds"` | Ask Noiseblend for the key of that song, print the answer and quit |
 | `--tempo FILE` | Print the tempo of the part of FILE that a listen would hear, and quit. `--tempo-at S` moves the start from 45 seconds, and `--seconds S` sets the length |
 | `--render DIR` | Write a PNG of each HUD state and quit |
-| `--render-buttons DIR` | Write a PNG of the HUD with the buttons on the record in each look, and quit |
 | `--log-keys` | Log every key and click that reaches the HUD, with the host time of each line |
 
 ### Lyrics

@@ -145,7 +145,7 @@ struct TurntableDeck: View {
                 }
                 .frame(width: Self.size, height: Self.size)
                 // On the rims, where the tonearm never passes.
-                .modifier(RecordControls(spread: Self.size / 2))
+                .modifier(RecordControls(spread: Self.size / 2, art: Self.size * 0.9 * 0.66))
             }
             ZStack {
                 Details(track: track, ticking: spinning, palette: palette)
@@ -180,15 +180,15 @@ extension EnvironmentValues {
     @Entry var recordHovered = false
     /// The buttons show on the record, so the glyph that a play, a pause or a skip flashes on it doesn't.
     @Entry var recordButtonsShown = false
-    @Entry var recordButtonLook = RecordButtonLook.label
 }
 
-/// A click on the record plays or pauses the song, as Space does. The pointer over the record shows the buttons of a
-/// turntable on it: previous and next `spread` points to the left and right of its centre, and play or pause between
-/// them, all `lift` points above its centre. The buttons show only on hover, since the record is the thing to look
-/// at, and they fade in quickly, as hover feedback does.
+/// A click on the record plays or pauses the song, as Space does. The pointer over the record shows buttons on it:
+/// previous and next `spread` points to the left and right of its centre, and play or pause between them, about two
+/// thirds as wide as the cover (`art` is the cover's width), all `lift` points above its centre. The buttons show
+/// only on hover, since the record is the thing to look at, and they fade in quickly, as hover feedback does.
 struct RecordControls: ViewModifier {
     let spread: CGFloat
+    let art: CGFloat
     var lift: CGFloat = 0
     @Environment(\.recordActions) private var actions
     @Environment(\.recordPlaying) private var playing
@@ -196,8 +196,7 @@ struct RecordControls: ViewModifier {
     @State private var hovering = false
     @State private var leave: Task<Void, Never>?
 
-    /// As large as a fingertip, and smaller on the card's small record, so that a gap stays between the buttons.
-    private var middle: CGFloat { min(48, spread * 0.85) }
+    private var middle: CGFloat { art * 0.65 }
 
     func body(content: Content) -> some View {
         let shown = hovering || previewHover
@@ -284,121 +283,39 @@ private struct DeckButtonStyle: ButtonStyle {
     }
 }
 
-/// The looks for the buttons on the record that `--render-buttons` draws side by side, for picking one.
-enum RecordButtonLook: String, CaseIterable {
-    case metal, vinyl, label, glass, soft, enamel
-}
-
+/// Glossy enamel caps: off-white for previous and next, honey for play and pause. The cap under the pointer grows a
+/// little and brightens, and sinks while it is held.
 private struct DeckButtonFace<Label: View>: View {
     let label: Label
     let pressed: Bool
     let size: CGFloat
     let primary: Bool
-    @Environment(\.recordButtonLook) private var look
     @State private var hovered = false
 
-    private static func white(_ level: Double) -> Color { Color(white: level) }
     private static var ink: Color { Color(red: 0.16, green: 0.11, blue: 0.12) }
-    private static var cream: Color { Color(red: 0.96, green: 0.93, blue: 0.86) }
     private static var honey: Color { Color(red: 0.97, green: 0.71, blue: 0.36) }
 
     var body: some View {
-        face
-            .brightness(pressed ? -0.06 : hovered ? 0.03 : 0)
-            .scaleEffect(pressed ? 0.95 : 1)
-            .animation(.easeOut(duration: 0.08), value: pressed)
-            .onHover { hovered = $0 }
-    }
-
-    @ViewBuilder private var face: some View {
-        switch look {
-        case .metal: metal
-        case .vinyl:
-            // Cut from the record itself: glossy black with grooves, and the same sheen as the vinyl.
-            label
-                .foregroundStyle(.white.opacity(0.92))
-                .background {
-                    ZStack {
-                        Circle().fill(RadialGradient(colors: [Self.white(0.16), Self.white(0.05)], center: .center, startRadius: 0, endRadius: size / 2))
-                        ForEach(1 ..< 5) { ring in
-                            Circle().strokeBorder(.white.opacity(0.05), lineWidth: 0.5).padding(size * 0.06 * CGFloat(ring))
-                        }
-                        Circle().fill(AngularGradient(colors: [.clear, .white.opacity(0.16), .clear, .clear, .white.opacity(0.1), .clear, .clear], center: .center, angle: .degrees(20)))
-                        Circle().strokeBorder(.white.opacity(0.16), lineWidth: 0.75)
-                    }
-                    .shadow(color: .black.opacity(0.55), radius: 4, y: 2)
-                }
-        case .label:
-            // Printed like a record's paper label: matte cream, a thin ring of ink near the edge.
-            label
-                .foregroundStyle(Self.ink)
-                .background {
-                    ZStack {
-                        Circle().fill(Self.cream)
-                        Circle().strokeBorder(Self.ink.opacity(0.3), lineWidth: 0.75).padding(size * 0.09)
-                    }
-                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1.5)
-                }
-        case .glass:
-            // A clear disc over the record: a faint fill, light caught along its top edge.
-            label
-                .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
-                .background {
-                    ZStack {
-                        Circle().fill(.white.opacity(0.14))
-                        Circle().fill(LinearGradient(colors: [.white.opacity(0.32), .clear], startPoint: .top, endPoint: .center))
-                        Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.12), .white.opacity(0.35)], startPoint: .top, endPoint: .bottom), lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
-                }
-        case .soft:
-            // Plain white, with a soft shadow under it and nothing else.
-            label
-                .foregroundStyle(Self.ink)
-                .background {
-                    Circle().fill(Self.white(0.98))
-                        .shadow(color: .black.opacity(0.35), radius: 8, y: 4)
-                        .shadow(color: .black.opacity(0.2), radius: 1, y: 1)
-                }
-        case .enamel:
-            // Glossy enamel caps: off-white for the skips, honey for play and pause.
-            label
-                .foregroundStyle(Self.ink)
-                .background {
-                    ZStack {
-                        Circle().fill(primary ? Self.honey : Self.white(0.95))
-                        Circle().fill(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0)], startPoint: .top, endPoint: .center)).padding(size * 0.08).offset(y: -size * 0.04).mask(Circle())
-                        Circle().strokeBorder(.black.opacity(0.18), lineWidth: 0.75)
-                    }
-                    .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
-                }
-        }
-    }
-
-    private var metal: some View {
-        let lift = pressed ? -0.04 : hovered ? 0.03 : 0
-        let rim = size * 0.07
-        return label
-            // Engraved: dark, with a thin highlight under each edge where the light from above catches it.
-            .foregroundStyle(Self.white(0.26))
-            .shadow(color: .white.opacity(0.75), radius: 0, y: 0.8)
+        label
+            .foregroundStyle(Self.ink)
             .background {
                 ZStack {
-                    // The bevel: bright at the top, dark at the bottom, turned over while the button is held.
-                    Circle().fill(LinearGradient(colors: [Self.white(0.98), Self.white(0.52)], startPoint: pressed ? .bottom : .top, endPoint: pressed ? .top : .bottom))
-                    // The face, brushed in circles, which catch the light at four angles.
+                    Circle().fill(primary ? Self.honey : Color(white: 0.95))
+                    // The gloss: light from above on the top half of the cap.
                     Circle()
-                        .fill(AngularGradient(colors: [0.84, 0.72, 0.9, 0.7, 0.84, 0.74, 0.92, 0.72, 0.84].map { Self.white($0 + lift) }, center: .center))
-                        .padding(rim)
-                    Circle()
-                        .fill(LinearGradient(colors: [.white.opacity(0.3), .clear, .black.opacity(0.14)], startPoint: .top, endPoint: .bottom))
-                        .padding(rim)
-                    Circle().strokeBorder(.black.opacity(0.35), lineWidth: 0.5)
+                        .fill(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0)], startPoint: .top, endPoint: .center))
+                        .padding(size * 0.08)
+                        .offset(y: -size * 0.04)
+                        .mask(Circle())
+                    Circle().strokeBorder(.black.opacity(0.18), lineWidth: 0.75)
                 }
-                .shadow(color: .black.opacity(pressed ? 0.35 : 0.5), radius: pressed ? 1 : 2.5, y: pressed ? 1 : 2)
-                .shadow(color: .black.opacity(pressed ? 0.1 : 0.25), radius: pressed ? 2 : 6, y: pressed ? 1 : 4)
+                .shadow(color: .black.opacity(hovered && !pressed ? 0.5 : 0.45), radius: hovered && !pressed ? 5 : 3, y: hovered && !pressed ? 3 : 2)
             }
+            .brightness(pressed ? -0.06 : hovered ? 0.05 : 0)
+            .scaleEffect(pressed ? 0.95 : hovered ? 1.06 : 1)
+            .animation(.easeOut(duration: 0.08), value: pressed)
+            .animation(.easeOut(duration: 0.12), value: hovered)
+            .onHover { hovered = $0 }
     }
 }
 
@@ -434,7 +351,8 @@ struct RecordDisc: View {
         }
         .frame(width: side, height: side)
         // Inside the record, since the ring of keys sits around it.
-        .modifier(RecordControls(spread: side * 0.36))
+        // The previous and next buttons sit near the edge of the record, clear of the large middle button.
+        .modifier(RecordControls(spread: side * 0.43, art: side * 0.66))
         .animation(.smooth(duration: TurntableDeck.swap), value: song)
     }
 }
@@ -850,7 +768,8 @@ struct KaraokeRecord<Footer: View>: View {
                 .frame(width: side, height: side)
                 // On the part of the record above the edge of the glass, beside the cover. Over the cover's hover area
                 // too, which would take the clicks of the middle button otherwise.
-                .modifier(RecordControls(spread: side * 0.38, lift: side * 0.1))
+                // Only the top half of the cover shows, so the middle button stays the size that it has on the deck.
+                .modifier(RecordControls(spread: side * 0.38, art: min(side * Self.label, 110), lift: side * 0.1))
             }
             .frame(width: side + 2 * Self.margin, height: side + 2 * Self.margin)
             // The record's centre sits `below` above the bottom edge of the glass.
