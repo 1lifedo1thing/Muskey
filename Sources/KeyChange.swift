@@ -161,6 +161,81 @@ struct ShiftPill: View {
     }
 }
 
+/// The key that Lock Key moved a new song from, and the key that it moved it to.
+struct KeyMove: Equatable {
+    let from: DetectedKey
+    let to: DetectedKey
+}
+
+/// The change of key under the title, written short: `A → Cm` with the shift in a circle. While the pointer is over
+/// it, it widens to `A major → C minor` and `−6 semitones`. The wide pill is drawn over the short one, so the row
+/// keeps its layout, and `expanded` lets the row hide the pills that the wide one covers.
+struct KeyMovePill: View {
+    /// No key yet while a new song waits for its key to be found: `→ Cm` with a spinner.
+    let from: DetectedKey?
+    let to: DetectedKey
+    var shift = 0
+    let hue: StripColors.Hue
+    var waiting = false
+    let palette: Palette
+    @Binding var expanded: Bool
+    @State private var hovering = false
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.keyPillExpanded) private var forcedExpanded
+
+    var body: some View {
+        pill(full: false)
+            .hidden()
+            // Pinned at its right end, so it widens to the left, over the tempo pills that the row hides meanwhile,
+            // and never past the edge of the card.
+            .overlay(alignment: .trailing) {
+                pill(full: hovering || forcedExpanded)
+                    .contentShape(Capsule())
+                    .onHover { on in
+                        hovering = on
+                        expanded = on
+                    }
+            }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .onDisappear { if hovering { expanded = false } }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(keys(full: true) + (shift == 0 ? "" : ", " + Shift.text(shift)))
+    }
+
+    private func keys(full: Bool) -> String {
+        let name = { (key: DetectedKey) in full ? key.name : key.short }
+        return from.map { "\(name($0)) → \(name(to))" } ?? "→ \(name(to))"
+    }
+
+    private func pill(full: Bool) -> some View {
+        let color = StripColors.text(hue, colorScheme)
+        return HStack(spacing: 5) {
+            if waiting {
+                Spinner(color: color)
+                    .transition(.opacity.combined(with: .scale(scale: 0.5)))
+            }
+            Text(keys(full: full))
+            if shift != 0 {
+                // A circle for the short shift, which widens into a capsule for the full one.
+                Text(full ? Shift.text(shift) : Shift.short(shift))
+                    .font(.system(size: 9, weight: .heavy, design: .rounded))
+                    .contentTransition(.numericText(value: Double(shift)))
+                    .padding(.horizontal, full ? 5 : 1.5)
+                    .frame(minWidth: 17, minHeight: 17)
+                    .background(Capsule().fill(color.opacity(0.17)))
+            }
+        }
+        .font(.system(size: 11, weight: .bold, design: .rounded))
+        .monospacedDigit()
+        .foregroundStyle(color)
+        .padding(.leading, 8)
+        .padding(.trailing, shift == 0 ? 8 : 1.5)
+        .frame(minHeight: 20)
+        .background(Capsule().fill(StripColors.tint(hue, strong: true, colorScheme)))
+        .fixedSize()
+    }
+}
+
 /// An arc that turns, in the colour of the text beside it. It is shown only while the HUD is up, since a repeating
 /// animation keeps rendering in a window that is ordered out.
 struct Spinner: View {
@@ -795,7 +870,7 @@ final class StatusItem: NSObject {
 
     /// The key in a rounded outline, written like the keys of the HUD: the tonic, with an m after it for a minor key.
     static func pill(_ key: DetectedKey) -> NSImage {
-        let label = key.tonic + (key.minor ? "m" : "")
+        let label = key.short
         if let image = pills[label] { return image }
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: label, attributes: [.font: pillFont, .foregroundColor: NSColor.black]))
         let textWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
@@ -892,7 +967,7 @@ final class StatusItem: NSObject {
         NSGraphicsContext.restoreGraphicsState()
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         for key in keys {
-            let label = key.tonic + (key.minor ? "m" : "")
+            let label = key.short
             let line = CTLineCreateWithAttributedString(NSAttributedString(string: label, attributes: [.font: pillFont]))
             let ink = CTLineGetImageBounds(line, nil)
             let baseline = ((9 - pillFont.capHeight / 2) * 2).rounded() / 2

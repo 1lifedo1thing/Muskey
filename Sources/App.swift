@@ -40,6 +40,8 @@ struct DetectedKey: Equatable {
         (minor ? minorNames : majorNames).firstIndex { $0.first == letter && ($0.count == 2) == accidental }
     }
     var name: String { "\(tonic) \(minor ? "minor" : "major")" }
+    /// The name written short, as in the menu bar and the pills under the key: `Cm`, `F♯`, `E♭m`.
+    var short: String { tonic + (minor ? "m" : "") }
 
     /// Same notes, other mode: a minor third up from minor, down from major.
     var relative: DetectedKey { DetectedKey(pitchClass: (pitchClass + (minor ? 3 : 9)) % 12, minor: !minor) }
@@ -190,8 +192,8 @@ final class HUDModel: ObservableObject {
     @Published var pitchFailed = false
     /// A key is locked, and every song that starts playing gets moved to it. Lock Key shows red only then.
     @Published var keepKey = false
-    /// The key that Lock Key moved a new song from, and the key it moved it to: `G♯ minor → C minor`.
-    @Published var moved: String?
+    /// The key that Lock Key moved a new song from, and the key it moved it to: G♯ minor to C minor.
+    @Published var moved: KeyMove?
     /// The kept key that a new song is going to. Until the first estimate of the song's own key, the song plays in
     /// that key, and the HUD shows where it is going with a spinner.
     @Published var pending: DetectedKey?
@@ -339,6 +341,13 @@ struct HUDView: View {
         return track
     }
 
+    /// The timing of karaoke's lyrics while they don't come with times, for the status in its top row. The key row
+    /// covers the top row while it shows.
+    private var karaokeTiming: Lyrics.Timing? {
+        guard focus, !model.karaokeKeys, case let .found(lyrics) = model.lyrics, lyrics.timing == .estimated || lyrics.timing == .written else { return nil }
+        return lyrics.timing
+    }
+
     var body: some View {
         let palette = Palette.of(colorScheme)
         Group {
@@ -354,12 +363,24 @@ struct HUDView: View {
         .fixedSize()
         .frame(minWidth: 180, minHeight: 92)
         .overlay(alignment: .topLeading) {
-            if model.picking {
-                // In karaoke, the close button, the key and the karaoke button sit in one row.
-                CloseButton(size: focus ? 16 : 14, action: model.onClose)
-                    .padding(focus ? 15 : 12)
-                    .modifier(FocusDim(on: focus))
-                    .transition(.opacity)
+            // In karaoke, the close button, the timing of the lyrics, the key, the lyrics' source and the karaoke button
+            // sit in one row.
+            if model.picking || karaokeTiming != nil {
+                HStack(spacing: 10) {
+                    if model.picking {
+                        CloseButton(size: focus ? 16 : 14, action: model.onClose)
+                            .transition(.opacity)
+                    }
+                    if let timing = karaokeTiming {
+                        LyricsTimingStatus(timing: timing, downloading: model.lyricsDownloading, writing: model.lyricsWriting && !model.lyricsSkipped,
+                                           palette: palette, large: true)
+                            .padding(.leading, model.picking ? 0 : 3)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(height: focus ? 16 : 14)
+                .padding(focus ? 15 : 12)
+                .modifier(FocusDim(on: focus))
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -369,6 +390,12 @@ struct HUDView: View {
                     if !focus {
                         RoundButton(symbol: "quote.bubble", help: model.lyricsShown ? "Show the keys (L)" : "Show the lyrics (L)", label: "Lyrics", key: "L",
                                     isOn: model.lyricsShown, palette: palette, action: model.onLyrics)
+                            .transition(.opacity)
+                    }
+                    // Karaoke's lyrics name their source before its button, within reach of the pointer.
+                    if focus, !model.karaokeKeys, case let .found(lyrics) = model.lyrics, let source = lyrics.source {
+                        LyricsCredit(source: source, palette: palette, large: true)
+                            .padding(.trailing, 4)
                             .transition(.opacity)
                     }
                     // Karaoke has a button too, besides Return and ⌘K, so that it can be found and clicked like the lyrics.
@@ -576,35 +603,16 @@ struct HUDView: View {
         .overlay { if track != nil { karaokeTransport(palette) } }
     }
 
-    @Environment(\.karaokeTransport) private var transportPlacement
-
-    /// Karaoke's playback buttons, which the record doesn't hold, since its cover shows the instruments and vocals.
-    @ViewBuilder private func karaokeTransport(_ palette: Palette) -> some View {
-        let buttons = KaraokeTransport(ink: palette.ink).modifier(FocusDim(on: true))
-        let record = KaraokeRecord<EmptyView>.height(side: recordSide)
-        switch transportPlacement {
-        case 1:
-            // In the top row, after the close button.
-            buttons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.leading, 38).padding(.top, 6)
-        case 2:
-            // In the top row, before the karaoke button.
-            buttons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, 40).padding(.top, 6)
-        case 3:
-            // On the record, above the title.
-            buttons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom).padding(.bottom, record - 38)
-        case 4:
-            // Along the bottom edge, after the elapsed time.
-            buttons.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading).padding(.leading, 44).padding(.bottom, 1)
-        default:
-            // In a pill of its own between the lyrics and the record.
-            KaraokeTransport(size: 30, ink: palette.ink)
-                .padding(.horizontal, 4)
-                .background(Capsule().fill(palette.ink.opacity(0.07)))
-                .overlay(Capsule().strokeBorder(palette.ink.opacity(0.1), lineWidth: 0.5))
-                .modifier(FocusDim(on: true))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .padding(.bottom, record + 2)
-        }
+    /// Karaoke's playback buttons, in a pill of their own between the lyrics and the record, which doesn't hold them,
+    /// since its cover shows the instruments and vocals.
+    private func karaokeTransport(_ palette: Palette) -> some View {
+        KaraokeTransport(size: 30, ink: palette.ink)
+            .padding(.horizontal, 4)
+            .background(Capsule().fill(palette.ink.opacity(0.07)))
+            .overlay(Capsule().strokeBorder(palette.ink.opacity(0.1), lineWidth: 0.5))
+            .modifier(FocusDim(on: true))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, KaraokeRecord<EmptyView>.height(side: recordSide) + 2)
     }
 
     private var otherMode: String { model.key.map { $0.minor ? "major" : "minor" } ?? "" }
@@ -1849,10 +1857,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if TestFlags.has("--install-yt-dlp") { filePlayer.installDownloader() }
         // `--menu "Stop Playing" [--menu-after SECONDS]` picks an item of the menu bar menu, which no automation can
         // open on macOS 27.
-        // `--glyph-sheet STYLE` opens a window of live records with that style of the cover glyph.
-        if let name = Self.stringOption("--glyph-sheet"), let style = CoverGlyphStyle(rawValue: name) {
+        // `--glyph-sheet` opens a window of live records with the play and pause glyph on their covers.
+        if TestFlags.has("--glyph-sheet") {
             let paths = Self.stringOption("--glyph-covers")?.split(separator: ",").map(String.init) ?? []
-            let window = NSWindow(contentViewController: NSHostingController(rootView: GlyphSheet(style: style, covers: GlyphSheet.covers(paths: paths))))
+            let window = NSWindow(contentViewController: NSHostingController(rootView: GlyphSheet(covers: GlyphSheet.covers(paths: paths))))
             window.title = "Glyph sheet"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
@@ -2690,7 +2698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setShift(shift, relative: relative, byPerson: false)
         if byPerson { return log("kept \(model.heard?.name ?? target.name) after the key turned out to be \(key.name), \(Shift.text(shift))") }
         model.pending = nil
-        model.moved = "\(key.name) → \(model.heard?.name ?? target.name)"
+        model.moved = KeyMove(from: key, to: model.heard ?? target)
         log("moved \(key.name) to \(model.heard?.name ?? target.name), \(Shift.text(shift))")
     }
 
@@ -3375,14 +3383,9 @@ extension EnvironmentValues {
                 if layout == "-card-shortcuts", name != "picking-Csm-3" { continue }
             }
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
-        for listed in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
+        for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"]
-            // Karaoke's playback buttons in each of their places, idle, under the key row, under the stems and in the
-            // countdown.
-            + (1 ... 5).flatMap { n in ["-lyrics-focus", "-lyrics-focus-keys", "-lyrics-focus-stems", "-lyrics-focus-rewind"].map { "\($0)-t\(n)" } } {
-            let placement = listed.range(of: "-t[1-5]$", options: .regularExpression).map { Int(listed[$0].dropFirst(2)) ?? 0 } ?? 0
-            let variant = placement > 0 ? String(listed.dropLast(3)) : listed
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -3471,7 +3474,7 @@ extension EnvironmentValues {
             if variant.hasSuffix("-paused") { model.playFlash = PlayFlash(playing: false, id: 1) }
             if variant.hasSuffix("-skip") { model.playFlash = PlayFlash(playing: true, id: 1, skip: 1) }
             // The pill that Lock Key shows after it moved a new song.
-            if name == "picking-A-to-Cm" { model.moved = "A major → C minor" }
+            if name == "picking-A-to-Cm" { model.moved = KeyMove(from: DetectedKey(pitchClass: 9, minor: false), to: DetectedKey(pitchClass: 0, minor: true)) }
             if name == "listening-waiting-Cm" { model.pending = DetectedKey(pitchClass: 0, minor: true) }
             let view = HUDView(model: model)
                 .frame(width: HUDPanel.size.width, height: HUDPanel.size.height)
@@ -3480,12 +3483,12 @@ extension EnvironmentValues {
                 .environment(\.renderingPreview, true)
                 .environment(\.cornerLabelsShown, variant == "-labels")
                 .environment(\.recordHovered, variant.contains("-skip"))
-                .environment(\.karaokeTransport, placement > 0 ? placement : 5)
+                .environment(\.keyPillExpanded, variant == "-key-hover")
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
                let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-                try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)\(suffix)\(layout)\(listed)-\(scheme).png"))
+                try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)\(suffix)\(layout)\(variant)-\(scheme).png"))
             }
         }
         }

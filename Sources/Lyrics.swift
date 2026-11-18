@@ -358,7 +358,7 @@ struct LyricsPanel: View {
             // Whisper listens for the first phrase of a song that LRCLIB doesn't have.
             VStack(spacing: 10) {
                 ProgressView().controlSize(.small)
-                pill(lyrics.timing)
+                LyricsTimingStatus(timing: lyrics.timing, downloading: downloading, writing: writing, palette: palette, large: large)
             }
         case let .found(lyrics): lines(lyrics)
         case .loading: ProgressView().controlSize(.small)
@@ -402,7 +402,7 @@ struct LyricsPanel: View {
             .frame(width: width, height: height, alignment: .top)
             .clipped()
             .mask(fade)
-            .overlay(alignment: .bottom) { footer(lyrics) }
+            .overlay(alignment: .bottom) { if !large { footer(lyrics) } }
         } else {
             // Another song starts at its top, without the offset or the pause of the last one. New times for the same
             // lines, as the song is heard, keep the scroll.
@@ -421,38 +421,14 @@ struct LyricsPanel: View {
     }
 
     /// The timing of lyrics that don't come with times, and the service that the lyrics came from, with a link to it.
+    /// Karaoke shows both in its top row instead.
     private func footer(_ lyrics: Lyrics) -> some View {
-        HStack(spacing: 6) {
-            if lyrics.timing == .estimated || lyrics.timing == .written { pill(lyrics.timing) }
-            if let source = lyrics.source { credit(source) }
-        }
-    }
-
-    private func credit(_ source: LyricsSource) -> some View {
-        Link(destination: source.url) {
-            HStack(spacing: 3) {
-                Text(source.name)
-                Image(systemName: "arrow.up.right").font(.system(size: large ? 8 : 7, weight: .bold))
+        HStack(spacing: 8) {
+            if lyrics.timing == .estimated || lyrics.timing == .written {
+                LyricsTimingStatus(timing: lyrics.timing, downloading: downloading, writing: writing, palette: palette)
             }
-            .font(.system(size: large ? 11 : 10, weight: .semibold, design: .rounded))
-            .foregroundStyle(palette.muted)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(palette.ink.opacity(0.08)))
+            if let source = lyrics.source { LyricsCredit(source: source, palette: palette) }
         }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .help("Open \(source.name)")
-    }
-
-    private func pill(_ timing: Lyrics.Timing) -> some View {
-        Text(downloading ? "Downloading speech model" : timing == .written ? (writing ? "Transcribing" : "Transcribed") : "Estimated timing")
-            .monospacedDigit()
-            .font(.system(size: 10, weight: .semibold, design: .rounded))
-            .foregroundStyle(palette.muted)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(palette.ink.opacity(0.08)))
     }
 
     /// How long Whisper collects the song before the song steps back, which the ring of the countdown empties over.
@@ -516,7 +492,7 @@ struct LyricsPanel: View {
                 follow(proxy, animated: true)
             }
             .mask(fade)
-            .overlay(alignment: .bottom) { footer(lyrics) }
+            .overlay(alignment: .bottom) { if !large { footer(lyrics) } }
         }
     }
 
@@ -545,5 +521,48 @@ struct LyricsPanel: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .animation(.easeOut(duration: 0.25), value: current)
+    }
+}
+
+/// The timing of lyrics that don't come with times, as a dim status with no background, since it can't be clicked.
+struct LyricsTimingStatus: View {
+    let timing: Lyrics.Timing
+    var downloading = false
+    var writing = false
+    let palette: Palette
+    var large = false
+
+    var body: some View {
+        Label(downloading ? "Downloading speech model" : timing == .written ? (writing ? "Transcribing" : "Transcribed") : "Estimated timing",
+              systemImage: downloading ? "arrow.down.circle" : timing == .written ? "waveform" : "clock")
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: large ? 11 : 10, weight: .medium, design: .rounded))
+            .foregroundStyle(palette.muted.opacity(0.8))
+            .fixedSize()
+    }
+}
+
+/// The service that the lyrics came from, in a pill that opens its page.
+struct LyricsCredit: View {
+    let source: LyricsSource
+    let palette: Palette
+    var large = false
+
+    var body: some View {
+        Link(destination: source.url) {
+            HStack(spacing: 3) {
+                Text(source.name)
+                Image(systemName: "arrow.up.right").font(.system(size: large ? 8 : 7, weight: .bold))
+            }
+            .font(.system(size: large ? 11 : 10, weight: .semibold, design: .rounded))
+            .foregroundStyle(palette.muted)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(palette.ink.opacity(0.08)))
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .help("Open \(source.name)")
     }
 }

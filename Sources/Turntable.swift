@@ -200,17 +200,15 @@ extension EnvironmentValues {
     @Entry var recordButtonsShown = false
     /// The pointer is over the cover, which shows this glyph.
     @Entry var recordGlyph: RecordGlyph?
-    @Entry var coverGlyphStyle = CoverGlyphStyle.difference
-    /// Where karaoke shows its playback buttons, from 1 to 5, until one is picked: after the close button, before the
-    /// karaoke button, on the record above the title, beside the elapsed time, or in a pill above the record.
-    @Entry var karaokeTransport = 5
+    /// `--render` shows the pill of the key change at its full width, as the pointer over it does.
+    @Entry var keyPillExpanded = false
 }
 
 /// A click on the record plays or pauses the song, as Space does. The pointer over the record shrinks its cover a
 /// little, which widens the rim around it, and shows previous and next as bare glyphs on the rim, on the same line
-/// as the play glyph. On the deck they are drawn over the tonearm. The cover itself is the play and pause button: the
-/// pointer over it tints it faintly and shows the glyph in its middle. Nothing gets a cap or a plate, so the cover art
-/// stays the thing to look at. `diameter` is the record's width, `label` the cover's width against it, and `lift` how
+/// as the play glyph. On the deck they are drawn over the tonearm. The cover itself is the play and pause button: it
+/// is dimmed and blurred a little under a white glyph, and more while the pointer is over it. Nothing gets a cap or a
+/// plate, so the cover art stays the thing to look at. `diameter` is the record's width, `label` the cover's width against it, and `lift` how
 /// far above the centre the glyphs sit, for karaoke's record, which shows its top half only.
 struct RecordControls: ViewModifier {
     let diameter: CGFloat
@@ -232,8 +230,8 @@ struct RecordControls: ViewModifier {
     private var rim: CGFloat { min(34, diameter * (1 - label * Self.shrink) / 2 * 0.86) }
 
     private var glyph: RecordGlyph? {
-        guard (hovering && coverHovered) || previewHover else { return nil }
-        return RecordGlyph(symbol: playing ? "pause.fill" : "play.fill", size: min(lift > 0 ? 40 : 54, cover * 0.36), lift: lift)
+        guard hovering || previewHover else { return nil }
+        return RecordGlyph(symbol: playing ? "pause.fill" : "play.fill", size: min(lift > 0 ? 40 : 54, cover * 0.36), lift: lift, hot: hovering && coverHovered)
     }
 
     func body(content: Content) -> some View {
@@ -283,73 +281,41 @@ struct RecordButtonsShown: PreferenceKey {
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
 
-/// The play or pause glyph in the middle of the cover, drawn in the difference blend mode: white turned into the
-/// opposite of the cover under it, so it reads on a white cover as on a black one. The spinning record draws it in its
-/// own layer tree, since SwiftUI can't blend with the layer that turns.
+/// The play or pause glyph in the middle of the cover: white with a soft shadow, over the cover dimmed and blurred a
+/// little, and more while the pointer is over the cover. The spinning record draws it in its own layer tree, with the
+/// blurred cover turning under it.
 struct RecordGlyph: Equatable {
     let symbol: String
     let size: CGFloat
     /// Points above the middle of the cover, on karaoke's record.
     let lift: CGFloat
+    /// The pointer is over the cover, which is the button.
+    var hot = false
 
-    /// The faint tint on the cover under the glyph. Darkening the cover first pushes mid-tone covers away from grey, where
-    /// the difference blend would leave the glyph the same colour as the art.
-    static let tint = 0.24
+    /// The black over the cover, while the record shows its buttons and while the pointer is over the cover.
+    static let dim = 0.3
+    static let hotDim = 0.5
+    /// The blur of the cover in points, likewise.
+    static let blur: CGFloat = 0.6
+    static let hotBlur: CGFloat = 3
+
+    var dim: Double { hot ? Self.hotDim : Self.dim }
+    var blur: CGFloat { hot ? Self.hotBlur : Self.blur }
 
     /// The triangle's weight sits left of its box, so it moves right to look centred.
     var nudge: CGFloat { symbol == "play.fill" ? size * 0.07 : 0 }
 
-    var image: some View { image(.white) }
-
-    func image(_ color: Color) -> some View {
-        Image(systemName: symbol).font(.system(size: size, weight: .bold)).foregroundStyle(color)
-    }
-}
-
-/// How the play or pause glyph on the cover stays readable, compared with `--glyph-sheet`.
-enum CoverGlyphStyle: String, CaseIterable {
-    /// White in the difference blend mode, over the faint tint.
-    case difference
-    /// White in the exclusion blend mode, which is softer in the mid-tones, over the faint tint.
-    case exclusion
-    /// White with a soft dark shadow around it, over the faint tint.
-    case shadow
-    /// White over a stronger tint of the whole cover.
-    case dim
-    /// White on a dark translucent disc behind the glyph.
-    case disc
-    /// White on a disc of the cover, blurred and darkened.
-    case frosted
-    /// Black on a light cover and white on a dark one, from the brightness of the middle of the cover, with a soft
-    /// halo of the other colour.
-    case adaptive
-
-    var letter: String { ["A", "B", "C", "D", "E", "F", "G"][Self.allCases.firstIndex(of: self)!] }
-
-    var title: String {
-        switch self {
-        case .difference: "Difference blend"
-        case .exclusion: "Exclusion blend"
-        case .shadow: "White with a shadow"
-        case .dim: "Dimmed cover"
-        case .disc: "Dark disc"
-        case .frosted: "Frosted disc"
-        case .adaptive: "Black or white by cover"
-        }
+    var image: some View {
+        Image(systemName: symbol).font(.system(size: size, weight: .bold)).foregroundStyle(.white)
     }
 
-    /// The black tint on the cover under the glyph.
-    var tint: CGFloat {
-        switch self {
-        case .difference, .exclusion, .shadow, .adaptive: RecordGlyph.tint
-        case .dim: 0.5
-        case .disc, .frosted: 0
-        }
-    }
+    /// The shadow under the glyph, which keeps it apart from a light cover.
+    static let shadowOpacity = 0.6
+    var shadowRadius: CGFloat { size * 0.14 }
 }
 
 /// The shrunk cover as the play and pause button: a thin ring while the pointer is over it, and nothing otherwise.
-/// The record draws the tint and the glyph, since the tint has to sit under the glyph for the blend to read.
+/// The record draws the dim, the blur and the glyph, since the blur has to turn with the cover.
 private struct CoverButton: View {
     let size: CGFloat
     let glyph: RecordGlyph?
@@ -359,7 +325,7 @@ private struct CoverButton: View {
     @Environment(\.renderingPreview) private var renderingPreview
 
     var body: some View {
-        let lit = glyph != nil
+        let lit = glyph?.hot == true
         Button(action: action) {
             Circle().strokeBorder(.white.opacity(lit ? 0.22 : 0), lineWidth: 1)
                 .frame(width: size, height: size)
@@ -512,13 +478,15 @@ private struct Record: View {
                         }
                     }
                     if part == .whole {
-                        cover(side * label)
+                        cover(side * label, blur: glyph?.blur ?? 0)
                             .scaleEffect(buttonsShown ? RecordControls.shrink : 1)
                             .animation(.easeOut(duration: 0.18), value: buttonsShown)
                         if let glyph {
-                            Circle().fill(.black.opacity(RecordGlyph.tint))
+                            Circle().fill(.black.opacity(glyph.dim))
                                 .frame(width: side * label * RecordControls.shrink, height: side * label * RecordControls.shrink)
-                            glyph.image.blendMode(.difference).offset(x: glyph.nudge, y: -glyph.lift)
+                            glyph.image
+                                .shadow(color: .black.opacity(RecordGlyph.shadowOpacity), radius: glyph.shadowRadius)
+                                .offset(x: glyph.nudge, y: -glyph.lift)
                         }
                     }
                 }
@@ -530,7 +498,7 @@ private struct Record: View {
     }
 
     /// The cover on the label, or a plain cream label, with the spindle in its middle.
-    private func cover(_ width: CGFloat) -> some View {
+    private func cover(_ width: CGFloat, blur: CGFloat = 0) -> some View {
         ZStack {
             Group {
                 if let artwork {
@@ -540,6 +508,7 @@ private struct Record: View {
                 }
             }
             .frame(width: width, height: width)
+            .blur(radius: blur, opaque: true)
             .clipShape(Circle())
             .overlay(Circle().strokeBorder(.black.opacity(0.5), lineWidth: 1))
             Circle()
@@ -583,9 +552,18 @@ private struct SpinningRecord: NSViewRepresentable {
             let cover = ImageRenderer(content: Record(artwork: artwork, shadow: false, label: label, part: .cover).frame(width: side * label, height: side * label))
             cover.scale = scale
             view.cover.contents = cover.cgImage
-            view.coverChanged()
+            // The art alone, square and without the label's edge, for the blur: a blur of the round label would let
+            // the transparent corners bleed in at its edge.
+            let art = ImageRenderer(content: Group {
+                if let artwork {
+                    Image(nsImage: artwork).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Color(red: 0.93, green: 0.88, blue: 0.80)
+                }
+            }.frame(width: side * label, height: side * label).clipped())
+            art.scale = scale
+            view.coverChanged(art: art.cgImage)
         }
-        view.style = context.environment.coverGlyphStyle
         view.shrunk = context.environment.recordButtonsShown
         view.show(context.environment.recordGlyph)
         let rewinds = context.environment.recordRewinds
@@ -603,26 +581,27 @@ private struct SpinningRecord: NSViewRepresentable {
         /// song is paused too.
         let cover = CALayer()
         private let coverScale = CALayer()
-        /// The play or pause glyph, which stays upright over the turning cover and blends with it.
+        /// The cover blurred a little and blurred more, over the cover. Each fades in its holder and turns inside it,
+        /// since a layer that a pause stops can't fade either.
+        private let softHolder = CALayer()
+        private let hotHolder = CALayer()
+        private let softBlur = CALayer()
+        private let hotBlur = CALayer()
+        private var blurDrawn = false
+        private var art: CGImage?
+        /// The play or pause glyph, which stays upright over the turning cover.
         private let glyph = CALayer()
-        /// The faint tint on the shrunk cover, under the glyph and still, since it is a plain circle.
+        /// The dim on the shrunk cover, under the glyph and still, since it is a plain circle.
         private let tint = CALayer()
-        /// The disc behind the glyph, for the styles that frame it.
-        private let backing = CALayer()
         private var shownGlyph: RecordGlyph?
         private var glyphImageKey: String?
-        private var coverLuminance: CGFloat?
-        private var frostedImage: CGImage?
+        private static let blurContext = CIContext()
 
-        var style = CoverGlyphStyle.difference {
-            didSet { if style != oldValue { styleGlyph() } }
-        }
-
-        /// The cover was drawn again: its brightness and its blurred middle are found again when a style needs them.
-        func coverChanged() {
-            coverLuminance = nil
-            frostedImage = nil
-            styleGlyph()
+        /// The cover was drawn again, so its blurred copies are drawn again too.
+        func coverChanged(art: CGImage?) {
+            self.art = art
+            blurDrawn = false
+            if shownGlyph != nil { drawBlur() }
         }
         private let label: CGFloat
 
@@ -636,16 +615,21 @@ private struct SpinningRecord: NSViewRepresentable {
             layer?.addSublayer(record)
             layer?.addSublayer(coverScale)
             coverScale.addSublayer(cover)
-            tint.backgroundColor = NSColor.black.withAlphaComponent(RecordGlyph.tint).cgColor
+            for (holder, blur) in [(softHolder, softBlur), (hotHolder, hotBlur)] {
+                holder.opacity = 0
+                holder.masksToBounds = true
+                blur.contentsGravity = .resizeAspect
+                holder.addSublayer(blur)
+                coverScale.addSublayer(holder)
+            }
+            tint.backgroundColor = NSColor.black.cgColor
             tint.opacity = 0
             layer?.addSublayer(tint)
-            backing.opacity = 0
-            backing.masksToBounds = true
-            backing.contentsGravity = .resizeAspectFill
-            layer?.addSublayer(backing)
-            glyph.compositingFilter = "differenceBlendMode"
             glyph.contentsGravity = .center
             glyph.opacity = 0
+            glyph.shadowColor = NSColor.black.cgColor
+            glyph.shadowOpacity = Float(RecordGlyph.shadowOpacity)
+            glyph.shadowOffset = .zero
             layer?.addSublayer(glyph)
             // Clockwise, one turn every `period` seconds.
             let turn = CABasicAnimation(keyPath: "transform.rotation.z")
@@ -670,6 +654,14 @@ private struct SpinningRecord: NSViewRepresentable {
             coverScale.position = CGPoint(x: bounds.midX, y: bounds.midY)
             cover.bounds = coverScale.bounds
             cover.position = CGPoint(x: coverScale.bounds.midX, y: coverScale.bounds.midY)
+            for layer in [softHolder, hotHolder, softBlur, hotBlur] {
+                layer.bounds = coverScale.bounds
+                layer.position = cover.position
+            }
+            softHolder.cornerRadius = coverScale.bounds.width / 2
+            hotHolder.cornerRadius = coverScale.bounds.width / 2
+            // The buttons can show before the first layout, which gives the cover its size.
+            if shownGlyph != nil { drawBlur() }
             let shrunkSide = bounds.width * label * RecordControls.shrink
             tint.bounds = CGRect(x: 0, y: 0, width: shrunkSide, height: shrunkSide)
             tint.cornerRadius = shrunkSide / 2
@@ -678,116 +670,67 @@ private struct SpinningRecord: NSViewRepresentable {
             CATransaction.commit()
         }
 
-        /// Shows the glyph over the cover, or fades it out with nil.
+        /// Shows the glyph over the dimmed and blurred cover, or fades them out with nil.
         func show(_ new: RecordGlyph?) {
             guard new != shownGlyph else { return }
             if let new {
                 shownGlyph = new
-                styleGlyph()
+                drawGlyph()
+                drawBlur()
             }
             CATransaction.begin()
-            CATransaction.setAnimationDuration(0.12)
+            CATransaction.setAnimationDuration(0.15)
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
             placeGlyph()
-            for layer in [glyph, tint, backing] { layer.opacity = new == nil ? 0 : 1 }
+            glyph.opacity = new == nil ? 0 : 1
+            tint.opacity = Float(new?.dim ?? 0)
+            softHolder.opacity = new == nil ? 0 : 1
+            hotHolder.opacity = new?.hot == true ? 1 : 0
             CATransaction.commit()
             if new == nil { shownGlyph = nil }
         }
 
-        /// A black glyph for the adaptive style on a light cover.
-        private var darkGlyph: Bool { style == .adaptive && luminance() > 0.6 }
-
-        /// Draws the glyph, its tint and its disc in the style.
-        private func styleGlyph() {
+        private func drawGlyph() {
             guard let new = shownGlyph else { return }
-            let dark = darkGlyph
+            let key = "\(new.symbol) \(new.size)"
+            guard key != glyphImageKey else { return }
+            glyphImageKey = key
             let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            let key = "\(new.symbol) \(new.size) \(dark)"
-            if key != glyphImageKey {
-                glyphImageKey = key
-                let renderer = ImageRenderer(content: new.image(dark ? .black : .white))
-                renderer.scale = scale
-                glyph.contents = renderer.cgImage
-                glyph.contentsScale = scale
-                if let image = renderer.cgImage {
-                    glyph.bounds = CGRect(x: 0, y: 0, width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-                }
+            let renderer = ImageRenderer(content: new.image)
+            renderer.scale = scale
+            glyph.contents = renderer.cgImage
+            glyph.contentsScale = scale
+            if let image = renderer.cgImage {
+                glyph.bounds = CGRect(x: 0, y: 0, width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
             }
-            glyph.compositingFilter = switch style {
-            case .difference: "differenceBlendMode"
-            case .exclusion: "exclusionBlendMode"
-            default: nil
-            }
-            let shadowed = style == .shadow || style == .adaptive
-            glyph.shadowColor = (dark ? NSColor.white : NSColor.black).cgColor
-            glyph.shadowOpacity = shadowed ? 0.6 : 0
-            glyph.shadowRadius = new.size * 0.14
-            glyph.shadowOffset = .zero
-            tint.backgroundColor = dark ? NSColor.white.withAlphaComponent(0.2).cgColor : NSColor.black.withAlphaComponent(style.tint).cgColor
-            let side = (new.size * 1.9).rounded()
-            backing.bounds = CGRect(x: 0, y: 0, width: side, height: side)
-            backing.cornerRadius = side / 2
-            switch style {
-            case .disc:
-                backing.contents = nil
-                backing.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
-            case .frosted:
-                backing.backgroundColor = nil
-                backing.contents = frosted(side: side)
-            default:
-                backing.contents = nil
-                backing.backgroundColor = nil
-            }
+            glyph.shadowRadius = new.shadowRadius
             CATransaction.commit()
             placeGlyph()
         }
 
-        /// The brightness of the middle of the cover, from 0 to 1.
-        private func luminance() -> CGFloat {
-            if let coverLuminance { return coverLuminance }
-            guard let image = cover.contents.map({ $0 as! CGImage }) else { return 0 }
-            let w = CGFloat(image.width), crop = CGRect(x: w * 0.3, y: w * 0.3, width: w * 0.4, height: w * 0.4)
-            guard let middle = image.cropping(to: crop),
-                  let context = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32, space: CGColorSpaceCreateDeviceRGB(),
-                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            else { return 0 }
-            context.draw(middle, in: CGRect(x: 0, y: 0, width: 8, height: 8))
-            guard let data = context.data?.assumingMemoryBound(to: UInt8.self) else { return 0 }
-            var total = 0.0
-            for i in 0 ..< 64 {
-                total += 0.2126 * Double(data[i * 4]) + 0.7152 * Double(data[i * 4 + 1]) + 0.0722 * Double(data[i * 4 + 2])
+        /// Blurs the cover the two ways, once for each cover and only when the buttons first show on it.
+        private func drawBlur() {
+            guard !blurDrawn, let image = art, cover.bounds.width > 0 else { return }
+            blurDrawn = true
+            let pixels = CGFloat(image.width) / cover.bounds.width
+            let input = CIImage(cgImage: image)
+            func blurred(_ points: CGFloat) -> CGImage? {
+                let output = input.clampedToExtent().applyingGaussianBlur(sigma: points * pixels).cropped(to: input.extent)
+                return Self.blurContext.createCGImage(output, from: input.extent)
             }
-            let value = CGFloat(total / 64 / 255)
-            coverLuminance = value
-            return value
-        }
-
-        /// The middle of the cover, blurred and darkened, as large as the disc around the glyph.
-        private func frosted(side: CGFloat) -> CGImage? {
-            if let frostedImage { return frostedImage }
-            guard let image = cover.contents.map({ $0 as! CGImage }) else { return nil }
-            let shown = bounds.width * label * RecordControls.shrink
-            let w = CGFloat(image.width), part = min(w, w * side / max(shown, 1))
-            let crop = CGRect(x: (w - part) / 2, y: (w - part) / 2, width: part, height: part)
-            guard let middle = image.cropping(to: crop) else { return nil }
-            let input = CIImage(cgImage: middle)
-            let blurred = input.clampedToExtent()
-                .applyingGaussianBlur(sigma: part * 0.06)
-                // A stop and a half darker, so a white cover leaves a mid-grey disc that the white glyph reads on.
-                .applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -1.5])
-                .cropped(to: input.extent)
-            let result = CIContext().createCGImage(blurred, from: input.extent)
-            frostedImage = result
-            return result
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            softBlur.contents = blurred(RecordGlyph.blur)
+            hotBlur.contents = blurred(RecordGlyph.hotBlur)
+            CATransaction.commit()
         }
 
         private func placeGlyph() {
             let lift = shownGlyph?.lift ?? 0
             // The view isn't flipped, so a lift is a move up in its coordinates.
             glyph.position = CGPoint(x: bounds.midX + (shownGlyph?.nudge ?? 0), y: bounds.midY + lift)
-            backing.position = CGPoint(x: bounds.midX, y: bounds.midY + lift)
         }
 
         var shrunk = false {
@@ -817,8 +760,8 @@ private struct SpinningRecord: NSViewRepresentable {
             for layer in turning { layer.add(back, forKey: "rewind") }
         }
 
-        /// The vinyl and the cover, which turn and pause together.
-        private var turning: [CALayer] { [record, cover] }
+        /// The vinyl, the cover and its blurred copies, which turn and pause together.
+        private var turning: [CALayer] { [record, cover, softBlur, hotBlur] }
 
         /// Holds the record at its angle; the animation starts again from there.
         private func pause() {
@@ -1206,45 +1149,40 @@ struct ArrivalRing: View {
     }
 }
 
-/// `--glyph-sheet STYLE`: live records with the play and pause glyph over a set of covers, at the size of the wide
-/// layout's record and of the card's, for picking how the glyph stays readable.
+/// `--glyph-sheet`: live records with the play and pause glyph over a set of covers, at the size of the wide layout's
+/// record and of the card's, as the pointer over the record shows them, and as the pointer over the cover does.
 struct GlyphSheet: View {
-    let style: CoverGlyphStyle
     let covers: [(name: String, image: NSImage)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("\(style.letter). \(style.title)")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-            row(symbol: "play.fill", side: 165.6)
-            row(symbol: "pause.fill", side: 165.6)
-            row(symbol: "play.fill", side: 136)
-            row(symbol: "pause.fill", side: 136)
+            row(symbol: "play.fill", side: 165.6, hot: false)
+            row(symbol: "play.fill", side: 165.6, hot: true)
+            row(symbol: "pause.fill", side: 136, hot: false)
+            row(symbol: "pause.fill", side: 136, hot: true)
         }
         .padding(18)
         .background(Color(white: 0.11))
         .environment(\.colorScheme, .dark)
     }
 
-    private func row(symbol: String, side: CGFloat) -> some View {
+    private func row(symbol: String, side: CGFloat, hot: Bool) -> some View {
         HStack(spacing: 12) {
             ForEach(covers, id: \.name) { cover in
                 let shown = side * 0.66 * RecordControls.shrink
                 ZStack {
                     SpinningRecord(artwork: cover.image, spinning: false, side: side)
-                    Circle().strokeBorder(.white.opacity(0.22), lineWidth: 1).frame(width: shown, height: shown)
+                    Circle().strokeBorder(.white.opacity(hot ? 0.22 : 0), lineWidth: 1).frame(width: shown, height: shown)
                 }
                 .frame(width: side, height: side)
                 .environment(\.recordButtonsShown, true)
-                .environment(\.recordGlyph, RecordGlyph(symbol: symbol, size: min(54, shown * 0.36), lift: 0))
-                .environment(\.coverGlyphStyle, style)
+                .environment(\.recordGlyph, RecordGlyph(symbol: symbol, size: min(54, shown * 0.36), lift: 0, hot: hot))
             }
         }
     }
 
-    /// The flat and split covers that the blends find hardest, then the covers of `--glyph-covers`. A flat black cover
-    /// is left out, since a dark cover with a white glyph is the easy case.
+    /// The flat and split covers where a white glyph is hardest to read, then the covers of `--glyph-covers`. A flat
+    /// black cover is left out, since a dark cover with a white glyph is the easy case.
     static func covers(paths: [String]) -> [(name: String, image: NSImage)] {
         func flat(_ name: String, _ draw: @escaping (CGRect) -> Void) -> (String, NSImage) {
             (name, NSImage(size: NSSize(width: 600, height: 600), flipped: false) { rect in

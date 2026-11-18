@@ -36,7 +36,7 @@ yt-dlp takes only the audio. With ffmpeg, it converts any audio to M4A. Without 
 
 ### Controls on the record
 
-A click on the record plays or pauses the song, as Space does. With the pointer over the record, its cover shrinks a little and the previous and next glyphs show on the rim, at its sides. The pointer over the cover tints it faintly and shows a play or pause glyph in its middle, drawn in the difference blend mode so it reads on any cover except a mid-grey one, and a click on the cover plays or pauses the song. A two-finger swipe across the HUD skips too: fingers moving left play the next song, and fingers moving right play the previous one. Only a trackpad swipe that is mostly sideways counts. Scrolling the lyrics or turning the wheel of a mouse doesn't change the song. These controls send the commands of the media keys to the app that plays the song, so they work with any player.
+A click on the record plays or pauses the song, as Space does. With the pointer over the record, its cover shrinks a little, the previous and next glyphs show on the rim, at its sides, and a white play or pause glyph with a shadow shows in the middle of the cover, which is dimmed and blurred a little under it. The pointer over the cover dims and blurs it more, and a click on the cover plays or pauses the song. A two-finger swipe across the HUD skips too: fingers moving left play the next song, and fingers moving right play the previous one. Only a trackpad swipe that is mostly sideways counts. Scrolling the lyrics or turning the wheel of a mouse doesn't change the song. These controls send the commands of the media keys to the app that plays the song, so they work with any player.
 
 ### Hotkey
 
@@ -137,7 +137,7 @@ Builds made with `make` or `make install` take these flags, and release builds i
 | Flag | Action |
 |---|---|
 | `--key-lookup "Title\|Artist\|Album\|Seconds"` | Ask Noiseblend for the key of that song, print the answer and quit |
-| `--glyph-sheet STYLE` | Open a window of live records with the play and pause glyph in STYLE (`difference`, `exclusion`, `shadow`, `dim`, `disc`, `frosted` or `adaptive`) over flat covers and the images of `--glyph-covers A,B,…` |
+| `--glyph-sheet` | Open a window of live records with the play and pause glyph over flat covers and the images of `--glyph-covers A,B,…`, as the pointer over the record shows it and as the pointer over the cover does |
 | `--open-menu-after S` | Open the menu bar menu after S seconds, so that a posted key reaches the open menu |
 | `--speed S` | Play the first song that Muskey Player opens at speed S (0.5 to 1.5), with the pitch correction |
 | `--tempo FILE` | Print the tempo of the part of FILE that a listen would hear, and quit. `--tempo-at S` moves the start from 45 seconds, and `--seconds S` sets the length |

@@ -91,11 +91,13 @@ struct TitleLine: View {
     }
 }
 
-/// The pills under the title: the song's tempo, then the shift and the move that Lock Key made, or the kept key that
-/// a new song waits for. A pitch change that failed takes the place of all of them.
+/// The pills under the title: the song's tempo, then the change of key with its shift (red when Lock Key made it), or
+/// the kept key that a new song waits for. A pitch change that failed takes the place of all of them.
 struct ShiftPills: View {
     @ObservedObject var model: HUDModel
     let palette: Palette
+    @State private var keyExpanded = false
+    @Environment(\.keyPillExpanded) private var forcedExpanded
 
     var body: some View {
         if model.pitchFailed {
@@ -105,7 +107,8 @@ struct ShiftPills: View {
             // key take a row each there.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
-                    tempoPills
+                    // The key pill widens over the tempo pills beside it while the pointer is over it.
+                    tempoPills.opacity(keyExpanded || forcedExpanded ? 0 : 1)
                     keyPills
                 }
                 VStack(spacing: 5) {
@@ -134,17 +137,19 @@ struct ShiftPills: View {
     @ViewBuilder private var keyPills: some View {
         if let pending = model.pending {
             // In the red of Lock Key, which turns it into the move once the song's key is found.
-            ShiftPill(text: "→ \(pending.name)", hue: .red, waiting: true, palette: palette)
+            KeyMovePill(from: nil, to: pending, hue: .red, waiting: true, palette: palette, expanded: $keyExpanded)
                 .transition(.opacity)
-        } else {
-            if model.shift != 0 {
-                ShiftPill(text: Shift.text(model.shift), hue: model.shift > 0 ? StripColors.up : StripColors.down, palette: palette)
-                    .contentTransition(.numericText(value: Double(model.shift)))
-            }
+        } else if let moved = model.moved {
             // In the red of Lock Key, which made the change.
-            if let moved = model.moved {
-                ShiftPill(text: moved, hue: .red, palette: palette)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            KeyMovePill(from: moved.from, to: moved.to, shift: model.shift, hue: .red, palette: palette, expanded: $keyExpanded)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+        } else if model.shift != 0 {
+            let hue = model.shift > 0 ? StripColors.up : StripColors.down
+            if let key = model.key, let heard = model.heard {
+                KeyMovePill(from: key, to: heard, shift: model.shift, hue: hue, palette: palette, expanded: $keyExpanded)
+            } else {
+                ShiftPill(text: Shift.text(model.shift), hue: hue, palette: palette)
+                    .contentTransition(.numericText(value: Double(model.shift)))
             }
         }
     }
