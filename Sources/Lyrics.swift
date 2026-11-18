@@ -23,6 +23,9 @@ struct Lyrics: Hashable, Sendable {
 
     var lines: [Line]
     var timing: Timing
+    /// The service that the lyrics came from, for the credit under them. Nil for lyrics added by hand or written by
+    /// Whisper.
+    var source: LyricsSource? = nil
 
     /// The lyrics as text for editing: LRC when they come with times, plain otherwise.
     var text: String {
@@ -61,12 +64,15 @@ struct Lyrics: Hashable, Sendable {
                 times.append(minutes * 60 + seconds)
                 rest = rest[rest.index(after: close)...]
             }
-            let text = rest.trimmingCharacters(in: .whitespaces)
+            // Word-timed LRC puts a stamp like `<00:31.41>` before each word.
+            let text = rest.replacing(Self.wordStamp, with: "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
             lines += times.map { Line(time: $0, text: text) }
         }
         guard lines.contains(where: { !$0.text.isEmpty }) else { return nil }
         return Lyrics(lines: lines.sorted { $0.time < $1.time }, timing: .synced)
     }
+
+    private static let wordStamp = try! Regex(#"<\d+:\d+(?:[.:]\d+)?>"#)
 
     /// Times for lyrics that come without them: the lines are spread over the part of the song that most likely
     /// has vocals, each one taking time in proportion to its syllables, with a pause at each break between verses.
@@ -94,14 +100,15 @@ enum LyricsState: Equatable, Sendable {
     case failed
 }
 
-/// Finds lyrics on LRCLIB (lrclib.net), which has synced lyrics for most popular songs. Only the title, artist,
-/// album and length of the song are sent, and only while the lyrics panel is open. Each song is asked for once:
-/// lyrics, a song without lyrics and a failed request are kept until the app quits, and a failed request is asked
-/// again only by Retry. Main thread only, apart from the requests.
+/// Finds lyrics on LRCLIB (lrclib.net), which has synced lyrics for most popular songs, and for a song that it has no
+/// synced lyrics for, on lrc.red, NetEase Cloud Music and the AMLL TTML DB (LyricsSources.swift). Only the title,
+/// artist, album and length of the song are sent, and only while the lyrics panel is open. Each song is asked for
+/// once: lyrics, a song without lyrics and a failed request are kept until the app quits, and a failed request is
+/// asked again only by Retry. Main thread only, apart from the requests.
 final class LyricsFinder: @unchecked Sendable {
     private var results: [String: LyricsState] = [:]
     private var waiting: [String: [(LyricsState) -> Void]] = [:]
-    private let session: URLSession = {
+    let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 10
         configuration.timeoutIntervalForResource = 20
@@ -111,7 +118,7 @@ final class LyricsFinder: @unchecked Sendable {
         return URLSession(configuration: configuration)
     }()
 
-    private static let maxBytes = 1_000_000
+    static let maxBytes = 1_000_000
 
     /// The key that a song's lyrics are kept under.
     static func id(_ track: NowPlaying.Track) -> String? {
@@ -158,42 +165,53 @@ final class LyricsFinder: @unchecked Sendable {
         let syncedLyrics: String?
     }
 
+    /// LRCLIB first. Synced lyrics from another service come before LRCLIB's plain lyrics, which are only timed by
+    /// ear, and those come before the other services' plain lyrics.
     private func lookup(title: String, artist: String, album: String?, duration: Double?) async -> LyricsState {
-        do {
-            // The exact song first, which needs the album and the length to match.
-            if let duration, let album, !album.isEmpty,
-               let record: Record = try await get("get", ["track_name": title, "artist_name": artist, "album_name": album, "duration": String(Int(duration.rounded()))])
-            {
-                return state(record, duration: duration)
+        let song = Self.clean(title, artist: artist)
+        let only = LyricsSource.forced
+        var record: Record?
+        var failed = false
+        if only == nil || only == "lrclib" {
+            do {
+                record = try await lrclib(title: title, artist: artist, album: album, duration: duration, song: song)
+            } catch {
+                failed = true
             }
-            // Then a search, for an album that LRCLIB names differently or a title that a video site decorates. A
-            // result counts only with the same title once both are cleaned, and within two seconds of the length
-            // that the player reports, since another length is likely another version. The first artist has to
-            // match as well, since songs of the same name and length exist. Wrong lyrics are worse than none.
-            let song = Self.clean(title, artist: artist)
-            var records: [Record] = try await get("search", ["track_name": song.title, "artist_name": song.artist]) ?? []
-            if records.isEmpty { records = try await get("search", ["q": "\(song.artist) \(song.title)"]) ?? [] }
-            let wanted = Self.normalized(song.title)
-            let matches = records.filter { record in
-                guard Self.normalized(Self.clean(record.trackName ?? "", artist: record.artistName ?? "").title) == wanted,
-                      Self.sameArtist(record.artistName ?? "", song.artist) else { return false }
-                guard let duration else { return true }
-                return record.duration.map { abs($0 - duration) <= 2 } ?? false
+            if record?.instrumental == true { return .instrumental }
+            if let synced = record?.syncedLyrics, var lyrics = Lyrics.parse(lrc: synced) {
+                lyrics.source = .lrclib
+                return .found(lyrics)
             }
-            guard let best = matches.first(where: { $0.syncedLyrics?.isEmpty == false }) ?? matches.first else { return .notFound }
-            return state(best, duration: duration)
-        } catch {
-            return .failed
         }
-    }
-
-    private func state(_ record: Record, duration: Double?) -> LyricsState {
-        if record.instrumental == true { return .instrumental }
-        if let synced = record.syncedLyrics, let lyrics = Lyrics.parse(lrc: synced) { return .found(lyrics) }
-        if let plain = record.plainLyrics, let length = duration ?? record.duration, let lyrics = Lyrics.estimate(plain: plain, duration: length) {
+        let rest = only == "lrclib" ? Others(failed: true) : await others(song, duration: duration, only: only)
+        if let synced = rest.synced { return .found(synced) }
+        if let plain = record?.plainLyrics, let length = duration ?? record?.duration, var lyrics = Lyrics.estimate(plain: plain, duration: length) {
+            lyrics.source = .lrclib
             return .found(lyrics)
         }
-        return .notFound
+        if let plain = rest.plain { return .found(plain) }
+        if rest.instrumental { return .instrumental }
+        return failed && rest.failed ? .failed : .notFound
+    }
+
+    private func lrclib(title: String, artist: String, album: String?, duration: Double?, song: (title: String, artist: String)) async throws -> Record? {
+        // The exact song first, which needs the album and the length to match.
+        if let duration, let album, !album.isEmpty,
+           let record: Record = try await get("get", ["track_name": title, "artist_name": artist, "album_name": album, "duration": String(Int(duration.rounded()))])
+        {
+            return record
+        }
+        // Then a search, for an album that LRCLIB names differently or a title that a video site decorates. A
+        // result counts only with the same title once both are cleaned, and within two seconds of the length
+        // that the player reports, since another length is likely another version. The first artist has to
+        // match as well, since songs of the same name and length exist. Wrong lyrics are worse than none.
+        var records: [Record] = try await get("search", ["track_name": song.title, "artist_name": song.artist]) ?? []
+        if records.isEmpty { records = try await get("search", ["q": "\(song.artist) \(song.title)"]) ?? [] }
+        let matches = records.filter { record in
+            Self.matches(title: record.trackName, artist: record.artistName, length: record.duration, song: song, duration: duration)
+        }
+        return matches.first(where: { $0.syncedLyrics?.isEmpty == false }) ?? matches.first
     }
 
     /// A 404 means LRCLIB has no such song, which is an answer and not a failure.
@@ -430,7 +448,7 @@ struct LyricsPanel: View {
             .frame(width: width, height: height, alignment: .top)
             .clipped()
             .mask(fade)
-            .overlay(alignment: .bottom) { if lyrics.timing == .estimated || lyrics.timing == .written { pill(lyrics.timing) } }
+            .overlay(alignment: .bottom) { footer(lyrics) }
         } else {
             // Another song starts at its top, without the offset or the pause of the last one. New times for the same
             // lines, as the song is heard, keep the scroll.
@@ -446,6 +464,31 @@ struct LyricsPanel: View {
             .init(color: .clear, location: 0), .init(color: .black, location: 0.14),
             .init(color: .black, location: 0.82), .init(color: .clear, location: 1),
         ], startPoint: .top, endPoint: .bottom)
+    }
+
+    /// The timing of lyrics that don't come with times, and the service that the lyrics came from, with a link to it.
+    private func footer(_ lyrics: Lyrics) -> some View {
+        HStack(spacing: 6) {
+            if lyrics.timing == .estimated || lyrics.timing == .written { pill(lyrics.timing) }
+            if let source = lyrics.source { credit(source) }
+        }
+    }
+
+    private func credit(_ source: LyricsSource) -> some View {
+        Link(destination: source.url) {
+            HStack(spacing: 3) {
+                Text(source.name)
+                Image(systemName: "arrow.up.right").font(.system(size: large ? 8 : 7, weight: .bold))
+            }
+            .font(.system(size: large ? 11 : 10, weight: .semibold, design: .rounded))
+            .foregroundStyle(palette.muted)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(palette.ink.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .help("Open \(source.name)")
     }
 
     private func pill(_ timing: Lyrics.Timing) -> some View {
@@ -519,7 +562,7 @@ struct LyricsPanel: View {
                 follow(proxy, animated: true)
             }
             .mask(fade)
-            .overlay(alignment: .bottom) { if lyrics.timing == .estimated || lyrics.timing == .written { pill(lyrics.timing) } }
+            .overlay(alignment: .bottom) { footer(lyrics) }
         }
     }
 

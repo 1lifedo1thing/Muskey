@@ -2474,7 +2474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// For the log, which never has the song or its words.
     private static func describe(_ state: LyricsState) -> String {
         switch state {
-        case let .found(lyrics): "\(lyrics.lines.count) lines, \(lyrics.timing == .synced ? "synced" : "estimated timing")"
+        case let .found(lyrics): "\(lyrics.lines.count) lines, \(lyrics.timing == .synced ? "synced" : "estimated timing")\(lyrics.source.map { ", from \($0.name)" } ?? "")"
         case .instrumental: "instrumental"
         case .notFound: "not found"
         case .failed: "request failed"
@@ -2530,7 +2530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    last.0, last.1))
     }
 
-    /// `--lyrics-lookup "TITLE|ARTIST|ALBUM|SECONDS"` asks LRCLIB for a song's lyrics the way the panel does,
+    /// `--lyrics-lookup "TITLE|ARTIST|ALBUM|SECONDS"` asks the lyrics services for a song's lyrics the way the panel does,
     /// prints what came back and quits, for checking the matching from a terminal.
     private func lookUpLyrics(_ spec: String) {
         let parts = spec.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
@@ -2906,7 +2906,8 @@ extension EnvironmentValues {
             if variant.hasPrefix("-lyrics") {
                 model.lyricsShown = true
                 let text = sampleLyrics.map { "[00:\(String(format: "%05.2f", $0.0))] \($0.1)" }.joined(separator: "\n")
-                let lyrics = variant == "-lyrics" ? Lyrics.parse(lrc: text) : Lyrics.estimate(plain: sampleLyrics.map(\.1).joined(separator: "\n"), duration: 238)
+                var lyrics = variant == "-lyrics" ? Lyrics.parse(lrc: text) : Lyrics.estimate(plain: sampleLyrics.map(\.1).joined(separator: "\n"), duration: 238)
+                lyrics?.source = variant.hasPrefix("-lyrics-focus") ? .lrcRed(isrc: "USQX91300108") : .lrclib
                 model.lyrics = switch variant {
                 case "-lyrics-loading": .loading
                 case "-lyrics-missing": .notFound

@@ -40,6 +40,8 @@ The setting is off by default, for people who want every key found on their own 
 
 While the lyrics show, Muskey sends the title, artist, album and length of the song to [LRCLIB](https://lrclib.net), once for each song.
 
+When LRCLIB has no synced lyrics for the song, Muskey searches [lrc.red](https://lrc.red) and [NetEase Cloud Music](https://music.163.com) with the artist and the title. For a song that NetEase has, Muskey also asks the [AMLL TTML DB](https://github.com/amll-dev/amll-ttml-db) for word-timed lyrics under NetEase's number for the song. Synced lyrics from these services come before LRCLIB's plain lyrics, and the name of the service shows under the lyrics, with a link to it.
+
 ### Stems
 
 Muskey separates the song into six stems with [BS-RoFormer](https://arxiv.org/abs/2309.02612). It uses the BS-Roformer-SW checkpoint, converted to Core ML and run on the GPU.
@@ -117,6 +119,8 @@ Builds made with `make` or `make install` take these flags, and release builds i
 | `--lyrics-since T` | Start it at the Unix time T, to line it up with a file that `afplay` plays |
 | `--lyrics-replay FILE --whisper-server URL` | Play a song file through the lyrics code four times faster than real time, as a song with no lyrics. Each play prints what it sent to Whisper, and the saved parts of the song are kept in `/tmp/muskey-lyrics-replay.json`. |
 | `--plays LIST` | The plays of `--lyrics-replay`, like `0-60,0-end`, or `0-40+100-140` for a seek |
+| `--lyrics-lookup "Title\|Artist\|Album\|Seconds"` | Look up the lyrics of that song the way the lyrics panel does, print the service, the timing and the first lines, and quit |
+| `--lyrics-source NAME` | Ask only one lyrics service: `lrclib`, `lrcred`, `netease` or `amll` |
 | `--lyrics-plain` | Drop the times of synced lyrics, time them by listening, and log how far the heard times are from the dropped ones. With `--pick`, the lyrics show from the start. |
 
 ### Tests

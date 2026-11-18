@@ -44,6 +44,39 @@ enum LyricsSelfTest {
         let failing = Recorder(failing: [1])
         let stopped = feed(failing, silent: 16, seconds: 41)
         report(abs(stopped - 24) < 0.01, String(format: "whisper failure  %.1f s heard (want 24.0)", stopped))
+
+        sources(report: report)
+    }
+
+    /// The formats of the services after LRCLIB: word-timed LRC, TTML with and without times, and NetEase's credits.
+    static func sources(report: (Bool, String) -> Void) {
+        let words = Lyrics.parse(lrc: "[00:31.41]<00:31.41>Like <00:31.70>the <00:31.93>legend <00:33.73>\n[00:35.94]<00:35.94>All ends")
+        let wordTexts = words?.lines.map(\.text) ?? []
+        report(wordTexts == ["Like the legend", "All ends"], "lrc word stamps  \(wordTexts)")
+
+        let timed = Data("""
+        <tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div>
+        <p begin="00:08.390" end="00:10.000"><span begin="00:08.390" end="00:09.000">I'm</span> <span begin="00:09.000" end="00:10.000">hurtin'</span><span ttm:role="x-bg"><span>(baby)</span></span><span ttm:role="x-translation">我受伤了</span></p>
+        <p begin="1:02.5" end="1:05.0">Second line</p>
+        <p begin="70.25s" end="72s">Third</p>
+        </div></body></tt>
+        """.utf8)
+        let ttml = TTML.lyrics(timed, duration: 200)
+        let lines = ttml?.lines.map { String(format: "%.2f %@", $0.time, $0.text) } ?? []
+        // A break comes after a line where the singing pauses for four seconds or more, and after the last line.
+        let wanted = ["8.39 I'm hurtin'", "10.00 ", "62.50 Second line", "65.00 ", "70.25 Third", "72.00 "]
+        report(ttml?.timing == .synced && lines == wanted, "ttml timed       \(lines)")
+
+        let untimed = Data("""
+        <tt xmlns="http://www.w3.org/ns/ttml"><body><div><p>One</p><p>Two</p></div><div><p>Three</p></div></body></tt>
+        """.utf8)
+        let plain = TTML.lyrics(untimed, duration: 120)
+        let plainTexts = plain?.lines.map(\.text) ?? []
+        report(plain?.timing == .estimated && plainTexts == ["One", "Two", "", "Three"], "ttml plain       \(plainTexts)")
+
+        let credited = Lyrics.parse(lrc: "[00:00.000] 作曲 : Pharrell Williams\n[00:01.000] Lyrics by: Someone\n[00:09.000]吉他：Nile Rodgers\n[00:30.90]Like the legend: of the Phoenix")
+        let kept = credited.map(LyricsFinder.withoutCredits)?.lines.map(\.text) ?? []
+        report(kept == ["Like the legend: of the Phoenix"], "netease credits  \(kept)")
     }
 
     /// Feeds a transcriber of the whole mix at 48 kHz, waits up to 5 seconds for Whisper to get the three clips with
