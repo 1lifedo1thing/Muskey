@@ -8,8 +8,16 @@ import Foundation
 /// the shifted mix. Main thread only, apart from the IOProc. Adapted from PitchTap's TapEngine.
 final class PitchChanger {
     var semitones = 0 {
-        didSet { if let shifter { ps_set_semitones(shifter, Float(semitones)) } }
+        didSet { if let shifter { ps_set_semitones(shifter, shifted) } }
     }
+
+    /// Semitones added to the shift, to undo the pitch change of a song that Muskey Player plays faster or slower:
+    /// 2.81 for a song at 85 % of its speed.
+    var correction = 0.0 {
+        didSet { if let shifter { ps_set_semitones(shifter, shifted) } }
+    }
+
+    private var shifted: Float { Float(Double(semitones) + correction) }
 
     var running: Bool { aggregateID != kAudioObjectUnknown }
 
@@ -218,7 +226,7 @@ final class PitchChanger {
         }
         self.shifter = shifter
         rate = sampleRate
-        ps_set_semitones(shifter, Float(semitones))
+        ps_set_semitones(shifter, shifted)
         ps_set_paused(shifter, paused ? 1 : 0)
         ps_set_delay(shifter, lyricsDelay)
         ps_set_step_fade(shifter, fadeSteps ? 1 : 0)

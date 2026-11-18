@@ -7,6 +7,8 @@
 //                  every field but the path optional. The title, artist, album and cover that the file carries fill
 //                  in the rest, then the file name.
 //   play, pause, toggle, seek <seconds>
+//   speed <rate>  every song plays at this rate from then on, faster or slower with its pitch, like a turntable
+//                 (Muskey's pitch change shifts the pitch back to the key)
 // and reads one line per event from stdout:
 //   ready <seconds>   the song plays, and lasts that long
 //   failed <reason>   the song can't be played
@@ -34,6 +36,8 @@ final class Player: NSObject, NSApplicationDelegate {
     /// Says `ended` when the song that plays reaches its end.
     private var endWatch: Task<Void, Never>?
     private var rateObserver: NSKeyValueObservation?
+    /// The rate that play starts the song at, from `speed`.
+    private var speed: Float = 1
 
     func applicationDidFinishLaunching(_: Notification) {
         player.actionAtItemEnd = .pause
@@ -95,6 +99,8 @@ final class Player: NSObject, NSApplicationDelegate {
         case "toggle": _ = play(player.rate == 0)
         case "seek":
             if parts.count == 2, let seconds = Double(parts[1]) { seek(to: seconds) }
+        case "speed":
+            if parts.count == 2, let rate = Float(parts[1]), (0.25 ... 4).contains(rate) { setSpeed(rate) }
         default: break
         }
     }
@@ -125,6 +131,9 @@ final class Player: NSObject, NSApplicationDelegate {
                 guard current == opened else { return }
                 self.info = info
                 let item = AVPlayerItem(asset: asset)
+                // Faster or slower with the pitch, which Muskey's Rubber Band shifts back in one pass with any key
+                // change: of the stretches tried, this one kept the sound closest to the original.
+                item.audioTimePitchAlgorithm = .varispeed
                 endWatch?.cancel()
                 endWatch = Task { @MainActor [weak self] in
                     for await _ in NotificationCenter.default.notifications(named: AVPlayerItem.didPlayToEndTimeNotification, object: item) {
@@ -196,6 +205,13 @@ final class Player: NSObject, NSApplicationDelegate {
         return .success
     }
 
+    private func setSpeed(_ rate: Float) {
+        speed = rate
+        player.defaultRate = rate
+        if player.rate > 0 { player.rate = rate }
+        report()
+    }
+
     private func seek(to seconds: Double) {
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
@@ -211,6 +227,7 @@ final class Player: NSObject, NSApplicationDelegate {
         var info = info
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position ?? player.currentTime().seconds
         info[MPNowPlayingInfoPropertyPlaybackRate] = Double(player.rate)
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = Double(speed)
         center.nowPlayingInfo = info
         center.playbackState = player.rate > 0 ? .playing : .paused
     }

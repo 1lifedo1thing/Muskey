@@ -640,6 +640,8 @@ struct KeyHints: View {
     var vocals = false
     /// The key row shows in karaoke, and the keys that change the key are listed.
     var karaokeKeys = false
+    /// A song in Muskey Player, whose tempo the brackets change.
+    var tempo = false
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -669,7 +671,8 @@ struct KeyHints: View {
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥"], name: otherMode), Hint(keys: ["⇧"], name: "♯ or ♭"),
              Hint(keys: ["←", "→"], name: "fifth"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["K"], name: "lock key"),
-             Hint(keys: ["L"], name: "lyrics"), Hint(keys: ["⌘", "K"], name: "karaoke"), Hint(keys: ["S"], name: "wide style"), Hint(keys: ["space"], name: "play or pause"),
+             Hint(keys: ["L"], name: "lyrics"), Hint(keys: ["⌘", "K"], name: "karaoke"), Hint(keys: ["S"], name: "wide style"), Hint(keys: ["space"], name: "play or pause")]
+                + (tempo ? [Hint(keys: ["[", "]"], name: "tempo"), Hint(keys: ["="], name: "original tempo")] : []) + [
              Hint(keys: ["esc"], name: "close")]
         case .stems:
             // The lyrics list V in their own hints, so the tray under them leaves it out.

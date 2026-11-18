@@ -99,7 +99,10 @@ final class KeyAnalyzer {
     static let firstEstimateAfter = 4.0
 
     private let queue = DispatchQueue(label: "muskey.analysis", qos: .userInitiated)
-    private let rate: Double
+    /// The rate that the samples are read at: the tap's rate, divided by the speed of a song that Muskey Player plays
+    /// faster or slower, which brings its key and its tempo back to the song's own.
+    private var rate: Double
+    private let tapRate: Double
     private var samples: [Float] = []
     private var analyzedCount = 0
     private var peak: Float = 0
@@ -107,8 +110,9 @@ final class KeyAnalyzer {
     private let wavPath: String?
 
     /// `recordTo` writes everything heard to a mono Float32 WAV on finish, for checking the capture by ear or with another tool.
-    init(sampleRate: Double, recordTo wavPath: String? = nil) {
-        rate = sampleRate
+    init(sampleRate: Double, speed: Double = 1, recordTo wavPath: String? = nil) {
+        tapRate = sampleRate
+        rate = sampleRate / speed
         self.wavPath = wavPath
         samples.reserveCapacity(Int(sampleRate * 32))
     }
@@ -122,6 +126,17 @@ final class KeyAnalyzer {
             let result = analyze()
             let peak = peak
             DispatchQueue.main.async { update(result, peak) }
+        }
+    }
+
+    /// The song plays at another speed: what was heard at the old one is dropped, and the rest is read at the new one.
+    func play(at speed: Double) {
+        queue.async { [self] in
+            guard !finished, rate != tapRate / speed else { return }
+            rate = tapRate / speed
+            samples.removeAll(keepingCapacity: true)
+            analyzedCount = 0
+            peak = 0
         }
     }
 
@@ -185,6 +200,10 @@ final class HUDModel: ObservableObject {
     /// The tempo of a song, from a listen or from Noiseblend. It shows while that song plays.
     @Published var tempo: SongTempo?
     var shownTempo: SongTempo? { tempo.flatMap { $0.song == track?.song ? $0 : nil } }
+    /// The speed that Muskey Player plays its song at, against the song's own tempo.
+    @Published var speed = 1.0
+    /// The song plays in Muskey Player, whose speed the tempo keys and the tempo pill change.
+    @Published var speedAdjustable = false
     /// The song plays, as the record and its tonearm show it. Space changes it before the player reports the change.
     @Published var playing = false
     /// The last play or pause, for the glyph on the record or over the lyrics.
@@ -268,6 +287,8 @@ final class HUDModel: ObservableObject {
     var onLayout: () -> Void = {}
     var onLyrics: () -> Void = {}
     var onKaraoke: () -> Void = {}
+    /// Slower with -1, faster with 1, and the song's own tempo with 0.
+    var onSpeed: (Int) -> Void = { _ in }
     var onLyricsRetry: () -> Void = {}
     var onLyricsEdit: () -> Void = {}
     /// A stem chip or its key: mute it or play it again, or with Option play only that stem.
@@ -1031,7 +1052,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// starting it again would count the song as a new one.
     private func updateWatching(shown: Bool) {
         // While the stems or the lyrics delay play, a pause has to be heard at once, so the helper keeps telling.
+        // A song that Muskey Player plays faster or slower keeps its pitch correction only while it is the one that plays.
         nowPlaying.watching = keptKey != nil || shown || songKey != nil || prefs.alwaysListen || model.stemsEngaged || lyricsDelayed
+            || filePlayer.speed != 1
     }
 
     /// The stems play seconds behind the song, so they hold where they are while the player pauses it. A track
@@ -1346,7 +1369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tap = SystemAudioTap()
         do {
             try tap.prepare()
-            let analyzer = KeyAnalyzer(sampleRate: tap.sampleRate)
+            let analyzer = KeyAnalyzer(sampleRate: tap.sampleRate, speed: playedSpeed)
             autoTap = tap
             autoAnalyzer = analyzer
             // Only the final estimate counts here, so the ones on the way are dropped.
@@ -1567,6 +1590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onKeep = { [weak self] in self?.toggleKeep() }
         model.onLayout = { [weak self] in self?.toggleLayout() }
         model.onLyrics = { [weak self] in self?.toggleLyrics() }
+        model.onSpeed = { [weak self] in self?.changeSpeed(by: $0) }
         model.onKaraoke = { [weak self] in
             if Self.logKeys { self?.log("click karaoke") }
             self?.toggleKaraoke()
@@ -1633,7 +1657,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onPlayPause = { [weak self] in self?.playPause() }
         model.onSkip = { [weak self] in self?.skip($0) }
         model.onLink = { [weak self] url in self?.log("opening \(url.host() ?? url.absoluteString) in the browser") }
-        filePlayer.onChange = { [weak self] in self?.refreshStatus() }
+        filePlayer.onChange = { [weak self] in
+            self?.refreshStatus()
+            self?.syncSpeed()
+        }
         statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === panel else { return event }
@@ -1647,6 +1674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.songChanged($0)
         }
         nowPlaying.onTrack = { [weak self] in
+            self?.syncSpeed()
             self?.syncPaused()
             self?.checkKaraokeRestart()
             self?.syncTrack()
@@ -2029,7 +2057,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.tap = tap
         do {
             try tap.prepare()
-            let analyzer = KeyAnalyzer(sampleRate: tap.sampleRate, recordTo: Self.stringOption("--wav"))
+            let analyzer = KeyAnalyzer(sampleRate: tap.sampleRate, speed: playedSpeed, recordTo: Self.stringOption("--wav"))
             self.analyzer = analyzer
             try tap.start { [weak self] samples in
                 analyzer.append(samples) { result, peak in
@@ -2251,6 +2279,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Self.logKeys { log("key \(code)\(shift ? " shift" : "")\(option ? " option" : "")") }
         // With the key row hidden, the keys that change the pitch would change it out of sight.
         if handleStemKey(code, option: option) { return true }
+        if model.speedAdjustable, let step = Self.speedKeys[code] {
+            changeSpeed(by: step)
+            return true
+        }
         if code == kVK_Space {
             playPause()
             return true
@@ -2908,6 +2940,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForLyrics = false
     private var hoverKeysForStems = false
     private var hoverKeysForKaraoke = false
+    private var hoverKeysForSpeed = false
 
     /// Open File… or Open URL… is open. Its text would otherwise reach the keys over the HUD, which are global
     /// hotkeys, whenever the pointer rests on the HUD.
@@ -2920,7 +2953,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             && lyricsEditor == nil && !dialogOpen
         // The lyrics take fewer keys than the key row, so the keys change when the panel does.
         guard wanted == hoverKeys.isEmpty
-            || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus))
+            || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
+                || hoverKeysForSpeed != model.speedAdjustable))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -2928,12 +2962,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForLyrics = model.lyricsShown
         hoverKeysForStems = model.stemsAvailable
         hoverKeysForKaraoke = model.lyricsFocus
+        hoverKeysForSpeed = model.speedAdjustable
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space].map { ($0, 0) }
         if model.stemsAvailable {
             // V mutes the vocals or plays them again, in every layout.
             keys += Self.stemKeys.flatMap { code in [(code, 0), (code, optionKey)] } + [(kVK_ANSI_0, 0), (kVK_ANSI_V, 0)]
         }
+        // A song in Muskey Player plays slower, faster or at its own tempo.
+        if model.speedAdjustable { keys += Self.speedKeys.keys.map { ($0, 0) } }
         // Return shows the lyrics large, or back at their usual size.
         if model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter].map { ($0, 0) } }
         // The key row, and karaoke, change the key by its letter.
@@ -2985,8 +3022,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The pitch change runs for a shift, for the stems, and for the lyrics delay, which play through the same output.
-    private var pitchWanted: Bool { model.shift != 0 || model.stemsEngaged || lyricsDelayed }
+    /// The pitch change runs for a shift, for the stems, for the lyrics delay, which play through the same output, and
+    /// for a song that Muskey Player plays faster or slower, which it keeps in its key.
+    private var pitchWanted: Bool { model.shift != 0 || model.stemsEngaged || lyricsDelayed || pitch.correction != 0 }
+
+    /// The speed of the song as the tap hears it: Muskey Player's speed while its song is the one that plays.
+    private var playedSpeed: Double { model.speedAdjustable ? filePlayer.speed : 1 }
+
+    /// The keys of the tempo, for a song in Muskey Player.
+    private static let speedKeys = [kVK_ANSI_LeftBracket: -1, kVK_ANSI_RightBracket: 1, kVK_ANSI_Equal: 0]
+
+    /// The tempo keys and pills: 5 % slower or faster, from 50 % to 150 %, or the song's own tempo with 0.
+    private func changeSpeed(by step: Int) {
+        guard model.speedAdjustable else { return }
+        let target = step == 0 ? 1 : min(max(((filePlayer.speed * 20).rounded() + Double(step)) / 20, 0.5), 1.5)
+        guard target != filePlayer.speed else { return }
+        filePlayer.setSpeed(target)
+        log(String(format: "tempo %.0f%%", target * 100))
+        syncSpeed()
+    }
+
+    /// Muskey Player's speed, and the correction that keeps its song in its key. The pitch change hears every app, so
+    /// the correction applies only while Muskey Player is the player that macOS shows as playing.
+    private func syncSpeed() {
+        let adjustable = filePlayer.hasSong && nowPlaying.track?.bundleID == FilePlayer.bundleID
+        if model.speedAdjustable != adjustable {
+            model.speedAdjustable = adjustable
+            log("tempo keys \(adjustable ? "on" : "off") (playing: \(nowPlaying.track?.bundleID ?? "nothing"))")
+            updateHoverKeys()
+        }
+        if model.speed != filePlayer.speed { model.speed = filePlayer.speed }
+        let speed = playedSpeed
+        analyzer?.play(at: speed)
+        autoAnalyzer?.play(at: speed)
+        lyricsSync.hearsSong = speed == 1
+        let correction = speed == 1 ? 0 : -12 * log2(speed)
+        guard correction != pitch.correction else { return }
+        pitch.correction = correction
+        updateWatching(shown: model.shown)
+        if pitchWanted, !pitch.running {
+            startPitch()
+        } else if !pitchWanted, !model.picking, follow == nil, pitch.running {
+            pitch.stopSmoothly { [self] in logShift() }
+        }
+    }
 
     /// The song plays this far behind itself while Whisper writes its lyrics.
     private static let lyricsLead = 30.0
@@ -3047,6 +3126,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.pitchFailed = true
         follow = nil
         keptKey = nil
+        if filePlayer.speed != 1 { filePlayer.setSpeed(1) }
+        pitch.correction = 0
+        model.speed = 1
     }
 
     /// Stop Pitch Change in the HUD and in the menu: back to the original key, no key kept for the next songs,
@@ -3196,7 +3278,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -3277,6 +3359,9 @@ extension EnvironmentValues {
             model.artwork = artwork
             // A finished listen found the tempo of the song, and a listen still running hasn't yet.
             if phase == .done { model.tempo = SongTempo(song: song?.song, bpm: 124) }
+            // A song in Muskey Player at 85 % of its speed.
+            model.speedAdjustable = variant == "-tempo"
+            model.speed = variant == "-tempo" ? 0.85 : 1
             // The arm on the record, or lifted off it with the pause glyph that Space shows.
             model.playing = !variant.hasSuffix("-paused")
             if variant.hasSuffix("-paused") { model.playFlash = PlayFlash(playing: false, id: 1) }

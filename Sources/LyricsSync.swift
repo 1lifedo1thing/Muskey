@@ -153,6 +153,14 @@ final class LyricsSync {
     /// Seconds of audio that the tap heard, which the heard words are timed in, also when the vocals reach the
     /// listener a few seconds later.
     private let tapped = OSAllocatedUnfairLock(initialState: 0.0)
+    /// The song plays at its own speed. A song that Muskey Player plays faster or slower isn't heard: its words would
+    /// come at other times than the song's.
+    var hearsSong: Bool {
+        get { hearing.withLock { $0 } }
+        set { hearing.withLock { $0 = newValue } }
+    }
+
+    private let hearing = OSAllocatedUnfairLock(initialState: true)
     /// Whisper writes the lyrics of this song, as it hears them.
     private(set) var writing = false
     /// Whisper writes the lyrics of a part of the song that it hasn't transcribed before, so the song has to play
@@ -463,7 +471,10 @@ final class LyricsSync {
                 let tapRate = tap.sampleRate
                 self.tapRate = tapRate
                 let skipping = skipping
+                let hearing = hearing
                 try tap.start { [tapped] samples in
+                    // The heard audio stops with the song still going, which the marks take as a seek.
+                    guard hearing.withLock({ $0 }) else { return }
                     tapped.withLock { $0 += Double(samples.count) / tapRate }
                     // Silence over the parts that Whisper has transcribed, which keeps the timing of what follows.
                     let heard = skipping.withLock { $0 } ? [Float](repeating: 0, count: samples.count) : samples

@@ -102,9 +102,13 @@ struct ShiftPills: View {
             ShiftPill(text: "Pitch change failed", palette: palette)
         } else {
             HStack(spacing: 6) {
-                if let tempo = model.shownTempo {
-                    ShiftPill(text: tempo.text, palette: palette)
-                        .contentTransition(.numericText(value: tempo.bpm))
+                if model.speedAdjustable || model.shownTempo != nil {
+                    TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
+                              palette: palette, step: model.onSpeed)
+                        .transition(.opacity)
+                }
+                if model.speedAdjustable, model.speed != 1 {
+                    SpeedPill(speed: model.speed, palette: palette) { model.onSpeed(0) }
                         .transition(.opacity)
                 }
                 if let pending = model.pending {
@@ -124,7 +128,71 @@ struct ShiftPills: View {
                 }
             }
             .animation(.snappy(duration: 0.25), value: model.shownTempo)
+            .animation(.snappy(duration: 0.2), value: model.speed)
+            .animation(.snappy(duration: 0.2), value: model.speedAdjustable)
         }
+    }
+}
+
+/// The song's tempo at the speed that it plays. A song in Muskey Player gets keycaps at the ends of the pill, which
+/// slow it down or speed it up by 5 %.
+struct TempoPill: View {
+    let bpm: Double?
+    let adjustable: Bool
+    let palette: Palette
+    let step: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if adjustable { cap("[", help: "Slower ([)", step: -1) }
+            Text(bpm.map { "\(Int($0.rounded())) BPM" } ?? "Tempo")
+                .contentTransition(.numericText(value: bpm ?? 0))
+            if adjustable { cap("]", help: "Faster (])", step: 1) }
+        }
+        .font(.system(size: 11, weight: .bold, design: .rounded))
+        .monospacedDigit()
+        .foregroundStyle(palette.ink)
+        .padding(.horizontal, adjustable ? 4 : 8)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(palette.ink.opacity(0.1)))
+    }
+
+    private func cap(_ key: String, help: String, step value: Int) -> some View {
+        Button { step(value) } label: { Keycap(text: key, palette: palette, small: true) }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help(help)
+    }
+}
+
+/// The speed against the song's own tempo while it is changed: blue for slower, honey for faster. A click on it, or
+/// =, plays the song at its own tempo again.
+struct SpeedPill: View {
+    let speed: Double
+    let palette: Palette
+    let reset: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let percent = Int(((speed - 1) * 100).rounded())
+        let hue = speed < 1 ? StripColors.down : StripColors.up
+        Button(action: reset) {
+            HStack(spacing: 5) {
+                Text("\(percent < 0 ? "−" : "+")\(abs(percent))% tempo")
+                    .contentTransition(.numericText(value: speed))
+                Keycap(text: "=", palette: palette, small: true)
+            }
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(StripColors.text(hue, colorScheme))
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(StripColors.tint(hue, strong: true, colorScheme)))
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help("Original tempo (=)")
     }
 }
 
@@ -169,7 +237,7 @@ struct HUDCard: View {
             ZStack {
                 // The shortcuts take the place of the record and the keys, until the ? button is pressed again.
                 if model.shortcuts, showsKeys, let key = model.key {
-                    KeyHints(style: .list, otherMode: key.minor ? "major" : "minor", palette: palette)
+                    KeyHints(style: .list, tempo: model.speedAdjustable, otherMode: key.minor ? "major" : "minor", palette: palette)
                         .frame(width: ring, height: ring)
                         .background(RoundedRectangle(cornerRadius: 22).fill(palette.ink.opacity(0.06)))
                         .transition(.opacity)

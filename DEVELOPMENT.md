@@ -36,7 +36,7 @@ yt-dlp takes only the audio. With ffmpeg, it converts any audio to M4A. Without 
 
 ### Controls on the record
 
-A click on the record plays or pauses the song, as Space does. With the pointer over the record, buttons for the previous and the next song show at its sides, with a button between them that plays or pauses the song. A two-finger swipe across the HUD skips too: fingers moving left play the next song, and fingers moving right play the previous one. Only a trackpad swipe that is mostly sideways counts. Scrolling the lyrics or turning the wheel of a mouse doesn't change the song. These controls send the commands of the media keys to the app that plays the song, so they work with any player.
+A click on the record plays or pauses the song, as Space does. With the pointer over the record, its cover shrinks a little and the previous and next glyphs show on the rim, at its sides. The pointer over the cover tints it faintly and shows a play or pause glyph in its middle, drawn in the difference blend mode so it reads on any cover except a mid-grey one, and a click on the cover plays or pauses the song. A two-finger swipe across the HUD skips too: fingers moving left play the next song, and fingers moving right play the previous one. Only a trackpad swipe that is mostly sideways counts. Scrolling the lyrics or turning the wheel of a mouse doesn't change the song. These controls send the commands of the media keys to the app that plays the song, so they work with any player.
 
 ### Hotkey
 
@@ -48,13 +48,17 @@ With **Online key lookup** turned on in Settings, Muskey asks [Noiseblend](https
 
 Muskey asks once for each song. The listen still runs, and when the listen finds another key, Muskey uses that key.
 
+The setting is off by default, for people who want every key found on their own Mac.
+
 ### Tempo
 
 At the end of a listen, Muskey finds the tempo of what it heard with Essentia's RhythmExtractor2013, and shows it in a pill under the key, as in `124 BPM`. The tempo is remembered with the key of the song.
 
 Spotify measures the tempo over the whole song, while a listen hears 10 to 30 seconds of it. A listen sometimes counts half or double the beats that people count along to. So when Noiseblend knows the tempo of the song, and the listen found the same tempo or half, double, a third or three times of it, the pill shows Spotify's tempo.
 
-The setting is off by default, for people who want every key found on their own Mac.
+A song that plays in Muskey Player can be played slower or faster. The keys `[` and `]` (or the keycaps at the ends of the tempo pill) change its speed by 5 %, from 50 % to 150 %, and `=` (or the pill of the speed) plays it at 100 % again. Muskey Player changes the speed with AVPlayer's varispeed, which changes the pitch with it, and Muskey's pitch change moves the pitch back by `−12 × log2(speed)` semitones, on top of any key change. The tempo pill shows the tempo at the speed that the song plays.
+
+The pitch change hears every app, so the correction applies only while macOS shows Muskey Player as the app that plays. A listen during a speed change reads the audio at the tap's rate divided by the speed, which finds the key and the tempo of the song at 100 %. The lyrics aren't timed by ear while the speed isn't 100 %.
 
 ### Lyrics
 

@@ -57,9 +57,20 @@ final class FilePlayer {
     /// Muskey Player starts or stops having a song, for Stop Playing in the menu.
     var onChange: () -> Void = {}
 
-    /// Muskey Player has a song, playing or paused.
+    /// Muskey Player has a song, playing or paused. Without one, the songs that it plays next start at their tempo.
     private(set) var hasSong = false {
-        didSet { if hasSong != oldValue { onChange() } }
+        didSet {
+            if !hasSong { speed = 1 }
+            if hasSong != oldValue { onChange() }
+        }
+    }
+
+    /// The rate that Muskey Player plays its songs at, from 0.5 to 1.5, faster or slower with the pitch.
+    private(set) var speed = 1.0
+
+    func setSpeed(_ rate: Double) {
+        speed = rate
+        send(String(format: "speed %.3f", rate))
     }
 
     private var process: Process?
