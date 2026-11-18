@@ -36,7 +36,7 @@ yt-dlp takes only the audio. With ffmpeg, it converts any audio to M4A. Without 
 
 ### Controls on the record
 
-A click on the record plays or pauses the song, as Space does. With the pointer over the record, buttons for the previous and the next song show beside it. A two-finger swipe across the HUD skips too: fingers moving left play the next song, and fingers moving right play the previous one. Only a trackpad swipe that is mostly sideways counts. Scrolling the lyrics or turning the wheel of a mouse doesn't change the song. These controls send the commands of the media keys to the app that plays the song, so they work with any player.
+A click on the record plays or pauses the song, as Space does. With the pointer over the record, buttons for the previous and the next song show at its sides, with a button between them that plays or pauses the song. A two-finger swipe across the HUD skips too: fingers moving left play the next song, and fingers moving right play the previous one. Only a trackpad swipe that is mostly sideways counts. Scrolling the lyrics or turning the wheel of a mouse doesn't change the song. These controls send the commands of the media keys to the app that plays the song, so they work with any player.
 
 ### Hotkey
 

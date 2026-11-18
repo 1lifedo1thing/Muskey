@@ -174,23 +174,36 @@ struct RecordActions {
 
 extension EnvironmentValues {
     @Entry var recordActions = RecordActions()
-    /// `--render` shows the previous and next buttons, as the pointer over the record does.
+    /// The song plays, so the button in the middle of the record pauses it.
+    @Entry var recordPlaying = false
+    /// `--render` shows the buttons on the record, as the pointer over the record does.
     @Entry var recordHovered = false
+    /// The buttons show on the record, so the glyph that a play, a pause or a skip flashes on it doesn't.
+    @Entry var recordButtonsShown = false
 }
 
-/// A click on the record plays or pauses the song, as Space does. The pointer over the record shows the previous and
-/// next buttons, `spread` points to its left and right and `lift` points above its centre. The buttons show only on
-/// hover, since the record is the thing to look at, and they fade in quickly, as hover feedback does.
+/// A click on the record plays or pauses the song, as Space does. The pointer over the record shows the buttons of a
+/// turntable on it: previous and next `spread` points to the left and right of its centre, and play or pause between
+/// them, all `lift` points above its centre. The buttons show only on hover, since the record is the thing to look
+/// at, and they fade in quickly, as hover feedback does.
 struct RecordControls: ViewModifier {
     let spread: CGFloat
     var lift: CGFloat = 0
     @Environment(\.recordActions) private var actions
+    @Environment(\.recordPlaying) private var playing
     @Environment(\.recordHovered) private var previewHover
     @State private var hovering = false
     @State private var leave: Task<Void, Never>?
 
+    /// As large as a fingertip, and smaller on the card's small record, so that a gap stays between the buttons.
+    private var middle: CGFloat { min(48, spread * 0.85) }
+
     func body(content: Content) -> some View {
+        let shown = hovering || previewHover
         content
+            // The glyph that Space flashes on the record would show around the middle button.
+            .environment(\.recordButtonsShown, shown)
+            .preference(key: RecordButtonsShown.self, value: shown)
             .contentShape(Circle())
             .onTapGesture { actions.playPause() }
             .accessibilityElement(children: .ignore)
@@ -199,13 +212,16 @@ struct RecordControls: ViewModifier {
             .accessibilityAction { actions.playPause() }
             .onHover(perform: hover)
             .overlay {
-                if hovering || previewHover {
-                    HStack(spacing: 0) {
-                        SkipButton(direction: -1) { actions.skip(-1) }.onHover(perform: hover)
-                        Spacer(minLength: 0)
-                        SkipButton(direction: 1) { actions.skip(1) }.onHover(perform: hover)
+                if shown {
+                    ZStack {
+                        DeckButton(symbol: "backward.end.fill", size: DeckButton.skip, help: "Play the previous song", label: "Previous song") { actions.skip(-1) }
+                            .offset(x: -spread)
+                        DeckButton(symbol: playing ? "pause.fill" : "play.fill", size: middle, help: playing ? "Pause" : "Play",
+                                   label: playing ? "Pause" : "Play", action: actions.playPause)
+                        DeckButton(symbol: "forward.end.fill", size: DeckButton.skip, help: "Play the next song", label: "Next song") { actions.skip(1) }
+                            .offset(x: spread)
                     }
-                    .frame(width: 2 * spread + SkipButton.size)
+                    .onHover(perform: hover)
                     .offset(y: -lift)
                     .transition(.opacity)
                 }
@@ -216,8 +232,8 @@ struct RecordControls: ViewModifier {
     private func hover(_ inside: Bool) {
         leave?.cancel()
         if inside { return hovering = true }
-        // The buttons stick out past the record, so moving onto one leaves the record a moment before it enters the
-        // button.
+        // The side buttons stick out past the record, so moving onto one leaves the record a moment before it enters
+        // the button.
         leave = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             if !Task.isCancelled { hovering = false }
@@ -225,25 +241,81 @@ struct RecordControls: ViewModifier {
     }
 }
 
-private struct SkipButton: View {
-    let direction: Int
+/// The buttons show on a record, for a flash of a glyph that is drawn outside it, as on karaoke's record.
+struct RecordButtonsShown: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+/// A round button of brushed aluminium, like the start and speed buttons of a turntable: a bevelled rim lit from
+/// above, a face brushed in circles, and the glyph pressed into it. It sinks a little while it is held.
+private struct DeckButton: View {
+    let symbol: String
+    let size: CGFloat
+    let help: String
+    let label: String
     let action: () -> Void
-    static let size: CGFloat = 28
+
+    static let skip: CGFloat = 36
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: direction > 0 ? "forward.fill" : "backward.fill")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: Self.size, height: Self.size)
-                .background(Circle().fill(.black.opacity(0.6)))
-                .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.34, weight: .black))
+                // The triangle's weight sits left of its box, so it moves right to look centred.
+                .offset(x: symbol == "play.fill" ? size * 0.03 : 0)
+                .frame(width: size, height: size)
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DeckButtonStyle(size: size))
         .focusable(false)
-        .help(direction > 0 ? "Play the next song" : "Play the previous song")
-        .accessibilityLabel(direction > 0 ? "Next song" : "Previous song")
+        .help(help)
+        .accessibilityLabel(label)
+    }
+}
+
+private struct DeckButtonStyle: ButtonStyle {
+    let size: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        DeckButtonFace(label: configuration.label, pressed: configuration.isPressed, size: size)
+    }
+}
+
+private struct DeckButtonFace<Label: View>: View {
+    let label: Label
+    let pressed: Bool
+    let size: CGFloat
+    @State private var hovered = false
+
+    private static func white(_ level: Double) -> Color { Color(white: level) }
+
+    var body: some View {
+        let lift = pressed ? -0.04 : hovered ? 0.03 : 0
+        let rim = size * 0.07
+        label
+            // Engraved: dark, with a thin highlight under each edge where the light from above catches it.
+            .foregroundStyle(Self.white(0.26))
+            .shadow(color: .white.opacity(0.75), radius: 0, y: 0.8)
+            .background {
+                ZStack {
+                    // The bevel: bright at the top, dark at the bottom, turned over while the button is held.
+                    Circle().fill(LinearGradient(colors: [Self.white(0.98), Self.white(0.52)], startPoint: pressed ? .bottom : .top, endPoint: pressed ? .top : .bottom))
+                    // The face, brushed in circles, which catch the light at four angles.
+                    Circle()
+                        .fill(AngularGradient(colors: [0.84, 0.72, 0.9, 0.7, 0.84, 0.74, 0.92, 0.72, 0.84].map { Self.white($0 + lift) }, center: .center))
+                        .padding(rim)
+                    Circle()
+                        .fill(LinearGradient(colors: [.white.opacity(0.3), .clear, .black.opacity(0.14)], startPoint: .top, endPoint: .bottom))
+                        .padding(rim)
+                    Circle().strokeBorder(.black.opacity(0.35), lineWidth: 0.5)
+                }
+                .shadow(color: .black.opacity(pressed ? 0.35 : 0.5), radius: pressed ? 1 : 2.5, y: pressed ? 1 : 2)
+                .shadow(color: .black.opacity(pressed ? 0.1 : 0.25), radius: pressed ? 2 : 6, y: pressed ? 1 : 4)
+            }
+            .scaleEffect(pressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.08), value: pressed)
+            .onHover { hovered = $0 }
     }
 }
 
@@ -528,15 +600,17 @@ struct PlayFlashView: View {
     let flash: PlayFlash?
     var size: CGFloat = 58
     @Environment(\.renderingPreview) private var renderingPreview
+    @Environment(\.recordButtonsShown) private var buttonsShown
+    @Environment(\.recordHovered) private var previewHover
     @State private var shown: PlayFlash?
     @State private var opacity = 0.0
 
     var body: some View {
-        let current = renderingPreview ? flash : shown
+        let current = buttonsShown || previewHover ? nil : renderingPreview ? flash : shown
         ZStack {
             if let current {
                 Circle().fill(.black.opacity(0.55))
-                Image(systemName: current.skip > 0 ? "forward.fill" : current.skip < 0 ? "backward.fill" : current.playing ? "play.fill" : "pause.fill")
+                Image(systemName: current.skip > 0 ? "forward.end.fill" : current.skip < 0 ? "backward.end.fill" : current.playing ? "play.fill" : "pause.fill")
                     .font(.system(size: size * (current.skip == 0 ? 0.38 : 0.32), weight: .bold))
                     .foregroundStyle(.white)
                     // The triangle's weight sits left of its box, so it moves right to look centred.
@@ -644,6 +718,7 @@ struct KaraokeRecord<Footer: View>: View {
     @ViewBuilder let footer: Footer
     @Environment(\.renderingPreview) private var renderingPreview
     @Environment(\.songArriving) private var arriving
+    @State private var buttonsShown = false
 
     /// How far the record shows below its centre, and the room above it for the glow of the line.
     static var below: CGFloat { 12 }
@@ -667,28 +742,32 @@ struct KaraokeRecord<Footer: View>: View {
                         .frame(width: side + 7, height: side + 7)
                 }
                 ZStack {
-                    if renderingPreview {
-                        Record(artwork: artwork, shadow: false, label: Self.label)
-                    } else {
-                        SpinningRecord(artwork: artwork, spinning: spinning && arriving == nil, side: side, label: Self.label, period: 8)
+                    ZStack {
+                        if renderingPreview {
+                            Record(artwork: artwork, shadow: false, label: Self.label)
+                        } else {
+                            SpinningRecord(artwork: artwork, spinning: spinning && arriving == nil, side: side, label: Self.label, period: 8)
+                        }
+                        Sheen()
+                        GroovedLetters(track: track, side: side)
                     }
-                    Sheen()
-                    GroovedLetters(track: track, side: side)
+                    .frame(width: side, height: side)
+                    .opacity(arriving == nil ? 1 : 0.6)
+                    .overlay { if let arriving { ArrivalRing(arriving: arriving, diameter: side * Self.label + 12) } }
+                    .background(Circle().fill(Color(white: 0.09)).shadow(color: .black.opacity(0.3), radius: 12, y: -2))
+                    .id(song)
+                    .transition(.opacity)
+                    // The cover and the grooves around it show the instruments and vocals while the pointer is over them.
+                    Circle()
+                        .fill(.clear)
+                        .contentShape(Circle())
+                        .frame(width: side * Self.label * 1.5, height: side * Self.label * 1.5)
+                        .onHover(perform: hoverLabel)
                 }
                 .frame(width: side, height: side)
-                // On the part of the record above the edge of the glass, beside the cover.
+                // On the part of the record above the edge of the glass, beside the cover. Over the cover's hover area
+                // too, which would take the clicks of the middle button otherwise.
                 .modifier(RecordControls(spread: side * 0.38, lift: side * 0.1))
-                .opacity(arriving == nil ? 1 : 0.6)
-                .overlay { if let arriving { ArrivalRing(arriving: arriving, diameter: side * Self.label + 12) } }
-                .background(Circle().fill(Color(white: 0.09)).shadow(color: .black.opacity(0.3), radius: 12, y: -2))
-                .id(song)
-                .transition(.opacity)
-                // The cover and the grooves around it show the instruments and vocals while the pointer is over them.
-                Circle()
-                    .fill(.clear)
-                    .contentShape(Circle())
-                    .frame(width: side * Self.label * 1.5, height: side * Self.label * 1.5)
-                    .onHover(perform: hoverLabel)
             }
             .frame(width: side + 2 * Self.margin, height: side + 2 * Self.margin)
             // The record's centre sits `below` above the bottom edge of the glass.
@@ -708,7 +787,8 @@ struct KaraokeRecord<Footer: View>: View {
                     .padding(.bottom, 8)
                 }
             }
-            .overlay { PlayFlashView(flash: flash, size: 64).offset(y: Self.above / 2) }
+            .overlay { PlayFlashView(flash: flash, size: 64).offset(y: Self.above / 2).environment(\.recordButtonsShown, buttonsShown) }
+            .onPreferenceChange(RecordButtonsShown.self) { buttonsShown = $0 }
             .overlay(alignment: .bottom) { footer }
             // Cut along the bottom edge of the glass only, so the shadow and the glow above the record stay whole.
             .mask { UnevenRoundedRectangle(bottomLeadingRadius: 26, bottomTrailingRadius: 26).padding(.top, -60) }
