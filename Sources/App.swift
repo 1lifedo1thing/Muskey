@@ -2358,6 +2358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// registers. Returns false for a key it doesn't use.
     @discardableResult private func handleKey(_ code: Int, shift: Bool, option: Bool) -> Bool {
         if Self.logKeys { log("key \(code)\(shift ? " shift" : "")\(option ? " option" : "")") }
+        if !shift, handleSongKey(code, option: option) { return true }
         // With the key row hidden, the keys that change the pitch would change it out of sight.
         if handleStemKey(code, option: option) { return true }
         if model.speedAdjustable, let step = Self.speedKeys[code] {
@@ -2396,6 +2397,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         default: return handlePitchKey(code, shift: shift, option: option)
         }
         return true
+    }
+
+    /// Keys 0 to 9, for karaoke's seeks.
+    private static let digitKeys = [kVK_ANSI_0, kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
+
+    /// N and P play the next and the previous song in every layout. With the lyrics, ← and → seek 5 seconds back or
+    /// ahead, except while karaoke shows its key row, which takes them for the key. In karaoke, 0 starts the song over
+    /// and 1 to 9 move it to a tenth of its length, except while the stems show, which take the numbers.
+    private func handleSongKey(_ code: Int, option: Bool) -> Bool {
+        switch code {
+        case kVK_ANSI_N where !option: skip(1)
+        case kVK_ANSI_P where !option: skip(-1)
+        case kVK_LeftArrow where model.lyricsShown && !model.karaokeKeys: seek(by: -5)
+        case kVK_RightArrow where model.lyricsShown && !model.karaokeKeys: seek(by: 5)
+        default:
+            guard model.lyricsFocus, !option, !(model.stemsAvailable && model.karaokeStems), let digit = Self.digitKeys.firstIndex(of: code) else { return false }
+            seek(toFraction: Double(digit) / 10)
+        }
+        return true
+    }
+
+    /// The position that the last seek asked for, until the player reports it, so that quick presses add up.
+    private var seekTarget: (song: [String?], seconds: Double, at: Date)?
+    /// Checks that the player moved the song, a few seconds after a seek.
+    private var seekCheck: DispatchWorkItem?
+    /// Players that left the song where it was after a seek. The seek keys leave them alone until Muskey quits.
+    private var unseekable: Set<String> = []
+
+    private func seek(by seconds: Double) {
+        guard let track = nowPlaying.track else { return }
+        let pending = seekTarget.flatMap { $0.song == track.song && Date().timeIntervalSince($0.at) < 2 ? $0.seconds : nil }
+        guard let base = pending ?? track.position(at: Date()) else { return log("seek: the player gives no position for the song") }
+        seek(to: base + seconds, flash: seconds < 0 ? "gobackward.5" : "goforward.5")
+    }
+
+    private func seek(toFraction fraction: Double) {
+        guard let duration = nowPlaying.track?.duration, duration > 0 else { return log("seek: the player gives no length for the song") }
+        seek(to: duration * fraction, flash: "\(Int((fraction * 100).rounded()))%")
+    }
+
+    /// Moves the song that plays to `seconds`, through the player's own command, and starts the stems and the lyrics
+    /// delay over from there, since what they hold belongs to the moment before.
+    private func seek(to seconds: Double, flash: String) {
+        guard let track = nowPlaying.track, track.title?.isEmpty == false else { return }
+        if let id = track.bundleID, unseekable.contains(id) { return log("seek: \(id) ignored the last seek, so the keys leave it alone") }
+        let target = max(0, min(seconds, (track.duration ?? .infinity) - 1))
+        let before = track.position(at: Date())
+        seekTarget = (track.song, target, Date())
+        log(String(format: "seek to %.1f s", target))
+        if track.bundleID == FilePlayer.bundleID { filePlayer.seek(target) } else { nowPlaying.seek(to: target) }
+        pitch.restartStems()
+        if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: flash) }
+        seekCheck?.cancel()
+        let asked = Date()
+        let check = DispatchWorkItem { [weak self] in
+            guard let self, let now = nowPlaying.track, now.song == track.song, let position = now.position(at: Date()) else { return }
+            let passed = now.playing ? Date().timeIntervalSince(asked) * (now.rate ?? 1) : 0
+            // A player that ignored the seek is still near where the song would have been without it.
+            guard let before, abs(position - (target + passed)) > 2, abs(position - (before + passed)) < 1.5, let id = now.bundleID else { return }
+            unseekable.insert(id)
+            log("seek: \(id) left the song where it was")
+        }
+        seekCheck = check
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: check)
     }
 
     /// The keys that change the key: Delete, the arrows and the letters, with Shift for a sharp or a flat and Option
@@ -3045,20 +3110,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForKaraoke = model.lyricsFocus
         hoverKeysForSpeed = model.speedAdjustable
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
-        var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space].map { ($0, 0) }
+        var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) }
         if model.stemsAvailable {
             // V mutes the vocals or plays them again, in every layout.
             keys += Self.stemKeys.flatMap { code in [(code, 0), (code, optionKey)] } + [(kVK_ANSI_0, 0), (kVK_ANSI_V, 0)]
         }
         // A song in Muskey Player plays slower, faster or at its own tempo.
         if model.speedAdjustable { keys += Self.speedKeys.keys.map { ($0, 0) } }
-        // Return shows the lyrics large, or back at their usual size.
-        if model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter].map { ($0, 0) } }
+        // Return shows the lyrics large, or back at their usual size, and the arrows seek.
+        if model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter, kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
+        // Karaoke seeks with the number keys.
+        if model.lyricsFocus { keys += Self.digitKeys.map { ($0, 0) } }
         // The key row, and karaoke, change the key by its letter.
         if !model.lyricsShown || model.lyricsFocus {
             keys += Self.letters.keys.flatMap { code in modifiers.map { (code, $0) } }
             keys += [kVK_Delete, kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow].map { ($0, 0) }
         }
+        // A key that two lists add is registered once.
+        keys = keys.reduce(into: []) { unique, key in if !unique.contains(where: { $0 == key }) { unique.append(key) } }
         hoverKeys = keys.compactMap { code, modifiers in
             try? HotKey(keyCode: code, modifiers: modifiers) { [weak self] in
                 self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)

@@ -109,6 +109,9 @@ final class FilePlayer {
         }
     }
 
+    /// Moves the song to `seconds` from its start.
+    func seek(_ seconds: Double) { send(String(format: "seek %.3f", seconds)) }
+
     /// Stop Playing: Muskey Player quits, with the songs opened together.
     func close() {
         log("stop playing")

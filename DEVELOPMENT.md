@@ -22,7 +22,9 @@ macOS has no public API for Now Playing. Muskey reads it from the private MediaR
 
 Since macOS 15.4, only code signed with an Apple identifier can read MediaRemote. For that reason, the helper is signed as `com.apple.controlcenter.Muskey`.
 
-The helper also sends two commands to the player: play or pause, for Space over the HUD, and a move to the start of the song, for karaoke.
+The helper also sends two commands to the player: play or pause, for Space over the HUD, and a move to another place in the song, for karaoke and the seek keys.
+
+With the lyrics showing, the keys `←` and `→` seek 5 seconds back or ahead, and in karaoke the keys `0` to `9` move the song to its start or to a tenth of its length. While karaoke's stems show, the number keys stay with the stems. `N` and `P` play the next and the previous song in every layout. A player that leaves the song where it was after a seek is left alone by the seek keys until Muskey quits.
 
 ### Playing files and links
 

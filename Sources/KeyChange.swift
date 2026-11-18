@@ -736,9 +736,12 @@ struct KeyHints: View {
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["esc"], name: "close")]
         case .band where lyrics, .footer:
-            [Hint(keys: ["L"], name: "keys"), Hint(keys: ["↩"], name: focus ? "lyrics" : "karaoke")]
+            // Karaoke's footer, no wider than its record, leaves out L, which leaves karaoke for the keys.
+            (style == .footer ? [] : [Hint(keys: ["L"], name: "keys")]) + [Hint(keys: ["↩"], name: focus ? "lyrics" : "karaoke")]
                 + (vocals ? [Hint(keys: ["V"], name: "vocals")] : [])
-                + [Hint(keys: ["space"], name: "play or pause"), Hint(keys: ["K"], name: "lock key"), Hint(keys: ["esc"], name: "close")]
+                + [Hint(keys: ["space"], name: "play or pause")]
+                + (focus ? [Hint(keys: ["0–9"], name: "seek")] : []) + [Hint(keys: ["←", "→"], name: "5 s"), Hint(keys: ["N", "P"], name: "skip")]
+                + [Hint(keys: ["K"], name: "lock key"), Hint(keys: ["esc"], name: "close")]
         case .band:
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["L"], name: "lyrics"),
@@ -747,7 +750,8 @@ struct KeyHints: View {
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥"], name: otherMode), Hint(keys: ["⇧"], name: "♯ or ♭"),
              Hint(keys: ["←", "→"], name: "fifth"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["K"], name: "lock key"),
-             Hint(keys: ["L"], name: "lyrics"), Hint(keys: ["⌘", "K"], name: "karaoke"), Hint(keys: ["S"], name: "wide style"), Hint(keys: ["space"], name: "play or pause")]
+             Hint(keys: ["L"], name: "lyrics"), Hint(keys: ["⌘", "K"], name: "karaoke"), Hint(keys: ["S"], name: "wide style"), Hint(keys: ["space"], name: "play or pause"),
+             Hint(keys: ["N", "P"], name: "next or previous song")]
                 + (tempo ? [Hint(keys: ["[", "]"], name: "tempo"), Hint(keys: ["="], name: "original tempo")] : []) + [
              Hint(keys: ["esc"], name: "close")]
         case .stems:

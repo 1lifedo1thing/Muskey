@@ -838,6 +838,8 @@ struct PlayFlash: Equatable {
     var date = Date()
     /// 1 for the next song and -1 for the previous one, which show their own glyph.
     var skip = 0
+    /// A seek: its symbol for the arrows, or the share of the song that a number key moved to, like `30%`.
+    var seek: String?
 }
 
 /// The play or pause glyph, on the record or over the lyrics, at full opacity on the frame that the change lands
@@ -856,11 +858,22 @@ struct PlayFlashView: View {
         ZStack {
             if let current {
                 Circle().fill(.black.opacity(0.55))
-                Image(systemName: current.skip > 0 ? "forward.end.fill" : current.skip < 0 ? "backward.end.fill" : current.playing ? "play.fill" : "pause.fill")
-                    .font(.system(size: size * (current.skip == 0 ? 0.38 : 0.32), weight: .bold))
-                    .foregroundStyle(.white)
-                    // The triangle's weight sits left of its box, so it moves right to look centred.
-                    .offset(x: current.skip == 0 && current.playing ? size * 0.035 : 0)
+                if let seek = current.seek, seek.hasSuffix("%") {
+                    Text(seek)
+                        .font(.system(size: size * 0.26, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                } else if let seek = current.seek {
+                    Image(systemName: seek)
+                        .font(.system(size: size * 0.34, weight: .bold))
+                        .foregroundStyle(.white)
+                } else {
+                    Image(systemName: current.skip > 0 ? "forward.end.fill" : current.skip < 0 ? "backward.end.fill" : current.playing ? "play.fill" : "pause.fill")
+                        .font(.system(size: size * (current.skip == 0 ? 0.38 : 0.32), weight: .bold))
+                        .foregroundStyle(.white)
+                        // The triangle's weight sits left of its box, so it moves right to look centred.
+                        .offset(x: current.skip == 0 && current.playing ? size * 0.035 : 0)
+                }
             }
         }
         .frame(width: size, height: size)
