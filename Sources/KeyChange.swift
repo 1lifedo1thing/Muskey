@@ -801,14 +801,15 @@ final class StatusItem: NSObject {
         let textWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
         // The ink of the letters, which the typographic width overstates on the right for a trailing m or ♯.
         let ink = CTLineGetImageBounds(line, nil)
-        let size = NSSize(width: ceil(max(textWidth, ink.width) + 11), height: 18)
+        let size = NSSize(width: ceil(max(textWidth, ink.width) + 12), height: 18)
         let image = NSImage(size: size, flipped: false) { _ in
             guard let cg = NSGraphicsContext.current?.cgContext else { return false }
-            // A 1.5 point outline on whole points keeps its outer edge sharp at 1x and 2x.
-            let outline = CGRect(x: 0, y: 2, width: size.width, height: 14).insetBy(dx: 0.75, dy: 0.75)
+            // A 1.5 point outline on whole points keeps its outer edge sharp at 1x and 2x. It is 16 points tall, about
+            // as tall as the system's icons next to it.
+            let outline = CGRect(x: 0, y: 1, width: size.width, height: 16).insetBy(dx: 0.75, dy: 0.75)
             cg.setStrokeColor(.black)
             cg.setLineWidth(1.5)
-            cg.addPath(CGPath(roundedRect: outline, cornerWidth: 4.25, cornerHeight: 4.25, transform: nil))
+            cg.addPath(CGPath(roundedRect: outline, cornerWidth: 4.75, cornerHeight: 4.75, transform: nil))
             cg.strokePath()
             // Centred on the ink across, and on the cap height up and down, so every key sits on the same baseline
             // and a sharp or a flat rises above the letters instead of pushing them down. The baseline lands on a
@@ -911,6 +912,9 @@ final class StatusItem: NSObject {
     var onOpenLocation: () -> Void = {}
     var onStopPlaying: () -> Void = {}
     private var item: NSStatusItem?
+
+    /// Opens the menu as a click on the icon does, for `--open-menu-after`, since no automation can open it.
+    func openMenu() { item?.button?.performClick(nil) }
 
     /// Picks the item with this title, for `--menu`, the way a click on it does. False when the menu has none.
     func perform(_ title: String) -> Bool {

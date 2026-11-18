@@ -1009,6 +1009,10 @@ size_t ps_stems_room(PSShifter *s, uint64_t position) {
     return limit > position ? size_t(limit - position) : 0;
 }
 
+int ps_stems_started(PSShifter *s) {
+    return s->stemsOn.load(std::memory_order_relaxed) && s->stemsStarted.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
 double ps_stems_waiting(PSShifter *s) {
     if (!s->stemsOn.load(std::memory_order_relaxed) || s->stemsStarted.load(std::memory_order_relaxed)) return -1;
     // While the delay waits, the lyrics count down instead.

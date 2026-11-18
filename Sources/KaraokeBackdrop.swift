@@ -45,8 +45,8 @@ final class KaraokeBackdrop: NSPanel {
     /// The screen that the backdrop covers.
     var coveredFrame: CGRect { frame }
 
-    /// Covers the screen of `panel` and fades in under it, or fades out. Karaoke opens with a short ease-out, and the
-    /// way back is quicker.
+    /// Covers the screen of `panel` and fades in under it, or fades out, quickly both ways, since a key or a click
+    /// opens karaoke.
     func show(_ shown: Bool, below panel: NSWindow) {
         if shown {
             let screen = panel.screen ?? NSScreen.main
@@ -59,7 +59,7 @@ final class KaraokeBackdrop: NSPanel {
             return
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = shown ? 0.3 : 0.18
+            context.duration = shown ? 0.15 : 0.12
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             animator().alphaValue = shown ? 1 : 0
         } completionHandler: { [weak self] in

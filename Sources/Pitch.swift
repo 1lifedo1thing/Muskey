@@ -97,6 +97,8 @@ final class PitchChanger {
     var stemsDelay: Double { shifter.map { ps_stems_delay($0) } ?? 0 }
     /// While the stems are on and the song still plays as it is, waiting for the first separated block: the seconds
     /// since the stems were turned on.
+    /// The stems are separated and play: nothing is left to wait for.
+    var stemsPlaying: Bool { shifter.map { ps_stems_started($0) != 0 } ?? false }
     var stemsWaited: Double? { shifter.map { ps_stems_waiting($0) }.flatMap { $0 >= 0 ? $0 : nil } }
     func stemLevel(_ stem: Stem) -> Float { shifter.map { ps_stems_level($0, Int32(stem.rawValue)) } ?? 0 }
 

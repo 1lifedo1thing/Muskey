@@ -432,7 +432,8 @@ struct HUDView: View {
         .animation(.snappy(duration: 0.3), value: model.lyricsShown)
         .animation(.snappy(duration: 0.3), value: model.stemsAvailable)
         .animation(.snappy(duration: 0.3), value: model.stemsOpen)
-        .animation(.smooth(duration: 0.35), value: model.lyricsFocus)
+        // Karaoke is opened by a key or a click, so it shows almost at once instead of growing into place.
+        .animation(.easeOut(duration: 0.12), value: model.lyricsFocus)
         .animation(.easeOut(duration: 0.15), value: model.keysActive)
         // The card is taller than the wide glass, so it grows up from where the bottom of the wide glass sits,
         // instead of reaching down toward the Dock. The stems open downward, which keeps the top of the card and its
@@ -1021,6 +1022,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shownChange: AnyCancellable?
     private var glassChange: AnyCancellable?
     private var karaokeChange: AnyCancellable?
+    /// When karaoke last opened or closed.
+    private var focusChangedAt = Date.distantPast
     private var backdropChange: AnyCancellable?
     /// Blurs and dims the screen around the karaoke glass, and a click on it closes karaoke.
     private lazy var karaokeBackdrop: KaraokeBackdrops = {
@@ -1126,15 +1129,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Return while the lyrics show: karaoke, or back to the lyrics.
     private func toggleLyricsFocus() {
         guard model.lyricsShown else { return }
+        karaokeAskedAt = CACurrentMediaTime()
         model.lyricsFocus.toggle()
         log(model.lyricsFocus ? "karaoke" : "lyrics at their usual size")
     }
 
     /// Karaoke opened from the keys, by its button or ⌘K, which closes back to the keys.
     private var karaokeFromKeys = false
+    /// When the last key or click asked for karaoke, for the log of how long it took to show.
+    private var karaokeAskedAt: CFTimeInterval?
 
     /// The karaoke button and ⌘K: karaoke from the keys or from the lyrics, and back to where it opened from.
     private func toggleKaraoke() {
+        karaokeAskedAt = CACurrentMediaTime()
         if model.lyricsFocus {
             let back = karaokeFromKeys
             model.lyricsFocus = false
@@ -1170,6 +1177,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 setStems(model.stemsMuted.union([.vocals]), fade: true)
             }
             if prefs.karaokeRestarts { restartForKaraoke() }
+            if let asked = karaokeAskedAt {
+                karaokeAskedAt = nil
+                log(String(format: "karaoke: set up %.0f ms after it was asked for", (CACurrentMediaTime() - asked) * 1000))
+                DispatchQueue.main.async { [self] in
+                    log(String(format: "karaoke: main thread free %.0f ms after it was asked for", (CACurrentMediaTime() - asked) * 1000))
+                }
+            }
         } else if karaokeMutedVocals {
             karaokeMutedVocals = false
             guard model.stemsMuted.contains(.vocals) else { return }
@@ -1200,6 +1214,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("karaoke: the song starts over")
             return nowPlaying.seek(to: 0)
         }
+        // Stems that already play for this song are ready, as when karaoke opens again: it opens on them at once,
+        // where the song is, with nothing to separate again.
+        if pitch.stemsPlaying { return log("karaoke: the stems already play, the song goes on from where it is") }
         // Core ML prepares the model for an unknown time, and the stems separated meanwhile would be wasted, so the song
         // plays on and starts over once the model is ready.
         guard StemModel.prepared else {
@@ -1710,14 +1727,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .store(in: &prefChanges)
         }
         karaokeChange = model.$lyricsFocus.removeDuplicates().dropFirst().sink { [weak self] on in
-            // Published before the change, so the stems change on the next turn of the run loop.
-            DispatchQueue.main.async { [weak self] in self?.karaokeChanged(on) }
+            self?.focusChangedAt = Date()
+            // Published before the change. The stems and the pitch change start once karaoke's first frame is drawn,
+            // since they hold the main thread for a moment.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.karaokeChanged(on) }
         }
         glassChange = model.$glassFrame.removeDuplicates().sink { [weak self] _ in
             // Published before the change, so the panel reads the new frame on the next turn of the run loop.
             DispatchQueue.main.async { [weak self] in
                 guard let self, panel.isVisible else { return }
-                panel.keepOnScreen(animated: panel.alphaValue >= 1)
+                // Karaoke opens or closes in place at once, so the glass doesn't slide after it.
+                panel.keepOnScreen(animated: panel.alphaValue >= 1 && Date().timeIntervalSince(focusChangedAt) > 0.6)
             }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: panel, queue: .main) { [weak self] _ in
@@ -1796,6 +1816,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if TestFlags.has("--install-yt-dlp") { filePlayer.installDownloader() }
         // `--menu "Stop Playing" [--menu-after SECONDS]` picks an item of the menu bar menu, which no automation can
         // open on macOS 27.
+        // `--open-menu-after S` opens the menu bar menu after S seconds, so a posted key reaches the open menu.
+        if let after = Self.stringOption("--open-menu-after").flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + after) { [self] in
+                log("menu: opened")
+                statusItem.openMenu()
+            }
+        }
         if let title = Self.stringOption("--menu") {
             let after = Self.stringOption("--menu-after").flatMap(Double.init) ?? 3
             DispatchQueue.main.asyncAfter(deadline: .now() + after) { [self] in
@@ -3121,8 +3148,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch AudioCapturePermission.status {
         case .granted:
             do {
+                let started = CACurrentMediaTime()
                 try pitch.start()
-                log("pitch change started")
+                log(String(format: "pitch change started (%.0f ms to build)", (CACurrentMediaTime() - started) * 1000))
             } catch {
                 pitchFailed("\(error)")
             }

@@ -528,8 +528,11 @@ private struct SpinningRecord: NSViewRepresentable {
 
     final class SpinView: NSView {
         let record = CALayer()
-        /// The cover, in a layer of its own that turns with the record and shrinks while the pointer is over it.
+        /// The cover, in a layer of its own that turns with the record. It is outside the record, in `coverScale`,
+        /// since the paused record stops the clock of every layer inside it, and the cover has to shrink while the
+        /// song is paused too.
         let cover = CALayer()
+        private let coverScale = CALayer()
         /// The play or pause glyph, which stays upright over the turning cover and blends with it.
         private let glyph = CALayer()
         /// The faint tint on the shrunk cover, under the glyph and still, since it is a plain circle.
@@ -545,7 +548,8 @@ private struct SpinningRecord: NSViewRepresentable {
             record.contentsGravity = .resizeAspect
             cover.contentsGravity = .resizeAspect
             layer?.addSublayer(record)
-            record.addSublayer(cover)
+            layer?.addSublayer(coverScale)
+            coverScale.addSublayer(cover)
             tint.backgroundColor = NSColor.black.withAlphaComponent(RecordGlyph.tint).cgColor
             tint.opacity = 0
             layer?.addSublayer(tint)
@@ -560,7 +564,7 @@ private struct SpinningRecord: NSViewRepresentable {
             turn.duration = period
             turn.repeatCount = .infinity
             turn.isRemovedOnCompletion = false
-            record.add(turn, forKey: "turn")
+            for layer in turning { layer.add(turn, forKey: "turn") }
             pause()
         }
 
@@ -572,12 +576,14 @@ private struct SpinningRecord: NSViewRepresentable {
             CATransaction.setDisableActions(true)
             record.bounds = bounds
             record.position = CGPoint(x: bounds.midX, y: bounds.midY)
-            cover.bounds = CGRect(x: 0, y: 0, width: bounds.width * label, height: bounds.height * label)
-            cover.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            coverScale.bounds = CGRect(x: 0, y: 0, width: bounds.width * label, height: bounds.height * label)
+            coverScale.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            cover.bounds = coverScale.bounds
+            cover.position = CGPoint(x: coverScale.bounds.midX, y: coverScale.bounds.midY)
             let shrunkSide = bounds.width * label * RecordControls.shrink
             tint.bounds = CGRect(x: 0, y: 0, width: shrunkSide, height: shrunkSide)
             tint.cornerRadius = shrunkSide / 2
-            tint.position = cover.position
+            tint.position = coverScale.position
             placeGlyph()
             CATransaction.commit()
         }
@@ -621,7 +627,7 @@ private struct SpinningRecord: NSViewRepresentable {
                 CATransaction.begin()
                 CATransaction.setAnimationDuration(0.18)
                 CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
-                cover.transform = shrunk ? CATransform3DMakeScale(RecordControls.shrink, RecordControls.shrink, 1) : CATransform3DIdentity
+                coverScale.transform = shrunk ? CATransform3DMakeScale(RecordControls.shrink, RecordControls.shrink, 1) : CATransform3DIdentity
                 CATransaction.commit()
             }
         }
@@ -639,22 +645,29 @@ private struct SpinningRecord: NSViewRepresentable {
             back.duration = 0.9
             back.timingFunction = CAMediaTimingFunction(controlPoints: 0.12, 0.8, 0.3, 1)
             back.isAdditive = true
-            record.add(back, forKey: "rewind")
+            for layer in turning { layer.add(back, forKey: "rewind") }
         }
+
+        /// The vinyl and the cover, which turn and pause together.
+        private var turning: [CALayer] { [record, cover] }
 
         /// Holds the record at its angle; the animation starts again from there.
         private func pause() {
-            let now = record.convertTime(CACurrentMediaTime(), from: nil)
-            record.speed = 0
-            record.timeOffset = now
+            for layer in turning {
+                let now = layer.convertTime(CACurrentMediaTime(), from: nil)
+                layer.speed = 0
+                layer.timeOffset = now
+            }
         }
 
         private func resume() {
-            let paused = record.timeOffset
-            record.speed = 1
-            record.timeOffset = 0
-            record.beginTime = 0
-            record.beginTime = record.convertTime(CACurrentMediaTime(), from: nil) - paused
+            for layer in turning {
+                let paused = layer.timeOffset
+                layer.speed = 1
+                layer.timeOffset = 0
+                layer.beginTime = 0
+                layer.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) - paused
+            }
         }
     }
 }

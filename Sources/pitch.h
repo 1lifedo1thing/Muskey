@@ -74,6 +74,8 @@ uint32_t ps_spins(PSShifter *shifter);
 // While the stems are on and the song still plays as it is, waiting for the first separated block: the seconds
 // since the stems were turned on. -1 otherwise, and while the delay below waits.
 double ps_stems_waiting(PSShifter *shifter);
+// 1 while the stems are on and their first block plays.
+int ps_stems_started(PSShifter *shifter);
 
 // Plays the song `seconds` behind itself, or the stems when they are on, for lyrics written by ear. Raising it leaves
 // the output as it is until that many seconds are captured, then steps back to the moment it was raised. 0 plays the

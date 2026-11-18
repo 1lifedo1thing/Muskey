@@ -776,10 +776,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.center()
     }
 
+    /// ⌘, in the menu bar menu runs while the menu still tracks the keyboard, and the window that opens then ends up
+    /// behind the app that was active once the menu closes. So the window opens after the menu is gone, in the
+    /// default run loop mode, which menu tracking doesn't run.
     func show() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
+        RunLoop.main.perform(inModes: [.default]) { [weak self] in
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            self?.window?.makeKeyAndOrderFront(nil)
+            self?.window?.orderFrontRegardless()
+        }
     }
 
     func windowWillClose(_: Notification) {
