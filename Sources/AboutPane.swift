@@ -75,10 +75,10 @@ struct AboutPane: View {
                 VStack(spacing: 0) {
                     AboutHeader()
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Sponsor the projects behind Muskey")
+                        Text("Projects behind Muskey")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.primary)
-                        Text("Muskey is free. To support it, support the projects it's built on.")
+                        Text("Muskey is free. To support it, sponsor the projects it's built on.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }

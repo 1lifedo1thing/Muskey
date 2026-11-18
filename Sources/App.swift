@@ -974,6 +974,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The HUD takes the keyboard back while a key is picked, and the app that was in front otherwise.
         panel.onClose = { [weak self] in
             guard let self else { return }
+            dialogOpen = false
             if model.picking, self.panel.isVisible { return self.panel.makeKey() }
             if NSApp.isActive, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }),
                let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
@@ -1792,22 +1793,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// A link to a song or a video, or the path of a file, in a glass bar like the HUD's.
-    @objc private func openLocation() { locationPanel.show() }
+    @objc private func openLocation() {
+        dialogOpen = true
+        locationPanel.show()
+    }
 
     /// Runs a dialog in front of the app that is active, with the keyboard on the dialog. macOS brings only a regular
     /// app to the front, so Muskey shows in the Dock while the dialog is open, as it does for Settings.
+    /// The app that was in front gets the keyboard back afterwards, as when the HUD closes.
     private func inFront<T>(_ run: () -> T) -> T {
         let accessory = NSApp.activationPolicy() == .accessory
         if accessory { NSApp.setActivationPolicy(.regular) }
         NSApp.takeFocus()
-        defer {
-            if accessory, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
-                NSApp.setActivationPolicy(.accessory)
-                // The app that was in front gets the keyboard back, as when the HUD closes.
-                if let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
-            }
+        dialogOpen = true
+        let result = run()
+        dialogOpen = false
+        if accessory, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
+            NSApp.setActivationPolicy(.accessory)
+            if let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
         }
-        return run()
+        return result
     }
 
     /// Files or a link on the clipboard, for ⌘V over the HUD.
@@ -2829,9 +2834,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForStems = false
     private var hoverKeysForKaraoke = false
 
+    /// Open File… or Open Location… is open. Its text would otherwise reach the keys over the HUD, which are global
+    /// hotkeys, whenever the pointer rests on the HUD.
+    private var dialogOpen = false {
+        didSet { if dialogOpen != oldValue { updateHoverKeys() } }
+    }
+
     private func updateHoverKeys() {
         let wanted = model.hovering && model.shown && model.key != nil && (model.picking || model.phase == .done || model.phase == .listening)
-            && lyricsEditor == nil
+            && lyricsEditor == nil && !dialogOpen
         // The lyrics take fewer keys than the key row, so the keys change when the panel does.
         guard wanted == hoverKeys.isEmpty
             || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus))
