@@ -280,17 +280,8 @@ private struct ListeningPane: View {
                     Text("Remember song keys")
                     Text("Save detected keys and reuse them for the same song")
                 }
-                LabeledContent("Remembered songs") {
-                    HStack {
-                        Pill(text: "\(songs.count)", color: .secondary)
-                        Button("Forget All…") { confirmForget = true }
-                            .disabled(songs.isEmpty)
-                    }
-                }
             }
-            if !songs.isEmpty {
-                RememberedSongs(songs: songs) { keyCache.forget($0) }
-            }
+            RememberedSongs(songs: songs, forget: { keyCache.forget($0) }, forgetAll: { confirmForget = true })
         }
         .formStyle(.grouped)
         .alert(songs.count == 1 ? "Forget the key of 1 song?" : "Forget the keys of \(songs.count) songs?", isPresented: $confirmForget) {
@@ -300,12 +291,14 @@ private struct ListeningPane: View {
     }
 }
 
-/// The songs that have a remembered key, the most recent listen first, each with a button that forgets its key.
+/// The songs that have a remembered key, the most recent listen first, each with a button that forgets its key. The
+/// header holds the count and Forget All.
 /// A grouped Form lays out every row it holds, which took seconds and gigabytes with thousands of songs, so the songs
 /// scroll in a List of their own inside one row of the form. Its table makes views only for the rows on screen.
 private struct RememberedSongs: View {
     let songs: [KeyCache.Song]
     let forget: (String) -> Void
+    let forgetAll: () -> Void
     @State private var search = ""
 
     /// A short list is read at a glance, so the search bar appears only for a longer one.
@@ -333,7 +326,9 @@ private struct RememberedSongs: View {
                 }
             }
             let shown = shown
-            if shown.isEmpty {
+            if songs.isEmpty {
+                Text("No remembered songs").foregroundStyle(.secondary)
+            } else if shown.isEmpty {
                 Text("No songs match").foregroundStyle(.secondary)
             } else {
                 List(shown) { song in
@@ -347,6 +342,15 @@ private struct RememberedSongs: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .frame(height: CGFloat(min(shown.count, Self.visibleRows)) * Self.rowHeight)
+            }
+        } header: {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Remembered songs")
+                Pill(text: "\(songs.count)", color: .secondary)
+                Spacer()
+                Button("Forget All…", action: forgetAll)
+                    .controlSize(.small)
+                    .disabled(songs.isEmpty)
             }
         }
     }
