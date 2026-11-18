@@ -101,35 +101,51 @@ struct ShiftPills: View {
         if model.pitchFailed {
             ShiftPill(text: "Pitch change failed", palette: palette)
         } else {
-            HStack(spacing: 6) {
-                if model.speedAdjustable || model.shownTempo != nil {
-                    TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
-                              palette: palette, step: model.onSpeed)
-                        .transition(.opacity)
+            // One row where it fits, as in the wide layout. The card is narrower, so its pills of the tempo and of the
+            // key take a row each there.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    tempoPills
+                    keyPills
                 }
-                if model.speedAdjustable, model.speed != 1 {
-                    SpeedPill(speed: model.speed, palette: palette) { model.onSpeed(0) }
-                        .transition(.opacity)
-                }
-                if let pending = model.pending {
-                    // In the red of Lock Key, which turns it into the move once the song's key is found.
-                    ShiftPill(text: "→ \(pending.name)", hue: .red, waiting: true, palette: palette)
-                        .transition(.opacity)
-                } else {
-                    if model.shift != 0 {
-                        ShiftPill(text: Shift.text(model.shift), hue: model.shift > 0 ? StripColors.up : StripColors.down, palette: palette)
-                            .contentTransition(.numericText(value: Double(model.shift)))
-                    }
-                    // In the red of Lock Key, which made the change.
-                    if let moved = model.moved {
-                        ShiftPill(text: moved, hue: .red, palette: palette)
-                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                    }
+                VStack(spacing: 5) {
+                    HStack(spacing: 6) { tempoPills }
+                    HStack(spacing: 6) { keyPills }
                 }
             }
             .animation(.snappy(duration: 0.25), value: model.shownTempo)
             .animation(.snappy(duration: 0.2), value: model.speed)
             .animation(.snappy(duration: 0.2), value: model.speedAdjustable)
+        }
+    }
+
+    @ViewBuilder private var tempoPills: some View {
+        if model.speedAdjustable || model.shownTempo != nil {
+            TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
+                      palette: palette, step: model.onSpeed)
+                .transition(.opacity)
+        }
+        if model.speedAdjustable, model.speed != 1 {
+            SpeedPill(speed: model.speed, palette: palette) { model.onSpeed(0) }
+                .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder private var keyPills: some View {
+        if let pending = model.pending {
+            // In the red of Lock Key, which turns it into the move once the song's key is found.
+            ShiftPill(text: "→ \(pending.name)", hue: .red, waiting: true, palette: palette)
+                .transition(.opacity)
+        } else {
+            if model.shift != 0 {
+                ShiftPill(text: Shift.text(model.shift), hue: model.shift > 0 ? StripColors.up : StripColors.down, palette: palette)
+                    .contentTransition(.numericText(value: Double(model.shift)))
+            }
+            // In the red of Lock Key, which made the change.
+            if let moved = model.moved {
+                ShiftPill(text: moved, hue: .red, palette: palette)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
         }
     }
 }
@@ -155,6 +171,7 @@ struct TempoPill: View {
         .padding(.horizontal, adjustable ? 4 : 8)
         .padding(.vertical, 3)
         .background(Capsule().fill(palette.ink.opacity(0.1)))
+        .fixedSize()
     }
 
     private func cap(_ key: String, help: String, step value: Int) -> some View {
@@ -189,6 +206,7 @@ struct SpeedPill: View {
             .padding(.trailing, 4)
             .padding(.vertical, 3)
             .background(Capsule().fill(StripColors.tint(hue, strong: true, colorScheme)))
+            .fixedSize()
         }
         .buttonStyle(.plain)
         .focusable(false)

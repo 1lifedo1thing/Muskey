@@ -157,6 +157,7 @@ struct ShiftPill: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(Capsule().fill(hue.map { StripColors.tint($0, strong: true, colorScheme) } ?? palette.ink.opacity(0.1)))
+            .fixedSize()
     }
 }
 

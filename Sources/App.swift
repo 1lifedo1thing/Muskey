@@ -3028,6 +3028,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The speed of the song as the tap hears it: Muskey Player's speed while its song is the one that plays.
     private var playedSpeed: Double { model.speedAdjustable ? filePlayer.speed : 1 }
+    /// The speed that the listens running now hear the song at.
+    private var heardSpeed = 1.0
 
     /// The keys of the tempo, for a song in Muskey Player.
     private static let speedKeys = [kVK_ANSI_LeftBracket: -1, kVK_ANSI_RightBracket: 1, kVK_ANSI_Equal: 0]
@@ -3062,8 +3064,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if model.speed != filePlayer.speed { model.speed = filePlayer.speed }
         let speed = playedSpeed
-        analyzer?.play(at: speed)
-        autoAnalyzer?.play(at: speed)
+        if speed != heardSpeed {
+            heardSpeed = speed
+            // A listen hears the song at one speed, so one that runs starts over at the new speed, with its whole
+            // length ahead of it. A key from the few seconds left would be stored with the song.
+            if let analyzer {
+                analyzer.play(at: speed)
+                startedAt = Date()
+                log("the listen starts over at the new speed")
+            }
+            if autoAnalyzer != nil {
+                cancelAutoListen()
+                autoListenIfNeeded()
+            }
+        }
         lyricsSync.hearsSong = speed == 1
         let correction = speed == 1 ? 0 : -12 * log2(speed)
         guard correction != pitch.correction else { return }
@@ -3169,6 +3183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // With stems muted, the pitch change keeps running in the original key.
         if shift == 0, pitch.running, model.stemsEngaged { return log("original key, stems playing apart") }
         if shift == 0, pitch.running, lyricsDelayed { return log("original key, 30 seconds behind for the lyrics") }
+        if shift == 0, pitch.running, pitch.correction != 0 {
+            return log(String(format: "original key, corrected by %+.2f semitones for the tempo", pitch.correction))
+        }
         log(shift == 0 ? "pitch change stopped\(gaps)" : "pitch change \(Shift.text(shift)): \(base.name) to \(model.shown(base.transposed(by: shift)).name)")
     }
 
