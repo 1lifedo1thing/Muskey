@@ -270,6 +270,10 @@ struct RecordGlyph: Equatable {
     /// Points above the middle of the cover, on karaoke's record.
     let lift: CGFloat
 
+    /// The faint tint on the cover under the glyph. Darkening the cover first pushes mid-tone covers away from grey, where
+    /// the difference blend would leave the glyph the same colour as the art.
+    static let tint = 0.24
+
     /// The triangle's weight sits left of its box, so it moves right to look centred.
     var nudge: CGFloat { symbol == "play.fill" ? size * 0.07 : 0 }
 
@@ -278,8 +282,8 @@ struct RecordGlyph: Equatable {
     }
 }
 
-/// The shrunk cover as the play and pause button: a faint tint over it and a thin ring while the pointer is over it,
-/// and nothing otherwise. The glyph is drawn with the record, except in `--render`, where the record doesn't turn.
+/// The shrunk cover as the play and pause button: a thin ring while the pointer is over it, and nothing otherwise.
+/// The record draws the tint and the glyph, since the tint has to sit under the glyph for the blend to read.
 private struct CoverButton: View {
     let size: CGFloat
     let glyph: RecordGlyph?
@@ -291,11 +295,8 @@ private struct CoverButton: View {
     var body: some View {
         let lit = glyph != nil
         Button(action: action) {
-            ZStack {
-                Circle().fill(.black.opacity(lit ? 0.24 : 0))
-                Circle().strokeBorder(.white.opacity(lit ? 0.22 : 0), lineWidth: 1)
-            }
-            .frame(width: size, height: size)
+            Circle().strokeBorder(.white.opacity(lit ? 0.22 : 0), lineWidth: 1)
+                .frame(width: size, height: size)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -447,6 +448,8 @@ private struct Record: View {
                             .scaleEffect(buttonsShown ? RecordControls.shrink : 1)
                             .animation(.easeOut(duration: 0.18), value: buttonsShown)
                         if let glyph {
+                            Circle().fill(.black.opacity(RecordGlyph.tint))
+                                .frame(width: side * label * RecordControls.shrink, height: side * label * RecordControls.shrink)
                             glyph.image.blendMode(.difference).offset(x: glyph.nudge, y: -glyph.lift)
                         }
                     }
@@ -529,6 +532,8 @@ private struct SpinningRecord: NSViewRepresentable {
         let cover = CALayer()
         /// The play or pause glyph, which stays upright over the turning cover and blends with it.
         private let glyph = CALayer()
+        /// The faint tint on the shrunk cover, under the glyph and still, since it is a plain circle.
+        private let tint = CALayer()
         private var shownGlyph: RecordGlyph?
         private let label: CGFloat
 
@@ -541,6 +546,9 @@ private struct SpinningRecord: NSViewRepresentable {
             cover.contentsGravity = .resizeAspect
             layer?.addSublayer(record)
             record.addSublayer(cover)
+            tint.backgroundColor = NSColor.black.withAlphaComponent(RecordGlyph.tint).cgColor
+            tint.opacity = 0
+            layer?.addSublayer(tint)
             glyph.compositingFilter = "differenceBlendMode"
             glyph.contentsGravity = .center
             glyph.opacity = 0
@@ -566,6 +574,10 @@ private struct SpinningRecord: NSViewRepresentable {
             record.position = CGPoint(x: bounds.midX, y: bounds.midY)
             cover.bounds = CGRect(x: 0, y: 0, width: bounds.width * label, height: bounds.height * label)
             cover.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            let shrunkSide = bounds.width * label * RecordControls.shrink
+            tint.bounds = CGRect(x: 0, y: 0, width: shrunkSide, height: shrunkSide)
+            tint.cornerRadius = shrunkSide / 2
+            tint.position = cover.position
             placeGlyph()
             CATransaction.commit()
         }
@@ -592,6 +604,7 @@ private struct SpinningRecord: NSViewRepresentable {
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
             placeGlyph()
             glyph.opacity = new == nil ? 0 : 1
+            tint.opacity = new == nil ? 0 : 1
             CATransaction.commit()
             if new == nil { shownGlyph = nil }
         }
