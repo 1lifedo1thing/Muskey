@@ -111,6 +111,56 @@ final class NowPlaying {
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data(String(format: "seek %.3f\n", seconds).utf8))
     }
 
+    /// Pauses the song that another app plays, before Muskey Player starts one, then calls `done` on the main thread.
+    /// The helper is asked what plays when it isn't watching. `done` waits 0.3 seconds after the pause, so the pause
+    /// reaches the other app before Muskey Player becomes the app that Now Playing names. Every step has a bound.
+    func pauseOthers(except bundleID: String, then done: @escaping () -> Void) {
+        let other = { (track: Track?) in track.map { $0.playing && $0.bundleID != bundleID } ?? false }
+        if let stdinPipe, track != nil {
+            guard other(track) else { return done() }
+            log("pausing \(track?.bundleID ?? "the other player") before playing")
+            try? stdinPipe.fileHandleForWriting.write(contentsOf: Data("pause\n".utf8))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: done)
+            return
+        }
+        Self.run(["get"]) { [weak self] output in
+            let track = output.flatMap { try? JSONDecoder().decode(Track.self, from: $0) }
+            guard other(track) else { return done() }
+            self?.log("pausing \(track?.bundleID ?? "the other player") before playing")
+            Self.run(["pause"]) { _ in DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: done) }
+        }
+    }
+
+    /// Runs the helper once with `arguments`, and calls `done` on the main thread with its output, or nil when it
+    /// failed or took longer than 3 seconds.
+    private static func run(_ arguments: [String], done: @escaping (Data?) -> Void) {
+        let process = Process()
+        process.executableURL = helperURL
+        process.arguments = arguments
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardInput = FileHandle.nullDevice
+        var finished = false
+        let finish = { (data: Data?) in
+            DispatchQueue.main.async {
+                guard !finished else { return }
+                finished = true
+                done(data)
+            }
+        }
+        do { try process.run() } catch { return finish(nil) }
+        // The output holds the cover, more than a pipe buffers, so it is read while the helper writes it.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            finish(process.terminationStatus == 0 ? data : nil)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if process.isRunning { process.terminate() }
+            finish(nil)
+        }
+    }
+
     private func stop() {
         pending?.cancel()
         pending = nil

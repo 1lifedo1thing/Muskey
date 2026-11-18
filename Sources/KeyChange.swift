@@ -903,6 +903,8 @@ final class StatusItem: NSObject {
     var onStop: () -> Void = {}
     var onPlayAllStems: () -> Void = {}
     var onSettings: () -> Void = {}
+    var onOpenFile: () -> Void = {}
+    var onOpenLocation: () -> Void = {}
     private var item: NSStatusItem?
 
     /// `heard` is the key that the song plays in, as the HUD names it, and `kept` the key that the next songs get.
@@ -945,6 +947,9 @@ final class StatusItem: NSObject {
             menu.addItem(menuItem("Find Key", #selector(findKey), hotkey: hotkey))
         }
         menu.addItem(.separator())
+        menu.addItem(menuItem("Open File…", #selector(openFile), key: "o"))
+        menu.addItem(menuItem("Open Location…", #selector(openLocation), key: "l"))
+        menu.addItem(.separator())
         menu.addItem(menuItem("Settings…", #selector(settings), key: ","))
         menu.addItem(menuItem("Check for Updates…", #selector(checkForUpdates)))
         menu.addItem(.separator())
@@ -969,5 +974,7 @@ final class StatusItem: NSObject {
     @objc private func stop() { onStop() }
     @objc private func playAllStems() { onPlayAllStems() }
     @objc private func settings() { onSettings() }
+    @objc private func openFile() { onOpenFile() }
+    @objc private func openLocation() { onOpenLocation() }
     @objc private func checkForUpdates() { Updates.shared.check() }
 }

@@ -31,6 +31,9 @@
 - Card layout
     > Switch to the **Card style** to view the keys on the circle of fifths.
 
+- Songs from files and links
+    > Drop an audio or video file on Muskey, or a link to a song on YouTube or any other site that [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports, and Muskey plays it with everything above.
+
 ## Build from source
 
 ```sh

@@ -24,6 +24,14 @@ Since macOS 15.4, only code signed with an Apple identifier can read MediaRemote
 
 The helper also sends two commands to the player: play or pause, for Space over the HUD, and a move to the start of the song, for karaoke.
 
+### Playing files and links
+
+Muskey plays the songs that are opened in it: dropped on the HUD, pasted with Command-V over it, picked with **Open File…** or **Open Location…** in the menu, or opened with Muskey in Finder. A small app inside Muskey, Muskey Player, plays them and tells Now Playing about them. Muskey's taps leave out the audio that the Muskey app plays, so the player is a separate app. The key, the pitch change, the stems and the lyrics then work as they do with any other player. Before a song plays, Muskey pauses the song that another app plays.
+
+A link to an audio or video file is downloaded directly. Muskey downloads any other link with [yt-dlp](https://github.com/yt-dlp/yt-dlp), from Homebrew, pipx or Muskey's folder. Without yt-dlp, the pill at the top right of the screen offers **Install yt-dlp**, which downloads the official build for macOS from yt-dlp's GitHub releases and checks it against the SHA-256 sums published with it. When a download with that copy fails, Muskey updates it once with `yt-dlp -U` and tries again.
+
+yt-dlp takes only the audio. With ffmpeg, it converts any audio to M4A. Without ffmpeg, it takes M4A, MP3 or MP4, and Muskey copies the audio into a new M4A, since AVFoundation reads the DASH M4A of YouTube as twice as long as it is. Muskey keeps up to 2 GB of downloaded songs in `~/Library/Caches/Muskey/Links`, so a link opened again plays at once.
+
 ### Hotkey
 
 The hotkey is registered with Carbon's `RegisterEventHotKey`, which works without the Accessibility permission.
@@ -128,6 +136,13 @@ Builds made with `make` or `make install` take these flags, and release builds i
 | `--lyrics-lookup "Title\|Artist\|Album\|Seconds"` | Look up the lyrics of that song the way the lyrics panel does, print the service, the timing and the first lines, and quit |
 | `--lyrics-source NAME` | Ask only one lyrics service: `lrclib`, `lrcred`, `netease` or `amll` |
 | `--lyrics-plain` | Drop the times of synced lyrics, time them by listening, and log how far the heard times are from the dropped ones. With `--pick`, the lyrics show from the start. |
+
+### Files and links
+
+| Flag | Action |
+|---|---|
+| `--open PATH_OR_LINK` | Play a file or a link, as a drop on the HUD does |
+| `--install-yt-dlp` | Press **Install yt-dlp**, as on the pill of a link that needs it |
 
 ### Tests
 

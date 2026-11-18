@@ -273,6 +273,10 @@ final class HUDModel: ObservableObject {
     /// The Separate instruments and vocals button.
     var onSeparate: () -> Void = {}
     var onStemsRetry: () -> Void = {}
+    /// Files or links dropped on the HUD, which Muskey plays.
+    var onOpen: ([URL]) -> Void = { _ in }
+    /// A file or a link is dragged over the HUD.
+    @Published var dropTargeted = false
 }
 
 /// The level of each stem, in the order of `Stem`, 20 times a second while the stems play and the HUD shows.
@@ -354,7 +358,24 @@ struct HUDView: View {
                 .transition(.opacity)
             }
         }
+        .overlay {
+            if model.dropTargeted {
+                // A file or a link dragged over the HUD plays once dropped.
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 44, weight: .regular))
+                    .foregroundStyle(.tint)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Palette.of(colorScheme).ink.opacity(0.08))
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: model.dropTargeted)
         .modifier(HUDBackground(tint: tint, scheme: colorScheme))
+        .dropDestination(for: URL.self) { urls, _ in
+            model.onOpen(urls)
+            return !urls.isEmpty
+        } isTargeted: { model.dropTargeted = $0 }
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.songArriving, model.songArriving)
         .animation(.smooth(duration: 0.35), value: model.songArriving == nil)
@@ -725,7 +746,7 @@ struct HUDBackground: ViewModifier {
 }
 
 /// The first click on a button in the HUD acts on it, instead of only making the panel key.
-private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for _: NSEvent?) -> Bool { true }
 }
 
@@ -932,6 +953,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var noSong: DispatchWorkItem?
 
     private let nowPlaying = NowPlaying()
+    /// Plays the files and links that Muskey opens, through Muskey Player.
+    private let filePlayer = FilePlayer()
+    private let activityPill = ActivityPill()
+    /// Files opened before the app finished launching, as with Open With.
+    private var openedEarly: [URL]?
+    private var launched = false
     /// The key that every song gets moved to when it starts playing: set while Lock Key is on, from the key that
     /// was heard when a key was picked or Lock Key was turned on.
     private var keptKey: DetectedKey? {
@@ -1507,6 +1534,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onStop = { [weak self] in self?.stopPitch() }
         statusItem.onPlayAllStems = { [weak self] in self?.setStems([]) }
         statusItem.onSettings = { [weak self] in self?.settingsWindow.show() }
+        statusItem.onOpenFile = { [weak self] in self?.openFile() }
+        statusItem.onOpenLocation = { [weak self] in self?.openLocation() }
+        filePlayer.log = { [weak self] in self?.log($0) }
+        filePlayer.onActivity = { [weak self] in self?.activityPill.show($0) }
+        filePlayer.onPlaying = { [weak self] in self?.filePlays() }
+        filePlayer.pauseOthers = { [weak self] done in
+            guard let self else { return done() }
+            nowPlaying.pauseOthers(except: FilePlayer.bundleID, then: done)
+        }
+        activityPill.onRetry = { [weak self] in self?.filePlayer.retry() }
+        activityPill.onInstall = { [weak self] in self?.filePlayer.installDownloader() }
+        activityPill.onDismiss = { [weak self] in self?.filePlayer.dismiss() }
+        model.onOpen = { [weak self] urls in self?.open(urls) }
         nowPlaying.log = { [weak self] in self?.log($0) }
         nowPlaying.onSongChange = { [weak self] in
             // Another song during karaoke's countdown plays as it comes.
@@ -1627,6 +1667,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(true, forKey: "launchedBefore")
             settingsWindow.show()
         }
+        launched = true
+        // `--open PATH_OR_LINK` plays a file or a link, as a drop on the HUD does.
+        if let text = Self.stringOption("--open"), let url = FilePlayer.url(from: text) { open([url]) }
+        // `--install-yt-dlp` presses Install yt-dlp on the pill.
+        if TestFlags.has("--install-yt-dlp") { filePlayer.installDownloader() }
+        if let urls = openedEarly {
+            openedEarly = nil
+            open(urls)
+        }
+    }
+
+    /// Open With in Finder, or a file dropped on Muskey's icon.
+    func application(_: NSApplication, open urls: [URL]) {
+        guard launched else { return openedEarly = (openedEarly ?? []) + urls }
+        open(urls)
+    }
+
+    /// Plays files or links: dropped on the HUD, pasted, or picked with Open File… and Open Location….
+    private func open(_ urls: [URL]) {
+        log("opening \(urls.count == 1 ? (urls[0].isFileURL ? "a file" : "a link") : "\(urls.count) items")")
+        filePlayer.open(urls)
+    }
+
+    /// The song that Muskey opened plays: the HUD opens on it, as the hotkey opens it, unless it already shows.
+    private func filePlays() {
+        if state == .idle { start() }
+    }
+
+    @objc private func openFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio, .movie]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        NSApp.activate()
+        guard panel.runModal() == .OK else { return }
+        open(panel.urls)
+    }
+
+    /// A link to a song or a video, or the path of a file, with the link on the clipboard filled in.
+    @objc private func openLocation() {
+        let alert = NSAlert()
+        alert.messageText = "Open Location"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.placeholderString = "https://"
+        if let text = NSPasteboard.general.string(forType: .string), FilePlayer.url(from: text) != nil { field.stringValue = text }
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let url = FilePlayer.url(from: field.stringValue) else { return log("open location: not a link or a file") }
+        open([url])
+    }
+
+    /// Files or a link on the clipboard, for ⌘V over the HUD.
+    private static func pastedURLs() -> [URL] {
+        let board = NSPasteboard.general
+        let files = (board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        if !files.isEmpty { return files }
+        if let text = board.string(forType: .string), let url = FilePlayer.url(from: text) { return [url] }
+        return []
     }
 
     private func registerHotKey(_ shortcut: Shortcut?) {
@@ -1668,6 +1770,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
         app.addItem(.separator())
         app.addItem(withTitle: "Quit Muskey", action: #selector(NSApplication.terminate), keyEquivalent: "q")
+        let file = NSMenu(title: "File")
+        file.addItem(withTitle: "Open File…", action: #selector(openFile), keyEquivalent: "o").target = self
+        file.addItem(withTitle: "Open Location…", action: #selector(openLocation), keyEquivalent: "l").target = self
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
@@ -1678,7 +1783,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll), keyEquivalent: "a")
         let window = NSMenu(title: "Window")
         window.addItem(withTitle: "Close", action: #selector(NSWindow.performClose), keyEquivalent: "w")
-        for submenu in [app, edit, window] {
+        for submenu in [app, file, edit, window] {
             menu.addItem(withTitle: submenu.title, action: nil, keyEquivalent: "").submenu = submenu
         }
         return menu
@@ -1688,6 +1793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quitting while the lyrics show keeps the words heard and the lines written so far, as closing the HUD does.
     func applicationWillTerminate(_: Notification) {
+        filePlayer.stop()
         cancelAutoListen()
         pitch.stop()
         lyricsSync.end()
@@ -1704,6 +1810,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             source.setEventHandler { [weak self] in
                 self?.pitch.stop()
                 self?.lyricsSync.end()
+                self?.filePlayer.stop()
                 exit(0)
             }
             source.resume()
@@ -1956,6 +2063,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let flags = event.modifierFlags
+            // ⌘V plays the file or the link on the clipboard.
+            if let self, self.model.picking, event.window === self.panel, flags.contains(.command), Int(event.keyCode) == kVK_ANSI_V {
+                let urls = Self.pastedURLs()
+                guard !urls.isEmpty else { return event }
+                self.open(urls)
+                return nil
+            }
             // Typing in the lyrics editor stays in the editor.
             guard let self, self.model.picking, !flags.contains(.command), !flags.contains(.control),
                   event.window == nil || event.window === self.panel else { return event }
@@ -3004,6 +3118,29 @@ extension EnvironmentValues {
         }
         }
         }
+        }
+    }
+    // The pill at the top right of the screen for a song that Muskey opens.
+    let pills: [(String, OpenActivity)] = [
+        ("pill-downloading", .downloading(name: "Never Gonna Give You Up", progress: 0.45)), ("pill-starting", .downloading(name: "youtube.com", progress: nil)),
+        ("pill-installing", .installing(progress: 0.3)), ("pill-failed", .failed(name: "Never Gonna Give You Up")),
+        ("pill-needs-downloader", .needsDownloader(name: "youtube.com")), ("pill-install-failed", .installFailed), ("pill-unplayable", .unplayable(name: "Concert.mkv")),
+    ]
+    for (name, activity) in pills {
+        for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
+            let model = ActivityPillModel()
+            model.activity = activity
+            let view = ActivityPillView(model: model)
+                .frame(width: 460, height: 64)
+                .background(backdrop)
+                .environment(\.colorScheme, scheme == "dark" ? .dark : .light)
+                .environment(\.renderingPreview, true)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+               let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)-\(scheme).png"))
+            }
         }
     }
     exit(0)
