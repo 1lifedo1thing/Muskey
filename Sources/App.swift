@@ -1289,6 +1289,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var startedAt = Date()
     /// The song played at some point of the listen, so a pause holds the listen instead of ending it.
     private var listenHeardPlaying = false
+    /// When the song of the listen paused, which stopped the recording until it plays again, and that song.
+    private var listenPausedAt: Date?
+    private var listenPausedSong: [String?]?
+    /// The sample rate that the listen's analyzer takes.
+    private var listenTapRate: Double = 0
     private var peak: Float = 0
     /// The peak comes with each estimate, so before the first one a quiet listen can't be told from a late start.
     private var estimated = false
@@ -2263,6 +2268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         nowPlaying.onTrack = { [weak self] in
             self?.listenWhenPlaying()
+            self?.resumeListen()
             self?.syncPauseStop()
             self?.syncSpeed()
             self?.syncSeekable()
@@ -2886,24 +2892,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startedAt = Date()
         listenHeardPlaying = false
 
-        let current = session
         let tap = SystemAudioTap()
         self.tap = tap
         do {
             try tap.prepare()
             let analyzer = KeyAnalyzer(sampleRate: tap.sampleRate, speed: playedSpeed, recordTo: Self.stringOption("--wav"))
             self.analyzer = analyzer
-            try tap.start { [weak self] samples in
-                analyzer.append(samples) { result, peak in
-                    guard let self, self.session == current else { return }
-                    self.update(result, peak: peak)
-                }
-            }
+            listenTapRate = tap.sampleRate
+            try feed(tap, to: analyzer)
         } catch {
             return fail(.failed, "\(error)")
         }
         ticker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.tick() }
         startOnKnownKey()
+    }
+
+    /// Sends what the tap records to the listen's analyzer, whose estimates show while this listen runs.
+    private func feed(_ tap: SystemAudioTap, to analyzer: KeyAnalyzer) throws {
+        let current = session
+        try tap.start { [weak self] samples in
+            analyzer.append(samples) { result, peak in
+                guard let self, self.session == current else { return }
+                self.update(result, peak: peak)
+            }
+        }
+    }
+
+    /// The song paused during its listen, after it played: the recording and the ticker stop, and the analyzer keeps
+    /// what it heard. The HUD keeps the song instead of offering to play, and the listen goes on when the song plays
+    /// again. A listen that starts on a paused player still ends on Nothing playing.
+    private func pauseListen() {
+        guard state == .listening, listenPausedAt == nil else { return }
+        ticker?.invalidate()
+        ticker = nil
+        tap?.stop()
+        tap = nil
+        listenPausedAt = Date()
+        listenPausedSong = nowPlaying.track?.song
+        log("the song paused, and the listen waits for it without recording")
+    }
+
+    /// The song of a paused listen plays again: a new recording goes to the same analyzer, and the listen's time goes
+    /// on from where it stopped.
+    private func resumeListen() {
+        // Another song gets a listen of its own from the song change.
+        guard let pausedAt = listenPausedAt, state == .listening, let analyzer, let track = nowPlaying.track, track.playing,
+              track.song == listenPausedSong else { return }
+        listenPausedAt = nil
+        startedAt += Date().timeIntervalSince(pausedAt)
+        let tap = SystemAudioTap()
+        do {
+            try tap.prepare()
+            // Another output device with another rate: the analyzer can't take its sound, so the listen starts over.
+            guard tap.sampleRate == listenTapRate else {
+                log("the song plays again at another sample rate, listening from the start")
+                return listen()
+            }
+            try feed(tap, to: analyzer)
+        } catch {
+            return fail(.failed, "\(error)")
+        }
+        self.tap = tap
+        ticker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.tick() }
+        log("the song plays again, and so does the listen")
     }
 
     /// A song whose key a full listen found before shows that key at once, with no listen, unless Lock Key has to move
@@ -3006,16 +3057,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func tick() {
-        // A song that played during the listen and was paused pauses the listen: its time stops until the song plays
-        // again, and the HUD keeps the song instead of offering to play. A listen that starts on a paused player
-        // still ends on Nothing playing.
         if let track = nowPlaying.track, track.title?.isEmpty == false {
-            if track.playing {
-                listenHeardPlaying = true
-            } else if listenHeardPlaying {
-                startedAt += 0.1
-                return
-            }
+            if track.playing { listenHeardPlaying = true } else if listenHeardPlaying { return pauseListen() }
         }
         let elapsed = Date().timeIntervalSince(startedAt)
         model.progress = min(1, elapsed / seconds)
@@ -3033,6 +3076,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ticker = nil
         tap?.stop()
         tap = nil
+        listenPausedAt = nil
     }
 
     private func finish() {
