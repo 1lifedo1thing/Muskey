@@ -747,8 +747,8 @@ struct HUDView: View {
 
     /// The key in the top row, which turns into the key row while the pointer is over it.
     /// The key at the top of karaoke, which opens the key row while the pointer is over it. With the instruments
-    /// model, the Vocals pill sits under the key, and the key row opens under the pill instead of over it: only the
-    /// key opens the row, and the pill stays where it is, uncovered.
+    /// model, the Vocals pill sits under the key, and the key row takes the pill's place while it is open. Only the
+    /// key opens the row, never the pill.
     private func karaokeKey(_ palette: Palette) -> some View {
         let pill = model.stemsAvailable && showsStrip
         return VStack(spacing: 6) {
@@ -766,11 +766,12 @@ struct HUDView: View {
             }
             .onHover { karaokeHover($0, \.karaokeKeys, $keysCollapse) }
             if pill {
-                KaraokeVocalsPill(muted: model.stemsMuted.contains(.vocals), hudHovered: model.hovering, palette: palette, action: model.onVocals)
-                    .transition(.opacity)
                 if model.karaokeKeys, let key = model.key {
                     karaokeKeyRow(key, palette)
                         .onHover { karaokeHover($0, \.karaokeKeys, $keysCollapse) }
+                } else {
+                    KaraokeVocalsPill(muted: model.stemsMuted.contains(.vocals), hudHovered: model.hovering, palette: palette, action: model.onVocals)
+                        .transition(.opacity)
                 }
             }
         }
