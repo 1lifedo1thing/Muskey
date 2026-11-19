@@ -253,6 +253,9 @@ final class HUDModel: ObservableObject {
     @Published var rewinds = 0
     /// A new song that the stems or the lyrics delay play only seconds later: from when it started to when it is heard.
     @Published var songArriving: ClosedRange<Date>?
+    /// The size of the glass when the song changed under a HUD with a key. The listen of the new song shows no key
+    /// until its first estimate, and the glass keeps this size until then, so the record stays under the pointer.
+    @Published var heldGlass: CGSize?
     /// The HUD takes keys: the pointer is over it, or it has the keyboard. The key hints are faint otherwise, since the
     /// keys do nothing then, but they keep their place and some weight in the layout.
     @Published var keysActive = false
@@ -443,8 +446,10 @@ struct HUDView: View {
             }
         }
         // Sized to its content: the main column fills only the width that the hint bar adds.
-        .fixedSize()
-        .frame(minWidth: 180, minHeight: 92)
+        // A glass held at its size gives the layout its whole width, which keeps the record at the same place.
+        .fixedSize(horizontal: model.heldGlass == nil, vertical: true)
+        .frame(width: model.heldGlass?.width)
+        .frame(minWidth: 180, minHeight: max(92, model.heldGlass?.height ?? 0), alignment: .top)
         .overlay(alignment: .topLeading) {
             // In karaoke, the close button, the timing of the lyrics, the key, the lyrics' source and the karaoke button
             // sit in one row.
@@ -1020,6 +1025,8 @@ final class HUDPanel: NSPanel {
     private var pressedAt = Date.distantPast
     private var pressDragged = false
     var log: (String) -> Void = { _ in }
+    /// Runs on each move of the pointer while the panel takes clicks.
+    var pointerMoved: () -> Void = {}
 
     /// The press is on the time bar, a little taller than the bar, which seeks with its drag.
     private func onTimeBar(_ event: NSEvent) -> Bool {
@@ -1097,9 +1104,13 @@ final class HUDPanel: NSPanel {
             acceptsMouseMovedEvents = true
             let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
             pointerMonitors = [
-                NSEvent.addGlobalMonitorForEvents(matching: events) { [weak self] _ in self?.updatePassThrough() },
+                NSEvent.addGlobalMonitorForEvents(matching: events) { [weak self] _ in
+                    self?.updatePassThrough()
+                    self?.pointerMoved()
+                },
                 NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
                     self?.updatePassThrough()
+                    self?.pointerMoved()
                     return event
                 },
             ].compactMap { $0 }
@@ -1256,8 +1267,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var panel: HUDPanel = {
         let panel = HUDPanel(model: model)
         panel.log = { [weak self] in self?.log($0) }
+        panel.pointerMoved = { [weak self] in self?.checkClipboard() }
         return panel
     }()
+    /// When the clipboard was last checked for ⌘V over the HUD.
+    private var clipboardCheckedAt = Date.distantPast
+
+    /// Something copied while the pointer rests on the HUD turns ⌘V on or off there, from the pointer's next move.
+    private func checkClipboard() {
+        guard !hoverKeys.isEmpty, Date().timeIntervalSince(clipboardCheckedAt) > 0.25 else { return }
+        clipboardCheckedAt = Date()
+        if NSPasteboard.general.changeCount != hoverKeysPasteboard { updateHoverKeys() }
+    }
     private var hotKey: HotKey?
     private var state = State.idle
     // Bumped whenever a listen starts or ends, so late callbacks from a cancelled one are dropped.
@@ -1266,6 +1287,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var analyzer: KeyAnalyzer?
     private var ticker: Timer?
     private var startedAt = Date()
+    /// The song played at some point of the listen, so a pause holds the listen instead of ending it.
+    private var listenHeardPlaying = false
     private var peak: Float = 0
     /// The peak comes with each estimate, so before the first one a quiet listen can't be told from a late start.
     private var estimated = false
@@ -2255,6 +2278,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overRecordChange = model.$overRecord.removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateHoverKeys() }
         }
+        // A new song's listen starts with no key, and the keys that change the key come back with its first estimate.
+        keyChange = model.$key.map { $0 != nil }.removeDuplicates().sink { [weak self] keyed in
+            DispatchQueue.main.async {
+                if keyed { self?.model.heldGlass = nil }
+                self?.updateHoverKeys()
+            }
+        }
+        // The glass that a song change held at its size lets go once the listen ends or the HUD hides.
+        heldGlassChange = model.$phase.combineLatest(model.$shown).sink { [weak self] phase, shown in
+            guard phase != .listening || !shown else { return }
+            DispatchQueue.main.async { self?.model.heldGlass = nil }
+        }
         // A save and the shortcuts leave the HUD only the keys that end them.
         lockChange = model.$saving.map { $0 != nil }.removeDuplicates().combineLatest(model.$shortcuts.removeDuplicates()).sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateHoverKeys() }
@@ -2682,6 +2717,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return result
     }
 
+    /// ⌘V over the HUD: plays the files or the link on the clipboard. Returns false when the clipboard holds neither.
+    @discardableResult private func pasteSongs() -> Bool {
+        let urls = Self.pastedURLs()
+        guard !urls.isEmpty else { return false }
+        open(urls)
+        return true
+    }
+
     /// Files or a link on the clipboard, for ⌘V over the HUD.
     private static func pastedURLs() -> [URL] {
         let board = NSPasteboard.general
@@ -2831,14 +2874,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         listenSong = nil
         remembered = nil
         lookedUp = nil
+        let shownWithKey = model.shown && model.key != nil && !model.lyricsFocus && model.glassFrame.width > 0
         model.shown = true
         if !model.picking {
+            if shownWithKey { model.heldGlass = model.glassFrame.size }
             model.key = nil
             // The glass takes the mouse during the listen too, so it can be dragged away.
             panel.setInteraction(clickable: true, keyboard: false)
         }
         panel.present()
         startedAt = Date()
+        listenHeardPlaying = false
 
         let current = session
         let tap = SystemAudioTap()
@@ -2960,6 +3006,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func tick() {
+        // A song that played during the listen and was paused pauses the listen: its time stops until the song plays
+        // again, and the HUD keeps the song instead of offering to play. A listen that starts on a paused player
+        // still ends on Nothing playing.
+        if let track = nowPlaying.track, track.title?.isEmpty == false {
+            if track.playing {
+                listenHeardPlaying = true
+            } else if listenHeardPlaying {
+                startedAt += 0.1
+                return
+            }
+        }
         let elapsed = Date().timeIntervalSince(startedAt)
         model.progress = min(1, elapsed / seconds)
         // Nothing has made a sound in 3 seconds of a listen that the hotkey started, and no player says that it plays:
@@ -3111,12 +3168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let self, self.model.shortcuts, event.window === self.panel, flags.contains(.command) {
                 return Self.hudCommandKeys.contains(Int(event.keyCode)) ? nil : event
             }
-            // ⌘V plays the file or the link on the clipboard.
-            if let self, self.model.picking, event.window === self.panel, flags.contains(.command), Int(event.keyCode) == kVK_ANSI_V {
-                let urls = Self.pastedURLs()
-                guard !urls.isEmpty else { return event }
-                self.open(urls)
-                return nil
+            // ⌘V plays the file or the link on the clipboard, while the HUD takes the keyboard.
+            if let self, event.window === self.panel, flags.contains(.command), Int(event.keyCode) == kVK_ANSI_V {
+                return self.pasteSongs() ? nil : event
             }
             // ⌘⌫ takes the song back to how it was: its key, its tempo and every stem.
             if let self, self.model.picking || self.model.phase == .idle, event.window === self.panel, flags.contains(.command),
@@ -4551,6 +4605,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForRestart = false
     private var hoverKeysForSave = false
     private var hoverKeysForRecord = false
+    private var hoverKeysForKey = false
+    /// The clipboard when the keys were registered: ⌘V over the HUD is a key only while it holds files or a link.
+    private var hoverKeysPasteboard = 0
     /// A save leaves the HUD only Escape, and the shortcuts only Escape and ?, which close them.
     private var hoverKeysLock = HoverKeysLock.none
     /// The key that types ? in the keyboard layout that was selected when the keys were registered.
@@ -4558,6 +4615,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum HoverKeysLock { case none, saving, shortcuts }
     private var overRecordChange: AnyCancellable?
     private var lockChange: AnyCancellable?
+    private var keyChange: AnyCancellable?
+    private var heldGlassChange: AnyCancellable?
 
     /// Open File… or Open URL… is open. Its text would otherwise reach the keys over the HUD, which are global
     /// hotkeys, whenever the pointer rests on the HUD.
@@ -4567,11 +4626,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateHoverKeys() {
         let lock: HoverKeysLock = model.saving != nil ? .saving : model.shortcuts ? .shortcuts : .none
-        let wanted = model.hovering && model.shown && model.key != nil && (model.picking || model.phase == .done || model.phase == .listening)
+        // A listen that has no estimate yet leaves the HUD without a key. The keys that play, skip and move the song
+        // work from the start, and the ones that change the key, the instruments or the tempo wait for the key.
+        let keyed = model.key != nil
+        let pasteboard = NSPasteboard.general.changeCount
+        let wanted = model.hovering && model.shown && (model.picking || [.done, .listening, .idle].contains(model.phase))
             && lyricsEditor == nil && !dialogOpen
         // The lyrics take fewer keys than the key row, so the keys change when the panel does.
         guard wanted == hoverKeys.isEmpty
-            || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
+            || (wanted && (hoverKeysForKey != keyed || hoverKeysPasteboard != pasteboard
+                || hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
                 || hoverKeysForRecord != model.overRecord || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
@@ -4579,6 +4643,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
         guard wanted else { return }
+        hoverKeysForKey = keyed
+        hoverKeysPasteboard = pasteboard
         hoverKeysForLyrics = model.lyricsShown
         hoverKeysForStems = model.stemsAvailable
         hoverKeysForKaraoke = model.lyricsFocus
@@ -4601,21 +4667,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         // ? shows the shortcuts.
-        var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
-        if model.stemsAvailable {
+        var keys: [(Int, Int)] = [kVK_Escape, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
+        if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } }
+        if keyed, model.stemsAvailable {
             // V mutes the vocals or plays them again, in every layout.
             keys += Self.stemKeys.flatMap { code in [(code, 0), (code, optionKey)] } + [(kVK_ANSI_0, 0), (kVK_ANSI_V, 0)]
         }
         // A song in Muskey Player plays slower, faster or at its own tempo.
-        if model.speedAdjustable { keys += Self.speedKeys.keys.map { ($0, 0) } }
+        if keyed, model.speedAdjustable { keys += Self.speedKeys.keys.map { ($0, 0) } }
         // Return shows the lyrics large, or back at their usual size, and the arrows seek while a seek is instant.
-        if model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter].map { ($0, 0) } }
+        if keyed, model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter].map { ($0, 0) } }
         if model.lyricsShown, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
         // Karaoke seeks with the number keys, and 0 starts the song over in every player.
         if model.lyricsFocus, model.seekable { keys += Self.digitKeys.map { ($0, 0) } }
         if model.lyricsFocus, model.restartable { keys.append((kVK_ANSI_0, 0)) }
         // The key row, and karaoke, change the key by its letter.
-        if !model.lyricsShown || model.lyricsFocus {
+        if keyed, !model.lyricsShown || model.lyricsFocus {
             keys += Self.letters.keys.flatMap { code in modifiers.map { (code, $0) } }
             keys += [kVK_Delete, kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow].map { ($0, 0) }
         }
@@ -4630,14 +4697,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
             }
         }
-        if let karaoke = try? HotKey(keyCode: kVK_ANSI_K, modifiers: cmdKey, action: { [weak self] in self?.toggleKaraoke() }) {
+        if keyed, let karaoke = try? HotKey(keyCode: kVK_ANSI_K, modifiers: cmdKey, action: { [weak self] in self?.toggleKaraoke() }) {
             hoverKeys.append(karaoke)
         }
         if model.savable, let save = try? HotKey(keyCode: kVK_ANSI_S, modifiers: cmdKey, action: { [weak self] in self?.saveSong() }) {
             hoverKeys.append(save)
         }
-        if let reset = try? HotKey(keyCode: kVK_Delete, modifiers: cmdKey, action: { [weak self] in self?.resetAll() }) {
+        if keyed, let reset = try? HotKey(keyCode: kVK_Delete, modifiers: cmdKey, action: { [weak self] in self?.resetAll() }) {
             hoverKeys.append(reset)
+        }
+        // ⌘V over the HUD plays the files or the link on the clipboard. A clipboard with other text leaves ⌘V to the
+        // app in front.
+        if !Self.pastedURLs().isEmpty, let paste = try? HotKey(keyCode: kVK_ANSI_V, modifiers: cmdKey, action: { [weak self] in self?.pasteSongs() }) {
+            hoverKeys.append(paste)
         }
         if let open = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey, action: { [weak self] in self?.openFile() }) { hoverKeys.append(open) }
         if let link = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey, action: { [weak self] in self?.openLocation() }) { hoverKeys.append(link) }
