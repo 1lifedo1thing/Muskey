@@ -1154,7 +1154,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // While the stems or the lyrics delay play, a pause has to be heard at once, so the helper keeps telling.
         // A song that Muskey Player plays faster or slower keeps its pitch correction only while it is the one that plays.
         nowPlaying.watching = keptKey != nil || shown || songKey != nil || prefs.alwaysListen || model.stemsEngaged || lyricsDelayed
-            || filePlayer.speed != 1 || songRecording != nil || slow.active
+            || filePlayer.speed != 1 || songRecording != nil || slow.active || (prefs.pauseStop && changesRun)
+    }
+
+    /// A pitch change, a tempo change or the stems run, which the pause timeout stops.
+    private var changesRun: Bool {
+        pitch.running || model.shift != 0 || keptKey != nil || model.pending != nil || model.stemsEngaged || model.stemsAdjusted
+            || currentSpeed != 1 || slow.active
+    }
+
+    /// Settings > General > Pause timeout: once the song has been paused that long with the HUD hidden, the pitch change,
+    /// the tempo change and the stems stop, as Stop Pitch Change and the original tempo would have them. Lock Key is
+    /// released too, and nothing comes back when the song plays again.
+    private var pauseStopWork: DispatchWorkItem?
+
+    private var pauseStopWaits: Bool {
+        prefs.pauseStop && !model.shown && !(nowPlaying.player?.playing ?? false) && changesRun && songRecording == nil
+            && saveJob == nil && karaokeRestart == nil
+    }
+
+    private func syncPauseStop() {
+        updateWatching(shown: model.shown)
+        guard pauseStopWaits else {
+            pauseStopWork?.cancel()
+            pauseStopWork = nil
+            return
+        }
+        guard pauseStopWork == nil else { return }
+        let seconds = prefs.pauseStopSeconds
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            pauseStopWork = nil
+            guard pauseStopWaits else { return }
+            stopAfterPause(seconds)
+        }
+        pauseStopWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(seconds), execute: work)
+    }
+
+    private func stopAfterPause(_ seconds: Int) {
+        let stopped = [
+            model.shift != 0 || keptKey != nil ? String(format: "the pitch change (%+d)", model.shift) : nil,
+            currentSpeed != 1 ? String(format: "the tempo change (%.0f %%)", currentSpeed * 100) : nil,
+            model.stemsEngaged || model.stemsAdjusted ? "the stems" : nil,
+        ].compactMap { $0 }
+        log("paused for \(seconds) s with the HUD hidden, stopping \(stopped.isEmpty ? "the pitch change" : stopped.joined(separator: ", "))")
+        // A slowed song's player is up to 30 seconds ahead of what was heard, so it moves back to the moment heard
+        // before the slowing stops, and plays on from there.
+        if slow.active, let heard = nowPlaying.track, let player = nowPlaying.player, heard.song == player.song,
+           let at = heard.position(at: Date()) {
+            slow.stop("the song was paused with the HUD hidden")
+            log(String(format: "the player moves back to %.1f s, where the song was heard", at))
+            movePlayer(player, to: at)
+        } else {
+            slow.stop("the song was paused with the HUD hidden")
+        }
+        if filePlayer.speed != 1 { filePlayer.setSpeed(1) }
+        if !model.stemVolumes.isEmpty {
+            model.stemVolumes = [:]
+            pitch.stemVolumes = [:]
+        }
+        syncSpeed()
+        stopPitch()
+        refreshStatus()
     }
 
     /// The stems play seconds behind the song, so they hold where they are while the player pauses it. A track
@@ -1698,6 +1760,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefs.$launchAtLogin.sink { [weak self] in self?.updateLoginItem($0) }.store(in: &prefChanges)
         prefs.$relativeKeys.sink { [weak self] in self?.model.relativeKeys = $0 }.store(in: &prefChanges)
         prefs.$rewindEffect.sink { [weak self] in self?.pitch.fadeSteps = $0 == .fade }.store(in: &prefChanges)
+        // A changed timeout counts from the change.
+        prefs.$pauseStop.combineLatest(prefs.$pauseStopSeconds).sink { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.pauseStopWork?.cancel()
+                self?.pauseStopWork = nil
+                self?.syncPauseStop()
+            }
+        }.store(in: &prefChanges)
         prefs.$menuBarIcon.combineLatest(prefs.$hotkey).sink { [weak self] _ in
             DispatchQueue.main.async { self?.refreshStatus() }
         }.store(in: &prefChanges)
@@ -1846,6 +1916,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.songChanged($0)
         }
         nowPlaying.onTrack = { [weak self] in
+            self?.syncPauseStop()
             self?.syncSpeed()
             self?.syncSeekable()
             self?.syncSavable()
@@ -1859,6 +1930,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Published before the change, so the new value comes from the publisher.
         shownChange = model.$shown.removeDuplicates().sink { [weak self] shown in
             if shown { self?.shownAt = Date() }
+            // The sink runs before `shown` changes.
+            DispatchQueue.main.async { self?.syncPauseStop() }
             self?.updateWatching(shown: shown)
             self?.watchOption(shown)
             self?.updateLyricsClock(shown: shown)
@@ -4142,6 +4215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshStatus() {
         syncSavable()
+        syncPauseStop()
         statusItem.update(shift: model.shift, from: shiftBase, heard: shiftBase.map { model.shown($0.transposed(by: model.shift)) }, kept: keptKey,
                           current: currentKey,
                           stems: model.stemsAdjusted ? Stem.shown.filter { !model.stemsMuted.contains($0) } : nil,

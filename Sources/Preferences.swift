@@ -142,13 +142,21 @@ final class Preferences: ObservableObject {
     @Published var saveFormat: SaveFormat {
         didSet { defaults.set(saveFormat.rawValue, forKey: "saveFormat") }
     }
+    /// The pitch change, the tempo change and the stems stop once the song has been paused for `pauseStopSeconds` with
+    /// the HUD hidden (Settings > General > Pause timeout).
+    @Published var pauseStop: Bool {
+        didSet { defaults.set(pauseStop, forKey: "pauseStop") }
+    }
+    @Published var pauseStopSeconds: Int {
+        didSet { defaults.set(pauseStopSeconds, forKey: "pauseStopSeconds") }
+    }
     /// The base URL of the Whisper server, up to `/v1`.
     @Published var whisperServer: String {
         didSet { defaults.set(whisperServer, forKey: "whisperServer") }
     }
 
     private init() {
-        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true])
+        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always
@@ -165,6 +173,8 @@ final class Preferences: ObservableObject {
         karaokeRestarts = defaults.bool(forKey: "karaokeRestarts")
         rewindEffect = defaults.string(forKey: "rewindEffect").flatMap(RewindEffect.init) ?? .scratch
         karaokeBackdrop = defaults.bool(forKey: "karaokeBackdrop")
+        pauseStop = defaults.bool(forKey: "pauseStop")
+        pauseStopSeconds = min(max(defaults.integer(forKey: "pauseStopSeconds"), 1), 3600)
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }

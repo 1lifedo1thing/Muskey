@@ -204,6 +204,28 @@ private struct GeneralPane: View {
                     Text("Next song on a swipe to the left")
                 }
             }
+            Section("Playback") {
+                LabeledContent {
+                    HStack(spacing: 6) {
+                        TextField("Pause timeout", value: $prefs.pauseStopSeconds, format: .number.grouping(.never))
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 44)
+                            .disabled(!prefs.pauseStop)
+                        Text("seconds")
+                            .foregroundStyle(prefs.pauseStop ? .primary : .secondary)
+                        Toggle("Pause timeout", isOn: $prefs.pauseStop)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+                } label: {
+                    Text("Pause timeout")
+                    Text("Stop the pitch change, the tempo change and the stems (while paused with the HUD hidden)")
+                }
+                .onChange(of: prefs.pauseStopSeconds) { _, seconds in
+                    if !(1 ... 3600).contains(seconds) { prefs.pauseStopSeconds = min(max(seconds, 1), 3600) }
+                }
+            }
             Section("Menu bar icon") {
                 HStack(spacing: 14) {
                     ChoiceTile(title: "Always", selected: prefs.menuBarIcon == .always) { prefs.menuBarIcon = .always } preview: {
