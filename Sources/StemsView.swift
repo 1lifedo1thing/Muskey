@@ -77,8 +77,8 @@ struct StemsRow: View {
     /// The keys work only while the pointer is over the HUD, so their numbers and the hints show only then, and the
     /// circles are smaller otherwise.
     private var expanded: Bool { model.keysActive }
-    /// The header holds only what changes: Play all, which shows only with the pointer over the HUD, or a failure.
-    private var header: Bool { model.stemsFailed || showsPlayAll }
+    /// The header holds Play all, which shows only with the pointer over the HUD.
+    private var header: Bool { showsPlayAll }
     private var showsPlayAll: Bool { model.stemsAdjusted && expanded }
     /// The stems aren't separated yet: the progress takes the place of the Separate button, centred, and no circle
     /// shows until the stems play.
@@ -89,13 +89,18 @@ struct StemsRow: View {
             ProgressPill(progress: progress, palette: palette)
                 .frame(maxWidth: .infinity)
                 .transition(.opacity)
+        } else if model.stemsFailed {
+            FailedPill(palette: palette, retry: model.onStemsRetry, dismiss: { model.stemsFailed = false })
+                .frame(maxWidth: .infinity)
+                .transition(.opacity)
         } else {
             tray.transition(.opacity)
         }
     }
 
     private var tray: some View {
-        VStack(alignment: .leading, spacing: compact ? 4 : 6) {
+        // Play all keeps clear of the rings around the circles, which reach up to 8 points past them at the loudest.
+        VStack(alignment: .leading, spacing: compact ? 4 : header ? 13 : 6) {
             if header { headerRow }
             StemHalos(model: model, meters: model.stemMeters, palette: palette, compact: compact, card: card, expanded: expanded)
         }
@@ -161,38 +166,51 @@ struct StemsRow: View {
     }
 
     private var headerRow: some View {
-            // Play all sits in the middle of the tray, whatever shows on its left.
-            ZStack {
-                if model.stemsFailed {
-                    HStack(spacing: 8) {
-                        // The label turns red when the stems couldn't be separated, with Retry beside it and an ✕ that
-                        // dismisses it.
-                        HStack(spacing: 4) {
-                            Text("Instruments and vocals")
-                            Button { model.stemsFailed = false } label: { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
-                                .buttonStyle(.plain)
-                                .help("Dismiss")
-                        }
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(StripColors.text(.red, colorScheme))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
-                        Button("Retry", action: model.onStemsRetry)
-                            .controlSize(.mini)
-                        Spacer(minLength: 0)
-                    }
-                }
-                if showsPlayAll {
-                    Button("Play all") { model.onStemsReset() }
-                        .buttonStyle(PillButtonStyle(palette: palette))
-                        .focusable(false)
-                        .help("Play all instruments and vocals (0)")
-                        .transition(.opacity)
-                }
-            }
+        Button("Play all") { model.onStemsReset() }
+            .buttonStyle(PillButtonStyle(palette: palette))
+            .focusable(false)
+            .help("Play all instruments and vocals (0)")
+            .transition(.opacity)
             .frame(maxWidth: .infinity)
             .frame(height: 16)
+    }
+}
+
+/// The separation failed: a red Retry pill takes the place of the Separate button, with the button's symbol, and an ✕
+/// in its corner that dismisses it.
+private struct FailedPill: View {
+    let palette: Palette
+    let retry: () -> Void
+    let dismiss: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button(action: retry) {
+            Label("Retry", systemImage: "slider.vertical.3")
+                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(StripColors.text(.red, colorScheme))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help("Separate the instruments and vocals again")
+        .overlay(alignment: .topTrailing) {
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 6.5, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .frame(width: 13, height: 13)
+                    .background(Circle().fill(Color(red: 0.93, green: 0.33, blue: 0.3)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help("Dismiss")
+            .offset(x: 5, y: -5)
+        }
     }
 }
 
