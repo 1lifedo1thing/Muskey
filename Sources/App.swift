@@ -2230,9 +2230,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let accessory = NSApp.activationPolicy() == .accessory
         if accessory { NSApp.setActivationPolicy(.regular) }
         NSApp.takeFocus()
+        // The HUD, karaoke's blur and the activity pill sit at the status bar's level, above a modal dialog, which
+        // macOS keeps at its own level: the HUD hid half of the save panel and took the clicks meant for its Format
+        // picker. They go below the dialog while it is open.
+        let raised = NSApp.windows.filter { $0.isVisible && $0.level == .statusBar }
+        raised.forEach { $0.level = .floating }
         dialogOpen = true
         let result = run()
         dialogOpen = false
+        raised.forEach { $0.level = .statusBar }
         if accessory, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
             NSApp.setActivationPolicy(.accessory)
             if let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
