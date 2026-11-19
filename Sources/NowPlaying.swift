@@ -65,7 +65,6 @@ final class NowPlaying {
 
     private var process: Process?
     private var stdinPipe: Pipe?
-    private var buffer = Data()
     /// The song that the last change was reported for, or that was playing when watching started.
     private var reported: [String?]?
     private var pending: DispatchWorkItem?
@@ -84,9 +83,22 @@ final class NowPlaying {
         let output = Pipe()
         process.standardInput = input
         process.standardOutput = output
-        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        // A line can hold a cover of megabytes, so the lines are decoded, and the covers made into thumbnails, on the
+        // handler's queue, and the main thread gets the tracks.
+        let reader = Reader()
+        output.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
             let data = handle.availableData
-            DispatchQueue.main.async { self?.received(data) }
+            // At its end, a pipe stays readable and would call the handler again at once, without end.
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            let reports = reader.read(data)
+            guard !reports.isEmpty else { return }
+            DispatchQueue.main.async {
+                guard let self, let process, self.process === process else { return }
+                for report in reports { self.update(report.track, cover: report.cover) }
+            }
         }
         process.terminationHandler = { [weak self] ended in
             DispatchQueue.main.async {
@@ -202,7 +214,6 @@ final class NowPlaying {
         try? stdinPipe?.fileHandleForWriting.close()
         stdinPipe = nil
         process?.terminate()
-        buffer.removeAll()
         reported = nil
         track = nil
         player = nil
@@ -211,15 +222,29 @@ final class NowPlaying {
         onTrack()
     }
 
-    private func received(_ data: Data) {
-        guard process != nil, !data.isEmpty else { return }
-        buffer.append(data)
-        // A line holds one cover at most, so a buffer this big means the helper stopped ending its lines.
-        if buffer.count > 64_000_000 { buffer.removeAll() }
-        while let end = buffer.firstIndex(of: 0x0A) {
-            let line = buffer[buffer.startIndex ..< end]
-            buffer.removeSubrange(buffer.startIndex ... end)
-            if let track = try? JSONDecoder().decode(Track.self, from: line) { update(track) }
+    /// Splits the helper's output into lines and decodes them, on the queue of the pipe's readability handler, which
+    /// calls it one chunk at a time.
+    private final class Reader: @unchecked Sendable {
+        private var buffer = Data()
+
+        /// The tracks of the lines that `data` ends, each with its cover: nil when the line sent none, and nil inside
+        /// when the cover can't be decoded.
+        func read(_ data: Data) -> [(track: Track, cover: NSImage??)] {
+            buffer.append(data)
+            // A line holds one cover at most, so a buffer this big means the helper stopped ending its lines.
+            if buffer.count > 64_000_000 { buffer.removeAll() }
+            // The lines before `data` were taken already, so only a newline in `data` ends one.
+            guard data.contains(0x0A) else { return [] }
+            var reports: [(track: Track, cover: NSImage??)] = []
+            while let end = buffer.firstIndex(of: 0x0A) {
+                let line = buffer[buffer.startIndex ..< end]
+                buffer.removeSubrange(buffer.startIndex ... end)
+                guard var track = try? JSONDecoder().decode(Track.self, from: line) else { continue }
+                let cover = track.artwork.map(NowPlaying.cover)
+                track.artwork = nil
+                reports.append((track, cover))
+            }
+            return reports
         }
     }
 
@@ -239,15 +264,13 @@ final class NowPlaying {
         return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
     }
 
-    private func update(_ track: Track) {
-        if let data = track.artwork {
-            playerArtwork = Self.cover(data)
+    private func update(_ track: Track, cover: NSImage??) {
+        if let cover {
+            playerArtwork = cover
         } else if track.artworkBytes == 0, track.song != player?.song {
             // Players report no cover for a moment on pause and resume, so the cover only goes with its song.
             playerArtwork = nil
         }
-        var track = track
-        track.artwork = nil
         player = track
         onPlayerReport(track)
         publish()
