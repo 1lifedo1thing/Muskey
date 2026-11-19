@@ -100,7 +100,7 @@ struct StemsRow: View {
 
     private var tray: some View {
         // Play all keeps clear of the rings around the circles, which reach up to 8 points past them at the loudest.
-        VStack(alignment: .leading, spacing: compact ? 4 : header ? 13 : 6) {
+        VStack(alignment: .leading, spacing: (compact ? 4 : 6) + (header ? 7 : 0)) {
             if header { headerRow }
             StemHalos(model: model, meters: model.stemMeters, palette: palette, compact: compact, card: card, expanded: expanded)
         }
