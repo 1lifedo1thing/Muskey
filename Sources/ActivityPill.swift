@@ -118,7 +118,8 @@ struct ActivityPillView: View {
             Text(name)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if let detail = detail ?? progress.map({ "\(Int(($0 * 100).rounded()))%" }) {
+            // Rounded down, as on the HUD's save layout, so the two agree and neither reads 100% before the end.
+            if let detail = detail ?? progress.map({ "\(Int(($0 * 100).rounded(.down)))%" }) {
                 Text(detail)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
