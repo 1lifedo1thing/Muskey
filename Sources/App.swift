@@ -2479,21 +2479,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The hotkey only works while the app runs. An app that moved, like from ~/Applications to /Applications,
     /// registers again, so the login item opens this copy.
     private func updateLoginItem(_ enabled: Bool) {
-        let service = SMAppService.mainApp
         let path = Bundle.main.bundlePath
-        guard enabled else {
+        // The login item is read and changed through a system daemon, which can be slow to answer, so it happens off
+        // the main thread, one change at a time.
+        Self.loginItemQueue.async { [weak self] in
+            let service = SMAppService.mainApp
+            guard enabled else {
+                if service.status == .enabled { try? service.unregister() }
+                return
+            }
+            guard service.status != .enabled || UserDefaults.standard.string(forKey: "loginItemPath") != path else { return }
             if service.status == .enabled { try? service.unregister() }
-            return
-        }
-        guard service.status != .enabled || UserDefaults.standard.string(forKey: "loginItemPath") != path else { return }
-        if service.status == .enabled { try? service.unregister() }
-        do {
-            try service.register()
-            UserDefaults.standard.set(path, forKey: "loginItemPath")
-        } catch {
-            log("adding the login item failed: \(error)")
+            do {
+                try service.register()
+                UserDefaults.standard.set(path, forKey: "loginItemPath")
+            } catch {
+                DispatchQueue.main.async { self?.log("adding the login item failed: \(error)") }
+            }
         }
     }
+
+    private static let loginItemQueue = DispatchQueue(label: "muskey.login-item", qos: .utility)
 
     /// Settings and the key commands of its window and of the lyrics window, which work while one of them is the
     /// active window. The text editing commands are what make Command-V paste lyrics.
