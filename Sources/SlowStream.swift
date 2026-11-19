@@ -79,7 +79,9 @@ final class SlowStream {
         defer { lastPlayer = report }
         guard active, let current, let state = pitch.slowState else { return }
         let last = lastPlayer
-        if let last, last.playing, !report.playing, let at = last.position(at: Date()) { pausedWritten = (state.written, at) }
+        if let last, last.playing, !report.playing, Date().timeIntervalSince(moveSent) > 1.5, let at = last.position(at: Date()) {
+            pausedWritten = (state.written, at)
+        }
         if let last, !last.playing, report.playing, report.song == last.song, let paused = pausedWritten {
             pausedWritten = nil
             if drain != nil || awaitingSplice != nil {
@@ -206,6 +208,10 @@ final class SlowStream {
     private static let mostBehind = TestFlags.value("--slow-behind").flatMap(Double.init) ?? 30.0
     /// `--log-slow` logs the backlog and the time heard every 2 seconds.
     private static let logState = TestFlags.has("--log-slow")
+    /// `--slow-dump DIR` saves the backlog around each search that failed, from 3 seconds before the old audio to the
+    /// newest audio, as raw 32-bit floats at the backlog's rate, one channel.
+    private static let dumpFolder = TestFlags.value("--slow-dump")
+    private var dumps = 0
     private var loggedAt = Date.distantPast
 
     /// A move of the player that waits for the audio it plays again: where the old audio stops (`seam`), where the
@@ -218,6 +224,8 @@ final class SlowStream {
         var sent: Date
         var searching = false
         var why: String
+        /// The best match of the searches so far, for the log when the audio isn't found.
+        var best: Float = 0
     }
 
     private var drain: Drain?
@@ -233,7 +241,12 @@ final class SlowStream {
     private func expectMove(to seconds: Double) {
         expected.removeAll { $0.until < Date() }
         expected.append((seconds, Date().addingTimeInterval(6)))
+        moveSent = Date()
     }
+
+    /// When Muskey last sent a move. Some players (Safari) report a pause and a play around a move, which isn't a pause
+    /// that the person made.
+    private var moveSent = Date.distantPast
 
     private func ownMove(near seconds: Double) -> Bool {
         expected.contains { $0.until > Date() && abs($0.seconds - seconds) < 2.5 }
@@ -256,7 +269,8 @@ final class SlowStream {
 
     private func tick() {
         guard active, let state = pitch.slowState else { return }
-        guard state.engaged != 0 || pitch.slowing else { return }
+        // Until the output engages, the reader's frame is still 0, and the backlog would read as days long.
+        guard state.engaged != 0 else { return }
         defer { lastWritten = state.written }
         if state.written < lastWritten, let report = player() {
             log("slow: the output started over with an empty backlog")
@@ -309,7 +323,7 @@ final class SlowStream {
         // again after a move, such as one that streams; while catching up, 3.5 seconds, so less is left to catch up.
         let heardAt = current.song + (state.clock - current.clock) / rate
         let ahead = readSpeed >= 1 ? 3.5 : 6
-        let reference = state.reading + UInt64((ahead + 0.5) * rate) ..< state.reading + UInt64((ahead + 1) * rate)
+        let reference = state.reading + UInt64((ahead + 0.5) * rate) ..< state.reading + UInt64((ahead + 1.5) * rate)
         guard reference.upperBound + UInt64(rate) < state.written, at - (heardAt + ahead) > 1, duration - at > 4 else { return }
         startDrain(Drain(seam: state.written, searchFrom: state.written, reference: reference, target: heardAt + ahead, sent: Date(),
                          why: speed == 1 ? "catching up" : String(format: "%.0f s behind", backlog)), report: report)
@@ -323,7 +337,9 @@ final class SlowStream {
         let seam = pause.frame
         let reference = seam - UInt64(1.8 * rate) ..< seam - UInt64(0.8 * rate)
         guard state.reading + UInt64(0.5 * rate) < reference.lowerBound else { return }
-        startDrain(Drain(seam: seam, searchFrom: state.written, reference: reference, target: pause.song - 2.2, sent: Date(),
+        // The player moves to 3.2 seconds before the pause, 1.4 seconds before the old audio: a player that reported the
+        // pause late, or that plays a moment of silence after a move, still plays all of it again.
+        startDrain(Drain(seam: seam, searchFrom: state.written, reference: reference, target: pause.song - 3.2, sent: Date(),
                          why: "played after a pause"), report: report)
     }
 
@@ -336,15 +352,45 @@ final class SlowStream {
 
     private var searchID = 0
 
+    /// The old audio is looked for in three windows of 0.4 seconds across its second, the earliest first. A moment
+    /// that the tap or the player dropped in one window leaves the others.
+    private func windows(of reference: Range<UInt64>) -> [Range<UInt64>] { Self.windows(of: reference, rate: rate) }
+
+    private static func windows(of reference: Range<UInt64>, rate: Double) -> [Range<UInt64>] {
+        let length = UInt64(0.4 * rate), room = reference.count > Int(length) ? reference.upperBound - length - reference.lowerBound : 0
+        return [0, room / 2, room].map { reference.lowerBound + $0 ..< reference.lowerBound + $0 + length }
+    }
+
+    /// `--splice-dump FILE OLD MOVE` runs the search on a file saved by `--slow-dump`, with the old audio's second at
+    /// OLD seconds into it and the move at MOVE, and prints what each window found.
+    static func searchDump(_ path: String, old: Double, move: Double, rate: Double = 48000) -> Int32 {
+        guard let data = FileManager.default.contents(atPath: path) else {
+            print("can't read \(path)")
+            return 1
+        }
+        let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        let reference = UInt64(old * rate) ..< UInt64((old + 1) * rate)
+        let region = Array(samples[Int(move * rate)...])
+        for window in windows(of: reference, rate: rate) {
+            let part = Array(samples[Int(window.lowerBound) ..< Int(window.upperBound)])
+            let search = Splice.search(part, in: region, rate: rate)
+            let place = search.match.map { String(format: "found at %.3f s, %.4f", move + Double($0.offset) / rate, $0.score) } ?? "not found"
+            print(String(format: "window at %.2f s: %@, best %.4f", Double(window.lowerBound) / rate, place, search.best))
+        }
+        return 0
+    }
+
     /// Waits for the audio after the move to reach the old audio's moment, then looks for it, and hands the splice to
     /// the output. The output mustn't reach the old audio before that, or the move would be heard.
     private func follow(_ current: Drain, state: PSSlowState) {
-        let deadline = current.reference.lowerBound - min(current.reference.lowerBound, UInt64(0.25 * rate))
+        let last = windows(of: current.reference).last!.lowerBound
+        let deadline = last - min(last, UInt64(0.25 * rate))
         if state.reading >= deadline {
             drain = nil
             searchID += 1
             failedDrains += 1
-            log("slow: the audio after the move wasn't found before the output reached it")
+            log(String(format: "slow: the audio after the move wasn't found before the output reached it (best match %.2f)", current.best))
+            if let folder = Self.dumpFolder { dump(current, state: state, to: folder) }
             if failedDrains >= 2 { stop("the player didn't play the song again after moving it back", failed: true) }
             return
         }
@@ -362,29 +408,54 @@ final class SlowStream {
             drain?.searching = false
             return
         }
+        // A window that the output is about to reach is too late for a splice.
+        let windows = windows(of: current.reference).filter { $0.lowerBound >= state.reading + UInt64(0.25 * rate) }
         let rate = self.rate
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let found = Splice.find(old.samples, in: region.samples, rate: rate)
+            var best: Float = 0
+            var found: (window: Range<UInt64>, offset: Int, score: Float)?
+            for window in windows {
+                let part = Array(old.samples[Int(window.lowerBound - old.start) ..< Int(window.upperBound - old.start)])
+                let search = Splice.search(part, in: region.samples, rate: rate)
+                best = max(best, search.best)
+                if let match = search.match {
+                    found = (window, match.offset, match.score)
+                    break
+                }
+            }
             DispatchQueue.main.async {
                 guard let self, self.searchID == id, let drain = self.drain else { return }
                 // Not there yet: the player may still be getting to it, so the search runs again with more audio.
                 guard let found else {
                     self.drain?.searching = false
+                    self.drain?.best = max(drain.best, best)
                     return
                 }
                 let to = region.start + UInt64(found.offset)
                 let handed = self.pitch.slowState.map { $0.splices + $0.missed } ?? 0
-                self.pitch.slowSplice(from: drain.reference.lowerBound, to: to, before: drain.seam)
+                self.pitch.slowSplice(from: found.window.lowerBound, to: to, before: drain.seam)
                 self.awaitingSplice = handed
                 self.drain = nil
                 self.failedDrains = 0
-                self.log(String(format: "slow: found the audio after the move (%.4f match), the output steps over %.1f s of it",
-                                found.score, Double(to - drain.reference.lowerBound) / rate))
+                self.log(String(format: "slow: found the audio after the move (%.4f match, window %d), the output steps over %.1f s of it",
+                                found.score, Int((found.window.lowerBound - drain.reference.lowerBound) * 10 / UInt64(rate)),
+                                Double(to - found.window.lowerBound) / rate))
             }
         }
     }
 
     private var lastSearch = Date.distantPast
+
+    private func dump(_ drain: Drain, state: PSSlowState, to folder: String) {
+        dumps += 1
+        let start = drain.reference.lowerBound - min(drain.reference.lowerBound, UInt64(3 * rate))
+        let span = pitch.slowRead(from: start, count: Int(state.written - start))
+        let file = URL(fileURLWithPath: folder).appendingPathComponent("fail-\(dumps).f32")
+        try? span.samples.withUnsafeBufferPointer { Data(buffer: $0) }.write(to: file)
+        log(String(format: "slow: saved %@ (%.2f s): old audio at %.2f s for %.2f s, the move at %.2f s", file.path,
+                   Double(span.samples.count) / rate, Double(drain.reference.lowerBound - span.start) / rate,
+                   Double(drain.reference.upperBound - drain.reference.lowerBound) / rate, Double(drain.searchFrom - span.start) / rate))
+    }
 
     /// Seconds that the player plays after the move before it gets past the old audio's moment.
     private func playerSecondsToReference(_ drain: Drain) -> Double? {
@@ -398,22 +469,23 @@ final class SlowStream {
 /// Finds a stretch of old audio in the audio that a player played again: first at an eighth of the rate across the
 /// whole region, then at the full rate around the best match.
 enum Splice {
-    static func find(_ reference: [Float], in region: [Float], rate: Double) -> (offset: Int, score: Float)? {
-        guard reference.count > 64, region.count > reference.count else { return nil }
+    /// The match, when there is one, and the best score that the search reached either way.
+    static func search(_ reference: [Float], in region: [Float], rate: Double) -> (match: (offset: Int, score: Float)?, best: Float) {
+        guard reference.count > 64, region.count > reference.count else { return (nil, 0) }
         let energy = vDSP.sumOfSquares(reference)
         // Silence can't be told apart from silence: no splice is found in it.
-        guard energy / Float(reference.count) > 1e-7 else { return nil }
+        guard energy / Float(reference.count) > 1e-7 else { return (nil, 0) }
         let step = 8
         let small = decimate(reference, by: step), wide = decimate(region, by: step)
-        guard wide.count > small.count else { return nil }
+        guard wide.count > small.count else { return (nil, 0) }
         let coarse = best(small, in: wide, near: nil)
-        guard let coarse, coarse.score > 0.6 else { return nil }
+        guard let coarse, coarse.score > 0.6 else { return (nil, coarse?.score ?? 0) }
         // At an eighth of the rate, a beat or a bass note a few periods away can match about as well, so the full rate
         // searches 50 ms around it. The same audio played again matches almost exactly; another moment doesn't.
         let around = Int(rate * 0.05), center = coarse.offset * step
         let fine = best(reference, in: region, near: center - around ..< center + around + 1)
-        guard let fine, fine.score > 0.97 else { return nil }
-        return fine
+        guard let fine, fine.score > 0.97 else { return (nil, fine?.score ?? coarse.score) }
+        return (fine, fine.score)
     }
 
     private static func decimate(_ samples: [Float], by step: Int) -> [Float] {
@@ -442,13 +514,18 @@ enum Splice {
         // The energy of each window of the region, from a running sum of squares.
         var squares = [Float](repeating: 0, count: count + n - 1)
         region.withUnsafeBufferPointer { r in vDSP_vsq(r.baseAddress! + lower, 1, &squares, 1, vDSP_Length(count + n - 1)) }
-        let referenceEnergy = vDSP.sumOfSquares(reference)
-        var window = squares[0 ..< n].reduce(0, +)
+        let referenceEnergy = Double(vDSP.sumOfSquares(reference))
+        // The running sum is kept in doubles: in floats, the near silence after a loud stretch (a player's silence
+        // after a seek) came out as almost nothing, and the score there far above 1. A window 40 dB quieter than the
+        // old audio can't be it, so it isn't scored.
+        let quietest = referenceEnergy * 1e-4
+        var window = squares[0 ..< n].reduce(0.0) { $0 + Double($1) }
         var bestIndex = -1
         var bestScore: Float = -1
         for i in 0 ..< count {
-            if i > 0 { window += squares[i + n - 1] - squares[i - 1] }
-            let score = correlation[i] / (max(window, 1e-12) * referenceEnergy).squareRoot()
+            if i > 0 { window += Double(squares[i + n - 1]) - Double(squares[i - 1]) }
+            guard window > quietest else { continue }
+            let score = Float(Double(correlation[i]) / (window * referenceEnergy).squareRoot())
             if score > bestScore {
                 bestScore = score
                 bestIndex = i

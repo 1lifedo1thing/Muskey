@@ -1668,6 +1668,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let spec = Self.stringOption("--lyrics-lookup") { return lookUpLyrics(spec) }
         if let spec = Self.stringOption("--key-lookup") { return lookUpKeyForTesting(spec) }
         if let path = Self.stringOption("--tempo") { return tempoForTesting(path) }
+        if let path = Self.stringOption("--splice-dump") {
+            exit(SlowStream.searchDump(path, old: Self.option("--splice-old", 3), move: Self.option("--splice-move", 0)))
+        }
         if let path = Self.stringOption("--whisper-file") { return WhisperTest.run(file: path, model: Self.stringOption("--whisper-model") ?? "") }
         if let path = Self.stringOption("--lyrics-transcribe") {
             return LyricsTranscribeTest.run(file: path, server: Self.stringOption("--whisper-server"), vocals: !TestFlags.has("--no-vocals"))

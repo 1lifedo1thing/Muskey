@@ -194,6 +194,8 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--speed S` | Play the first song at speed S, with the pitch correction: one in Muskey Player from 0.5 to 1.5, one from another player from 0.5 to 1 |
 | `--slow-behind S` | Move the player back once a slowed song's output is S seconds behind it, instead of 30 |
 | `--log-slow` | Log the backlog, the time heard and the player's time every 2 seconds while a song from another player is slowed down |
+| `--slow-dump DIR` | Save the backlog around each move whose audio wasn't found, as raw 32-bit floats at 48 kHz, one channel |
+| `--splice-dump FILE --splice-old S --splice-move S` | Run the search for the old audio on a file saved by `--slow-dump`, with the old audio S seconds into it and the move at S, then quit |
 | `--seek-path elapsed\|command\|script` | Send every seek through that path alone, without trying the others |
 | `--seek-ignore elapsed,command` | Send nothing through those paths, the way a player that ignores them would have it, to test the paths after them |
 | `--tempo FILE` | Print the tempo of the part of FILE that a listen would hear, and quit. `--tempo-at S` moves the start from 45 seconds, and `--seconds S` sets the length |
