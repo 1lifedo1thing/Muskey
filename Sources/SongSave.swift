@@ -371,7 +371,7 @@ struct SavingCard: View {
         VStack(spacing: 16) {
             ZStack {
                 if let track {
-                    RecordDisc(track: track, artwork: artwork, spinning: spinning, side: Self.record)
+                    RecordDisc(track: track, artwork: artwork, spinning: spinning, side: Self.record, controls: false)
                 } else {
                     EmptyPlatter(side: Self.record)
                 }

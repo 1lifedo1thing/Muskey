@@ -383,12 +383,26 @@ struct RecordDisc: View {
     let spinning: Bool
     let side: CGFloat
     var flash: PlayFlash?
+    /// Off while a song is saved: the record only shows the save, and the song can't be played, paused or skipped.
+    var controls = true
     @Environment(\.renderingPreview) private var renderingPreview
     @Environment(\.songArriving) private var arriving
 
     private var song: String { track.song.map { $0 ?? "" }.joined(separator: "\u{1F}") }
 
     var body: some View {
+        Group {
+            if controls {
+                // Inside the record, since the ring of keys sits around it.
+                disc.modifier(RecordControls(diameter: side, label: 0.66))
+            } else {
+                disc
+            }
+        }
+        .animation(.smooth(duration: TurntableDeck.swap), value: song)
+    }
+
+    private var disc: some View {
         ZStack {
             ZStack {
                 if renderingPreview {
@@ -406,9 +420,6 @@ struct RecordDisc: View {
             PlayFlashView(flash: flash, size: 58)
         }
         .frame(width: side, height: side)
-        // Inside the record, since the ring of keys sits around it.
-        .modifier(RecordControls(diameter: side, label: 0.66))
-        .animation(.smooth(duration: TurntableDeck.swap), value: song)
     }
 }
 
