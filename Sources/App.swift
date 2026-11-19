@@ -294,6 +294,8 @@ final class HUDModel: ObservableObject {
     let stemMeters = StemMeters()
     /// The scroll over the tempo or a stem.
     let scroll = ScrollFeel()
+    /// Where a scroll over the time bar moves the song, from 0 to 1, shown on the bar until the player reports it.
+    @Published var scrub: Double?
     /// The volume of each stem that a scroll over it set, from 0 to 1.5. A stem that isn't in it plays at 1.
     @Published var stemVolumes: [Stem: Double] = [:]
     /// A stem is muted, or plays louder or softer than the others, so the stems play in place of the song.
@@ -353,10 +355,12 @@ final class StemMeters: ObservableObject {
     @Published var levels = [Float](repeating: 0, count: Stem.allCases.count)
 }
 
-/// What a scroll over the HUD adjusts: the tempo of a song in Muskey Player, or the volume of a stem.
+/// What a scroll over the HUD adjusts: the tempo of a song in Muskey Player, the volume of a stem, or the place in
+/// the song, over the time bar.
 enum ScrollRegion: Hashable {
     case tempo
     case stem(Stem)
+    case timeBar
 }
 
 /// The scroll that adjusts the tempo or a stem, in its own object so that the lift redraws only what it moves.
@@ -519,7 +523,7 @@ struct HUDView: View {
         } isTargeted: { model.dropTargeted = $0 }
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.songArriving, model.songArriving)
-        .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) },
+        .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }, scroll: model.scroll, scrub: model.scrub,
                                                     seek: { model.onSeekFraction($0) }, seekable: model.seekable))
         .environment(\.recordPlaying, model.playing)
         .environment(\.openURL, OpenURLAction { url in
@@ -996,6 +1000,14 @@ final class HUDPanel: NSPanel {
     private var pressDragged = false
     var log: (String) -> Void = { _ in }
 
+    /// The press is on the time bar, a little taller than the bar, which seeks with its drag.
+    private func onTimeBar(_ event: NSEvent) -> Bool {
+        guard let view = contentView else { return false }
+        let local = view.convert(event.locationInWindow, from: nil)
+        let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
+        return model.scroll.frames.values.contains { $0.region == .timeBar && $0.frame.insetBy(dx: -2, dy: -4).contains(point) }
+    }
+
     /// A drag that starts anywhere on the glass moves the panel once the pointer has moved a few points, also from
     /// a button, the key or the record. SwiftUI's window drag gesture never moved this non-activating panel.
     override func sendEvent(_ event: NSEvent) {
@@ -1003,16 +1015,17 @@ final class HUDPanel: NSPanel {
         case .leftMouseDown:
             Self.controlTracksDrag = false
             draggingPanel = false
-            // Text fields and scroll bars keep their drags.
+            // Text fields, scroll bars and the time bar keep their drags.
             let hit = contentView?.hitTest(event.locationInWindow)
-            pressStart = hit is NSControl || hit is NSText ? nil : (NSEvent.mouseLocation, frame.origin)
-            pressHit = hit.map { String(describing: type(of: $0)).components(separatedBy: "<").first ?? "" } ?? "nothing"
+            let onBar = onTimeBar(event)
+            pressStart = hit is NSControl || hit is NSText || onBar ? nil : (NSEvent.mouseLocation, frame.origin)
+            pressHit = onBar ? "the time bar" : hit.map { String(describing: type(of: $0)).components(separatedBy: "<").first ?? "" } ?? "nothing"
             pressedAt = Date()
             pressDragged = false
         case .leftMouseDragged:
             if !pressDragged {
                 pressDragged = true
-                log("HUD drag: pressed on \(pressHit), " + (pressStart == nil ? "which keeps the drag" : Self.controlTracksDrag ? "the seek bar keeps the drag" : "the panel follows the drag"))
+                log("HUD drag: pressed on \(pressHit), " + (pressStart == nil ? "which keeps the drag" : "the panel follows the drag"))
             }
             guard let start = pressStart, !Self.controlTracksDrag else { break }
             let mouse = NSEvent.mouseLocation
@@ -2440,7 +2453,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             endAdjusting()
             return true
         }
-        let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
         if event.phase == .began, precise {
             if let region = scrollRegion(at: event), let value = adjustedValue(region) {
                 adjusting = nil
@@ -2454,8 +2466,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if var candidate = adjustCandidate {
-            candidate.travel.width += abs(event.scrollingDeltaX)
-            candidate.travel.height += sign * event.scrollingDeltaY
+            // Over the time bar, a scroll sideways moves the song too, so it is never a swipe there.
+            candidate.travel.width += candidate.region == .timeBar ? 0 : abs(event.scrollingDeltaX)
+            candidate.travel.height += scrollTravel(event, for: candidate.region)
             guard candidate.travel.width + abs(candidate.travel.height) > 6 else {
                 adjustCandidate = candidate
                 return false
@@ -2479,7 +2492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.hideToolTip()
         }
         guard var current = adjusting else { return false }
-        current.travel += sign * event.scrollingDeltaY * (precise ? 1 : 8)
+        current.travel += scrollTravel(event, for: current.region) * (precise ? 1 : 8)
         adjusting = current
         let handled = applyAdjusting()
         if !precise {
@@ -2491,7 +2504,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return handled
     }
 
-    /// Sets the tempo or the volume from the travel so far, and the lift that goes with it.
+    /// How far `event` moves the fingers, in points: up for the tempo and a stem, and up or right for the time bar,
+    /// with natural scrolling or without.
+    private func scrollTravel(_ event: NSEvent, for region: ScrollRegion) -> CGFloat {
+        let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
+        let up = sign * event.scrollingDeltaY
+        return region == .timeBar ? up - sign * event.scrollingDeltaX : up
+    }
+
+    /// Sets the tempo, the volume or the place in the song from the travel so far, and the lift that goes with it.
     private func applyAdjusting() -> Bool {
         guard let current = adjusting else { return false }
         model.scroll.lift = tanh(current.travel / 60)
@@ -2502,6 +2523,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case let .stem(stem):
             let volume = min(max(((current.start + Double(current.travel) / 300) * 100).rounded() / 100, 0), 1.5)
             if volume != model.stemVolumes[stem] ?? 1 { setStemVolume(stem, volume) }
+        case .timeBar:
+            // 400 points of travel cross the whole song. The bar shows the place, and the song moves there once the
+            // fingers lift, so a player gets one seek per scroll.
+            let fraction = min(max(current.start + Double(current.travel) / 400, 0), 1)
+            if model.scrub != fraction { model.scrub = fraction }
         }
         return true
     }
@@ -2525,6 +2551,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if case let .stem(stem) = adjusting?.region {
             log(String(format: "%@ at %.0f%%", stem.name.lowercased(), (model.stemVolumes[stem] ?? 1) * 100))
         }
+        if adjusting?.region == .timeBar, let fraction = model.scrub {
+            seek(toFraction: fraction)
+            // The bar holds the place until the player reports the move.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                if self?.model.scrub == fraction { self?.model.scrub = nil }
+            }
+        }
         adjusting = nil
         adjustedAt = Date()
         model.scroll.region = nil
@@ -2544,7 +2577,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch region {
         case .tempo: model.speedAdjustable ? currentSpeed : nil
         case let .stem(stem): model.stemsAvailable ? model.stemVolumes[stem] ?? 1 : nil
+        case .timeBar: model.seekable ? playedFraction : nil
         }
+    }
+
+    /// How far the song has played, from 0 to 1, counting a seek that the player hasn't reported yet.
+    private var playedFraction: Double? {
+        guard let track = nowPlaying.track, let duration = track.duration, duration > 0 else { return nil }
+        let pending = seekTarget.flatMap { $0.song == track.song && Date().timeIntervalSince($0.at) < 2 ? $0.seconds : nil }
+        guard let position = pending ?? track.position(at: Date()) else { return nil }
+        return min(max(position / duration, 0), 1)
     }
 
     /// The song that Muskey opened plays: the HUD opens on it as the hotkey opens it, unless it already shows. During a

@@ -170,6 +170,10 @@ struct TurntableDeck: View {
 struct RecordActions {
     var playPause: () -> Void = {}
     var skip: (Int) -> Void = { _ in }
+    /// Where the time bar tells a scroll and the HUD's drag where it is.
+    var scroll: ScrollFeel?
+    /// Where a scroll over the time bar moves the song, from 0 to 1.
+    var scrub: Double?
     /// Moves the song to a fraction of its length, from the time bar.
     var seek: (Double) -> Void = { _ in }
     /// The song moves at once in its player, so the time bar takes clicks and drags.
@@ -953,12 +957,13 @@ struct SongTimeBar: View {
     /// Where a drag along the bar is, from 0 to 1, until it ends.
     @State private var dragged: Double?
     @State private var hovering = false
+    @State private var token = UUID()
 
     var body: some View {
         if let duration = track.duration, duration > 0 {
-            TimelineView(.animation(minimumInterval: 1, paused: !ticking || dragged != nil)) { context in
+            TimelineView(.animation(minimumInterval: 1, paused: !ticking || dragged != nil || actions.scrub != nil)) { context in
                 let played = min(1, max(0, (track.position(at: context.date) ?? 0) / duration))
-                let fraction = dragged ?? played
+                let fraction = dragged ?? actions.scrub ?? played
                 HStack(spacing: 7) {
                     Text(Details.time(fraction * duration))
                     bar(fraction)
@@ -972,16 +977,20 @@ struct SongTimeBar: View {
     }
 
     private func bar(_ fraction: Double) -> some View {
-        let grows = actions.seekable && (hovering || dragged != nil)
+        let grows = actions.seekable && (hovering || dragged != nil || actions.scrub != nil)
         return Capsule().fill(palette.ink.opacity(0.15))
             .overlay(alignment: .leading) {
                 GeometryReader { bar in Capsule().fill(grows ? palette.ink.opacity(0.7) : palette.muted).frame(width: bar.size.width * fraction) }
             }
-            .frame(width: width, height: grows ? 6 : 4)
+            // Under the pointer it grows about as tall as the digits beside it, which is easier to drag along.
+            .frame(width: width, height: grows ? 9 : 4)
             // A taller strip to aim at than the bar itself.
             .frame(height: 14)
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
+            // A scroll over the strip moves the song, and a press on it seeks instead of dragging the HUD.
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { actions.scroll?.place(.timeBar, at: $0, by: token) }
+            .onDisappear { actions.scroll?.remove(by: token) }
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
@@ -1002,7 +1011,7 @@ struct SongTimeBar: View {
             // Dimmed while a seek would have to separate the stems again, so the bar doesn't look broken.
             .opacity(actions.seekable ? 1 : 0.45)
             .animation(.easeOut(duration: 0.12), value: grows)
-            .help(actions.seekable ? "Move the song (← →, 0 for the start)" : "Seeking is off while instruments and vocals are separated as the song plays")
+            .help(actions.seekable ? "Move the song (scroll, ← →, 0 for the start)" : "Seeking is off while instruments and vocals are separated as the song plays")
     }
 }
 

@@ -31,9 +31,13 @@ extension Stem {
         scheme == .dark ? .oklch(0.74, 0.13, hue, opacity: opacity) : .oklch(0.66, 0.14, hue, opacity: opacity)
     }
 
-    /// The pastel that the circle takes on as the stem gets louder.
-    func fill(_ scheme: ColorScheme, opacity: Double = 1) -> Color {
-        scheme == .dark ? .oklch(0.44, 0.07, hue, opacity: opacity) : .oklch(0.9, 0.055, hue, opacity: opacity)
+    /// The circle's colour: a calm tone of the stem's hue while it is quiet, which gets more saturated and brighter
+    /// as the stem gets louder (`level` from 0 to 1).
+    func fill(_ scheme: ColorScheme, level: Double) -> Color {
+        let level = min(max(level, 0), 1)
+        return scheme == .dark
+            ? .oklch(0.4 + 0.16 * level, 0.05 + 0.08 * level, hue)
+            : .oklch(0.86 + 0.04 * level, 0.05 + 0.07 * level, hue)
     }
 
     /// The symbol on the circle, a deeper tone of the same hue.
@@ -319,11 +323,13 @@ private struct StemHalo: View {
                     Circle()
                         .stroke(stem.color(scheme, opacity: on ? 0.25 + 0.5 * level : 0), lineWidth: 2)
                         .padding(crowded ? -2 - 3 * level : -3 - 5 * level)
-                    // Grey while the stem is quiet, taking on its pastel as it gets louder, so the circles move with the
-                    // song as well as their rings.
+                    // In the stem's colour even while it is quiet, more saturated and brighter as it gets louder, so the
+                    // circles move with the song as well as their rings. A muted stem is grey.
                     Circle()
                         .fill(palette.ink.opacity(hovering ? 0.1 : 0.07))
-                        .overlay(Circle().fill(stem.fill(scheme, opacity: on ? min(1, 0.15 + 1.1 * level + (hovering ? 0.15 : 0)) : 0)))
+                        .overlay {
+                            if on { Circle().fill(stem.fill(scheme, level: 1.1 * level + (hovering ? 0.15 : 0))) }
+                        }
                     Image(systemName: solo ? "headphones" : stem.symbol)
                         .font(.system(size: (crowded ? 11 : compact ? 12 : 15) * (expanded ? 1 : 0.85), weight: .semibold))
                         .offset(y: lift)
