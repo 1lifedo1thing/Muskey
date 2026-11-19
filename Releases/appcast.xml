@@ -3,6 +3,22 @@
     <channel>
         <title>Muskey</title>
         <item>
+            <title>1.1.0</title>
+            <pubDate>Thu, 19 Nov 2026 22:31:49 +0200</pubDate>
+            <link>https://lowtechguys.com/muskey</link>
+            <sparkle:fullReleaseNotesLink>https://files.lowtechguys.com/muskey/changelog.html</sparkle:fullReleaseNotesLink>
+            <sparkle:version>1.1.0</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <sparkle:releaseNotesLink>https://files.lowtechguys.com/ReleaseNotes/Muskey-1.1.0.html</sparkle:releaseNotesLink>
+            <enclosure url="https://files.lowtechguys.com/releases/Muskey-1.1.0.dmg" length="12188470" type="application/octet-stream" sparkle:edSignature="tJ8h3x7s/INzZ9GRa5qd9OIi4WK4leFSGpVJY8tstq7kQVMFR70KtoBRUCF11WwMQKWzC1jJQPR4KNQLORw9DQ=="/>
+            <sparkle:deltas>
+                <enclosure url="https://files.lowtechguys.com/releases/Muskey1.1.0-1.0.1.delta" sparkle:deltaFrom="1.0.1" length="3809834" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="wxN+j2fInRVMUg5qDCTrmzzg5+IBYpJ2GT5ogPXYqIMxO/wrzy36f6xfZrQirQkaoWTPi/DBAq5t6eqYC3kmCA=="/>
+                <enclosure url="https://files.lowtechguys.com/releases/Muskey1.1.0-1.0.0.delta" sparkle:deltaFrom="1.0.0" length="3809610" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="EgYz/YOB3pGpzLueOiZX6ZqiKhJTvv5FVEBAkvIRhikatf9WQhqS9k3FYsyUsKCnsHecee0UFoewGni2Fp4nCg=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>1.0.1</title>
             <pubDate>Wed, 18 Nov 2026 01:37:58 +0200</pubDate>
             <link>https://lowtechguys.com/muskey</link>
