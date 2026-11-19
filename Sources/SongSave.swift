@@ -43,7 +43,7 @@ enum SaveFormat: String, CaseIterable {
 
 /// What saving a song from another player takes, under the save panel's Format row.
 enum SaveCaveat {
-    static let recorded = "Muskey plays the song from its start to its end and records it. Pausing, seeking or another song stops the save."
+    static let recorded = "Muskey plays the song from its start to its end and records it. A pause saves the part recorded until then. Seeking or another song stops the save."
     static let recordedWithOthers = recorded + " Other sounds playing at the same time are recorded too."
 }
 
@@ -85,6 +85,12 @@ struct StereoAudio {
 
     var frames: Int { left.count }
     var seconds: Double { Double(frames) / rate }
+
+    /// Without the silence at its end, which a recording has after the song was paused or stopped.
+    func trimmingSilentEnd(below threshold: Float = 0.0001) -> StereoAudio {
+        let end = left.indices.last { abs(left[$0]) >= threshold || abs(right[$0]) >= threshold }.map { $0 + 1 } ?? 0
+        return StereoAudio(left: Array(left.prefix(end)), right: Array(right.prefix(end)), rate: rate)
+    }
 }
 
 struct SaveError: LocalizedError {
@@ -333,6 +339,114 @@ enum SaveTest {
                 print("render failed: \(error)")
                 exit(1)
             }
+        }
+    }
+}
+
+/// A save in progress, as the HUD shows it: the part rendered, or the time left of a recording.
+struct SavingState: Equatable {
+    let name: String
+    let progress: Double?
+    /// The time left of a song recorded from another player, which Stop and Save ends early.
+    let left: String?
+}
+
+/// The HUD while a song is saved: the save and its progress on a frosted cover, with Cancel, and with Stop and Save
+/// while a song from another player is recorded. Nothing under the cover takes clicks until the save ends.
+struct SavingCover: View {
+    let saving: SavingState
+    let palette: Palette
+    let cancel: () -> Void
+    let stop: () -> Void
+
+    private var recording: Bool { saving.left != nil }
+    private static let red = Color(red: 0.93, green: 0.33, blue: 0.3)
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: recording ? "record.circle" : "square.and.arrow.down")
+                .font(.system(size: 26, weight: .medium))
+                .foregroundStyle(recording ? Self.red : palette.accent)
+                .symbolEffect(.pulse, isActive: recording)
+            VStack(spacing: 3) {
+                Text(recording ? "Recording" : "Saving")
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .foregroundStyle(palette.ink)
+                Text(saving.name)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(palette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if let left = saving.left {
+                Text(left)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(palette.muted)
+            } else {
+                HStack(spacing: 8) {
+                    Capsule()
+                        .fill(palette.ink.opacity(0.1))
+                        .frame(width: 160, height: 5)
+                        .overlay(alignment: .leading) {
+                            Capsule()
+                                .fill(palette.accent)
+                                .frame(width: max(5, 160 * (saving.progress ?? 0)), height: 5)
+                                .animation(.linear(duration: 0.2), value: saving.progress)
+                        }
+                    Text("\(Int(((saving.progress ?? 0) * 100).rounded(.down)))%")
+                        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(palette.muted)
+                        .frame(width: 34, alignment: .trailing)
+                }
+            }
+            HStack(spacing: 8) {
+                CoverButton(title: "Cancel", tint: palette.ink, filled: false, action: cancel)
+                    .help("Stop saving without writing a file")
+                if recording {
+                    CoverButton(title: "Stop and Save", tint: Self.red, filled: true, action: stop)
+                        .help("Save the part recorded so far")
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            // Frosted like the glass under it, and cut to its corners.
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Rectangle().fill(Color(white: colorScheme == .dark ? 0 : 1).opacity(0.35))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 26))
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {}
+    }
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private struct CoverButton: View {
+        let title: String
+        let tint: Color
+        let filled: Bool
+        let action: () -> Void
+        @State private var hovering = false
+
+        var body: some View {
+            Button(action: action) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(filled ? .white : tint)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(filled ? tint.opacity(hovering ? 1 : 0.88) : tint.opacity(hovering ? 0.14 : 0.08)))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
         }
     }
 }

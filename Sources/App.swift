@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import Combine
 import Network
+import os
 import ServiceManagement
 import SwiftUI
 
@@ -226,6 +227,8 @@ final class HUDModel: ObservableObject {
     @Published var restartable = false
     /// The key, the stems or the tempo is changed, and the song can be saved with the changes.
     @Published var savable = false
+    /// A save in progress, which the HUD shows in place of everything else until it ends.
+    @Published var saving: SavingState?
     /// The song plays, as the record and its tonearm show it. Space changes it before the player reports the change.
     @Published var playing = false
     /// The last play or pause, for the glyph on the record or over the lyrics.
@@ -314,6 +317,8 @@ final class HUDModel: ObservableObject {
     var onKeep: () -> Void = {}
     var onLayout: () -> Void = {}
     var onSave: () -> Void = {}
+    var onSaveCancel: () -> Void = {}
+    var onSaveStop: () -> Void = {}
     var onLyrics: () -> Void = {}
     var onKaraoke: () -> Void = {}
     /// Slower with -1, faster with 1, and the song's own tempo with 0.
@@ -485,6 +490,14 @@ struct HUDView: View {
             }
         }
         .animation(.easeOut(duration: 0.12), value: model.dropTargeted)
+        .overlay {
+            // A save takes the whole HUD until it ends, so nothing else changes while the song is saved.
+            if let saving = model.saving {
+                SavingCover(saving: saving, palette: Palette.of(colorScheme), cancel: model.onSaveCancel, stop: model.onSaveStop)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: model.saving == nil)
         .modifier(HUDBackground(tint: tint, scheme: colorScheme))
         .dropDestination(for: DroppedSong.self) { songs, _ in
             model.onOpen(songs.map(\.url))
@@ -1994,6 +2007,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.saveActivity = nil
         }
         model.onSave = { [weak self] in self?.saveSong() }
+        model.onSaveCancel = { [weak self] in self?.cancelSave() }
+        model.onSaveStop = { [weak self] in self?.stopSave() }
         statusItem.onSave = { [weak self] in self?.saveSong() }
         model.onOpen = { [weak self] urls in self?.open(urls) }
         model.onOpenFile = { [weak self] in self?.openFile() }
@@ -2021,6 +2036,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === panel else { return event }
+            // A save in progress leaves the stems and the songs as they are.
+            if model.saving != nil { return nil }
             return adjust(event) || swipe(event) ? nil : event
         }
         nowPlaying.log = { [weak self] in self?.log($0) }
@@ -2834,6 +2851,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let flags = event.modifierFlags
+            // While a song is saved, the HUD takes none of its keys but Escape, which closes it. ⌘Q and the other
+            // menu keys still work.
+            if let self, self.model.saving != nil, event.window === self.panel {
+                if Int(event.keyCode) == kVK_Escape { return self.handleKey(kVK_Escape, shift: false, option: false) ? nil : event }
+                return flags.contains(.command) && !Self.hudCommandKeys.contains(Int(event.keyCode)) ? event : nil
+            }
             // ⌘V plays the file or the link on the clipboard.
             if let self, self.model.picking, event.window === self.panel, flags.contains(.command), Int(event.keyCode) == kVK_ANSI_V {
                 let urls = Self.pastedURLs()
@@ -2873,6 +2896,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateHoverKeys()
     }
 
+    /// The keys with Command that the HUD uses, which a save in progress turns off.
+    private static let hudCommandKeys: Set<Int> = [kVK_ANSI_V, kVK_Delete, kVK_ANSI_O, kVK_ANSI_L, kVK_ANSI_K, kVK_ANSI_S]
+
     /// Letter keys: A picks the A in the song's mode, Option the A in the other mode, and Shift the key with a sharp or
     /// flat on A.
     private static let letters: [Int: Character] = [
@@ -2883,6 +2909,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// registers. Returns false for a key it doesn't use.
     @discardableResult private func handleKey(_ code: Int, shift: Bool, option: Bool) -> Bool {
         if Self.logKeys { log("key \(code)\(shift ? " shift" : "")\(option ? " option" : "")") }
+        // A save in progress leaves the HUD only Escape, which closes it while the save goes on.
+        if model.saving != nil {
+            if code == kVK_Escape { dismiss() }
+            return true
+        }
         if !shift, handleSongKey(code, option: option) { return true }
         // With the key row hidden, the keys that change the pitch would change it out of sight.
         if handleStemKey(code, option: option) { return true }
@@ -3018,8 +3049,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         didSet { activityPill.show(openActivity ?? saveActivity) }
     }
     private var saveActivity: OpenActivity? {
-        didSet { activityPill.show(openActivity ?? saveActivity) }
+        didSet {
+            activityPill.show(openActivity ?? saveActivity)
+            let saving: SavingState? = switch saveActivity {
+            case let .saving(name, progress): SavingState(name: name, progress: progress, left: nil)
+            case let .recording(name, left): SavingState(name: name, progress: nil, left: left)
+            default: nil
+            }
+            if model.saving != saving { model.saving = saving }
+        }
     }
+    /// Set by Cancel, and read by the thread that renders the save, which stops at its next step.
+    private var saveCancelled = OSAllocatedUnfairLock(initialState: false)
 
     /// The changes that a save keeps, nil when the song plays as it is.
     private func saveChanges() -> SongChanges? {
@@ -3125,6 +3166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startSave(_ job: SaveJob, recorded: StereoAudio? = nil) {
         saveJob = job
         failedSave = nil
+        let cancelled = OSAllocatedUnfairLock(initialState: false)
+        saveCancelled = cancelled
         if case .player = job.source, recorded == nil { return startRecording(job) }
         saveActivity = .saving(name: job.name, progress: 0)
         let changes = job.changes
@@ -3144,7 +3187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.saveActivity = .saving(name: job.name, progress: part)
                     }
                 }
-                return true
+                return !cancelled.withLock { $0 }
             }
             let temporary = FileManager.default.temporaryDirectory.appending(path: "Muskey save \(UUID().uuidString).\(job.format.rawValue)")
             defer { try? FileManager.default.removeItem(at: temporary) }
@@ -3161,6 +3204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 let rendered = try SongRender.render(audio, changes: changes, path: path, live: { live }) { report($0 * 0.95) }
                 try SongRender.write(rendered, as: job.format, to: temporary) { report(0.95 + $0 * 0.05) }
+                // Cancel in the last moment of the write leaves no file either.
+                if cancelled.withLock({ $0 }) { throw CancellationError() }
                 if FileManager.default.fileExists(atPath: job.url.path) { try FileManager.default.removeItem(at: job.url) }
                 try FileManager.default.moveItem(at: temporary, to: job.url)
                 DispatchQueue.main.async { self?.saveFinished(job, error: nil, seconds: Date().timeIntervalSince(started), length: rendered.seconds) }
@@ -3272,7 +3317,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     : endRecording(error: SaveError(message: "Another song started"))
             }
             if waited > 10, !recording.recorder.heard { return endRecording(error: SaveError(message: "Nothing was heard from the player")) }
-            if waited > 2, track?.playing == false { return endRecording(error: SaveError(message: "The song was paused")) }
+            // A pause stops the recording, and the save keeps the part recorded until then.
+            if waited > 2, track?.playing == false {
+                log("save: the song was paused, saving the part recorded so far")
+                return endRecording(error: nil, partial: true)
+            }
             // A seek moves the player away from the recording, which counts the song from its first sound.
             if recording.recorder.heard, let position = track?.position(at: Date()), abs(position - Double(frames) / rate) > 4 {
                 return endRecording(error: SaveError(message: String(format: "The song moved to %.0f s", position)))
@@ -3281,7 +3330,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func endRecording(error: Error?) {
+    /// Ends the recording of a song from another player. `partial` saves the part recorded so far, without the silence
+    /// after it, and `cancelled` saves nothing.
+    private func endRecording(error: Error?, partial: Bool = false, cancelled: Bool = false) {
         guard let recording = songRecording, case let .player(_, _, seconds) = recording.job.source else { return }
         recording.timer?.invalidate()
         songRecording = nil
@@ -3293,10 +3344,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.playSpeed(speed)
             }
         }
-        let audio = recording.recorder.stop(frames: Int(seconds * recording.recorder.rate))
+        var audio = recording.recorder.stop(frames: Int(seconds * recording.recorder.rate))
+        if cancelled { return }
         if let error { return saveFinished(recording.job, error: error, seconds: 0, length: 0) }
+        if partial {
+            audio = audio.trimmingSilentEnd()
+            guard audio.seconds >= 1 else { return saveFinished(recording.job, error: SaveError(message: "Nothing was recorded yet"), seconds: 0, length: 0) }
+        }
         log(String(format: "save: recorded %.1f s of %@ at %.0f Hz", audio.seconds, recording.job.name, audio.rate))
         startSave(recording.job, recorded: audio)
+    }
+
+    /// Cancel on the HUD while a song is saved: a recording stops, a render stops at its next step, and no file is
+    /// written.
+    private func cancelSave() {
+        guard let job = saveJob else { return }
+        log("save: \(job.name) cancelled")
+        saveCancelled.withLock { $0 = true }
+        if songRecording != nil { endRecording(error: nil, cancelled: true) }
+        saveJob = nil
+        saveActivity = nil
+    }
+
+    /// Stop and Save on the HUD while a song from another player is recorded: the save keeps the part recorded so far.
+    /// Before the song plays from its start, nothing is recorded, and it cancels.
+    private func stopSave() {
+        guard let recording = songRecording else { return }
+        guard recording.phase == .playing else { return cancelSave() }
+        log("save: stopped, saving the part recorded so far")
+        endRecording(error: nil, partial: true)
     }
 
     /// `2:15` for the time left.
@@ -4684,7 +4760,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -4770,6 +4846,9 @@ extension EnvironmentValues {
             model.speed = variant == "-tempo" ? 0.85 : 1
             // A slowed song on its way back to 100 %, with the ring on the tempo pill part filled.
             model.tempoReturn = variant == "-tempo-return" ? 0.6 : nil
+            // A save of the song in progress, rendered or recorded, which covers the HUD.
+            model.saving = variant == "-saving" ? SavingState(name: "Paper Lanterns (C minor, 90%)", progress: 0.42, left: nil)
+                : variant == "-recording" ? SavingState(name: "Paper Lanterns (no vocals)", progress: nil, left: "2:15 left") : nil
             // The arm on the record, or lifted off it with the pause glyph that Space shows.
             model.playing = !variant.hasSuffix("-paused")
             if variant.hasSuffix("-paused") { model.playFlash = PlayFlash(playing: false, id: 1) }
