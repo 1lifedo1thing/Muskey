@@ -527,6 +527,35 @@ struct PSShifter {
     int restartWaits = 0;
     std::vector<float> stemLeft, stemRight, rawLeft, rawRight;
 
+    // Stems from a cache of the whole song: the writer has the stems of every moment, so it writes them ahead of the
+    // song, lined up with the captured frames, and the output plays them at the moment that plays rather than seconds
+    // behind it. The generation that the writer feeds that way, and the IOProc's view of it once per callback.
+    std::atomic<uint64_t> cachedGeneration{0};
+    bool cachedNow = false;
+    // The captured frame of the first frame that pullLive handed out in this chunk: the song as it plays.
+    uint64_t liveFrame = 0;
+    // The output plays the cached stems at the moment that plays, within a couple of chunks. Their crossfades with the
+    // song are then linear, since both are the same moment and add up, and turning the stems off reads on through the
+    // stems written ahead while the song comes back.
+    bool aligned = false;
+    // How far ahead the cached stems have to be written before they take over.
+    size_t cachedLead;
+    // The delay ended while cached stems play: the jump goes to the moment that plays.
+    bool jumpToLive = false;
+    // The app moved the song: the output stays silent from the move until the writer has the stems of the new place,
+    // from frame `seekFrom` on, and for 3 seconds at most.
+    std::atomic<uint32_t> seeksAsked{0}, seeksAnswered{0};
+    std::atomic<uint64_t> seekFrom{0};
+    uint32_t seeksHeard = 0, seeksSeen = 0;
+    size_t seekWaitFrames = 0;
+    // A pause held the captured song: from skipTo on, the song carries on from skipFrom, so the cached stems written
+    // ahead are of the wrong moment there. The writer writes them again, and until it has, the output reads none of them.
+    std::atomic<uint32_t> skipsMade{0}, skipsMapped{0};
+    std::atomic<uint64_t> skipMadeFrom{0}, skipMadeTo{0};
+    // The tap has been digitally silent for 25 ms while aligned cached stems play: the player stopped, and the stems
+    // written ahead of it fade out rather than play the song on until the pause is reported.
+    bool tapGone = false;
+
     // The song can also play a fixed time behind itself, while lyrics are written by ear, so each line is written
     // before it is heard. The stems and the delay share one timeline of captured frames and one play position: the
     // output plays the stems where they are separated, and the captured song otherwise. Raising the delay leaves the
@@ -560,8 +589,9 @@ struct PSShifter {
           targetLatencyFrames(size_t(rate * 0.03)), cushionFrames(size_t(rate * 0.01)), limiter(rate), slower(rate),
           inLeft(maxChunk), inRight(maxChunk), outLeft(maxChunk), outRight(maxChunk), nextLeft(maxChunk),
           nextRight(maxChunk), recording(size_t(std::max(0.0, recordSeconds) * rate) * 2),
-          captured(2, size_t(rate * 60)), stems(2 * stemCount, size_t(rate * 30)), stemsCushion(size_t(rate * 0.25)), stemsLead(size_t(rate * 0.75)), stemsMargin(size_t(rate * 6)), rate(rate),
-          stemLeft(maxChunk), stemRight(maxChunk), rawLeft(maxChunk), rawRight(maxChunk) {
+          // The stems hold the 30 seconds of the lyrics delay, and cached stems a second written ahead of the song on top.
+          captured(2, size_t(rate * 60)), stems(2 * stemCount, size_t(rate * 32)), stemsCushion(size_t(rate * 0.25)), stemsLead(size_t(rate * 0.75)), stemsMargin(size_t(rate * 6)), rate(rate),
+          stemLeft(maxChunk), stemRight(maxChunk), rawLeft(maxChunk), rawRight(maxChunk), cachedLead(size_t(rate * 0.25)) {
         for (int i = 0; i < stemCount; i++) {
             stemGain[i].store(1.0f);
             stemGainNow[i] = 1.0f;
@@ -569,6 +599,13 @@ struct PSShifter {
             stemVolumeNow[i] = 1.0f;
             stemLevel[i].store(0.0f);
         }
+    }
+
+    // Whether the writer feeds the current generation from a cache, once per callback.
+    void updateCached() {
+        uint64_t generation = stemsGeneration.load(std::memory_order_relaxed);
+        cachedNow = generation != 0 && cachedGeneration.load(std::memory_order_acquire) == generation
+            && stemsWriting.load(std::memory_order_acquire) == generation;
     }
 
     // Starts the separation of a new generation of stems at captured frame `from`.
@@ -590,7 +627,8 @@ struct PSShifter {
             // delay are ready, and they start from this moment, or from a moment before it within this timeline.
             uint64_t start = engagedWas ? now - std::min(back, now - std::min(now, timelineStart)) : now;
             skipFrom = skipTo = rewindPending = 0;
-            jumpPending = false;
+            jumpPending = jumpToLive = false;
+            tapGone = false;
             spinLeft = fadeLeft = 0;
             slowHold = false;
             stemsPlaying = true;
@@ -618,7 +656,11 @@ struct PSShifter {
             }
             if (delay == 0 && delayWas) {
                 anchorPending.store(false, std::memory_order_relaxed);
-                if (delayed || !started) {
+                if (cachedNow && stemsWanted && stemsLive && started) {
+                    // Cached stems are there for the moment that plays, which is where they play without the delay.
+                    delayed = false;
+                    jumpPending = jumpToLive = true;
+                } else if (delayed || !started) {
                     delayed = false;
                     uint64_t ready = stems.written.load(std::memory_order_acquire);
                     uint64_t keep = stemsLead + stemsMargin;
@@ -696,18 +738,42 @@ struct PSShifter {
             if (anchorPending.load(std::memory_order_relaxed) || !stemsWanted) return quiet();
             // Karaoke that starts the song over waits for the player to move the song to its start.
             if (seekDip.load(std::memory_order_relaxed) == 1) return quiet();
-            // The song plays as it is until the first block is there and the margin after it has passed.
-            if (!current || ready <= stemsStart.load(std::memory_order_relaxed)) return quiet();
-            if (stemsFirstReady == 0) stemsFirstReady = now;
-            if (now < stemsFirstReady + stemsLead) return quiet();
-            stemsStarted.store(true, std::memory_order_relaxed);
-            stemsLive = true;
-            settleStemGains();
-            // The stems start seconds before the moment that plays.
-            stepBack(now);
+            if (cachedNow) {
+                // Cached stems take over once they are written a little past the moment that plays, and after a move of
+                // the song once they are of the new place: at that moment, with no step back.
+                uint32_t asked = seeksAsked.load(std::memory_order_acquire);
+                bool answered = seeksHeard == asked || seeksAnswered.load(std::memory_order_acquire) == asked;
+                if (!current || !answered || liveFrame < stemsStart.load(std::memory_order_relaxed) || ready < liveFrame + n + cachedLead)
+                    return quiet();
+                stemsStarted.store(true, std::memory_order_relaxed);
+                stemsLive = true;
+                stemsPriming = false;
+                sourceMix = 1;
+                settleStemGains();
+                stemsPlayed.store(liveFrame, std::memory_order_relaxed);
+                // After a silent wait for a move, the stems fade in from silence rather than cross the song that waited.
+                if (leadGain < 1) {
+                    stemsMix.store(1, std::memory_order_relaxed);
+                    holdGain = 0;
+                }
+            } else {
+                // The song plays as it is until the first block is there and the margin after it has passed.
+                if (!current || ready <= stemsStart.load(std::memory_order_relaxed)) return quiet();
+                if (stemsFirstReady == 0) stemsFirstReady = now;
+                if (now < stemsFirstReady + stemsLead) return quiet();
+                stemsStarted.store(true, std::memory_order_relaxed);
+                stemsLive = true;
+                settleStemGains();
+                // The stems start seconds before the moment that plays.
+                stepBack(now);
+            }
         }
         uint64_t at = stemsPlayed.load(std::memory_order_relaxed);
         if (skipTo > skipFrom && at >= skipFrom && at < skipTo) at = skipTo;
+        // Cached stems past a pause are of the wrong moment until the writer has written them again.
+        if (cachedNow && skipsMapped.load(std::memory_order_acquire) != skipsMade.load(std::memory_order_relaxed)
+            && at + n > skipMadeTo.load(std::memory_order_relaxed))
+            return holdQuiet(n);
         uint64_t from = stemsStart.load(std::memory_order_relaxed);
         // Read on for the crossfade after the stems are turned off, while they are still in their buffer.
         uint64_t available = current && ready > at && at >= from ? ready - at : 0;
@@ -892,17 +958,41 @@ struct PSShifter {
         }
         // A jump waits until the output has faded out.
         if (jumpPending && holdGain <= 0) {
-            stemsPlayed.store(jumpTarget, std::memory_order_relaxed);
+            stemsPlayed.store(jumpToLive ? liveFrame : jumpTarget, std::memory_order_relaxed);
             skipFrom = skipTo = 0;
-            jumpPending = false;
+            jumpPending = jumpToLive = false;
+        }
+        // A move of the song while cached stems play: silent until the stems of the new place play, or for 3 seconds
+        // of the song playing, since a move made during a pause is found once the song plays again.
+        uint32_t asked = seeksAsked.load(std::memory_order_acquire);
+        if (asked != seeksSeen) {
+            seeksSeen = asked;
+            seekWaitFrames = 0;
+        }
+        bool waiting = seeksHeard != asked;
+        if (waiting) {
+            bool answered = seeksAnswered.load(std::memory_order_acquire) == asked;
+            if (!holding) seekWaitFrames += n;
+            if ((answered && stemsPlayed.load(std::memory_order_relaxed) >= seekFrom.load(std::memory_order_relaxed))
+                || seekWaitFrames > size_t(rate * 3)) {
+                seeksHeard = asked;
+                waiting = false;
+            }
         }
         bool playing = held ? holdQuiet(n) : readStems(n);
+        bool started = stemsStarted.load(std::memory_order_relaxed);
+        // Cached stems that play at the moment that plays, give or take two chunks. Nothing is captured once the stems
+        // are off, so they count as where they were until the song is back.
+        uint64_t played = stemsPlayed.load(std::memory_order_relaxed);
+        if (on) aligned = cachedNow && stemsLive && started && played + 2 * maxChunk >= liveFrame + n && played <= liveFrame + n + 2 * maxChunk;
+        else if (!started) aligned = false;
+        tapGone = on && aligned && quietFrames >= size_t(rate * 0.025);
         // The timeline moves on under the backspin, so the delay stays what it was set to.
         if (spinLeft > 0) return renderSpin(n, playing);
         if (fadeLeft > 0) return renderFade(n, playing);
         if (playing) {
             const float holdStep = 1.0f / ((slowHold ? 0.4f : 0.01f) * float(rate));
-            float target = holding || jumpPending || restartFading ? 0.0f : 1.0f;
+            float target = holding || jumpPending || restartFading || waiting || tapGone ? 0.0f : 1.0f;
             for (size_t f = 0; f < n; f++) {
                 holdGain += std::clamp(target - holdGain, -holdStep, holdStep);
                 stemLeft[f] *= holdGain;
@@ -910,7 +1000,6 @@ struct PSShifter {
             }
             if (slowHold && !jumpPending && holdGain >= 1) slowHold = false;
         }
-        bool started = stemsStarted.load(std::memory_order_relaxed);
         float target = on && started ? 1.0f : 0.0f;
         // The dip while karaoke moves the song to its start: until the move, for 15 seconds at most, and a quarter
         // second after it. A pause holds the stems, and the player is silent then anyway, so it doesn't count.
@@ -923,14 +1012,21 @@ struct PSShifter {
             seekDip.compare_exchange_strong(expected, 0, std::memory_order_relaxed);
             quiet = false;
         }
+        // The song waits in silence for the cached stems of the place it moved to.
+        bool hushed = on && !started && waiting;
         float mix = stemsMix.load(std::memory_order_relaxed);
-        const float step = 1.0f / (0.3f * float(rate)), leadStep = 1.0f / (0.2f * float(rate));
+        // Cached stems at the moment that plays are the song itself, so they cross it linearly, over the fade of the
+        // stem that changed: at once for a key, slowly for karaoke's vocals. The stems seconds behind are another moment,
+        // which keeps its power over 300 ms.
+        const float fade = std::max(0.03f, stemFadeSeconds.load(std::memory_order_relaxed));
+        const float step = 1.0f / ((aligned ? fade : 0.3f) * float(rate));
+        const float leadStep = 1.0f / ((hushed ? 0.01f : 0.2f) * float(rate));
         constexpr float quarter = float(M_PI / 2);
         for (size_t f = 0; f < n; f++) {
             mix += std::clamp(target - mix, -step, step);
-            leadGain += std::clamp((quiet ? 0.0f : 1.0f) - leadGain, -leadStep, leadStep);
-            float song = (mix <= 0 ? 1.0f : mix >= 1 ? 0.0f : std::cos(mix * quarter)) * leadGain;
-            float timeline = mix <= 0 ? 0.0f : mix >= 1 ? 1.0f : std::sin(mix * quarter);
+            leadGain += std::clamp((quiet || hushed ? 0.0f : 1.0f) - leadGain, -leadStep, leadStep);
+            float song = (mix <= 0 ? 1.0f : mix >= 1 ? 0.0f : aligned ? 1 - mix : std::cos(mix * quarter)) * leadGain;
+            float timeline = mix <= 0 ? 0.0f : mix >= 1 ? 1.0f : aligned ? mix : std::sin(mix * quarter);
             // A gap in the stems plays silence rather than the song seconds ahead.
             float stemL = playing ? stemLeft[f] : 0.0f, stemR = playing ? stemRight[f] : 0.0f;
             inLeft[f] = inLeft[f] * song + stemL * timeline;
@@ -969,6 +1065,9 @@ struct PSShifter {
             skipFrom = at - run;
             skipTo = at;
             rewindPending = run;
+            skipMadeFrom.store(skipFrom, std::memory_order_relaxed);
+            skipMadeTo.store(skipTo, std::memory_order_relaxed);
+            skipsMade.fetch_add(1, std::memory_order_release);
         }
         holding = hold;
         quietFrames = quiet ? quietFrames + frames : 0;
@@ -1008,6 +1107,8 @@ struct PSShifter {
     void pull(size_t n) {
         pullLive(n);
         if (stemsPlaying) mixStems(n);
+        // A move asked for while nothing plays the stems has nothing to wait for.
+        else seeksHeard = seeksAsked.load(std::memory_order_relaxed);
     }
 
     void pullLive(size_t n) {
@@ -1016,6 +1117,8 @@ struct PSShifter {
             input.read += fill - targetLatencyFrames;
             fill = targetLatencyFrames;
         }
+        // The input holds the newest frames that were captured, so the first one handed out is this far back.
+        liveFrame = captured.written.load(std::memory_order_relaxed) - fill;
         // After an underrun, wait for a small cushion so the output doesn't stutter frame by frame.
         if (inputPriming && fill >= primeFrames + n) inputPriming = false;
         size_t got = 0;
@@ -1174,6 +1277,56 @@ void ps_stems_write(PSShifter *s, const float *const *planes, size_t frames) {
     s->stems.write(planes, frames, 1);
 }
 
+uint64_t ps_captured_written(PSShifter *s) { return s->captured.written.load(std::memory_order_acquire); }
+
+uint64_t ps_stems_played(PSShifter *s) { return s->stemsPlayed.load(std::memory_order_relaxed); }
+
+void ps_stems_begin_cached(PSShifter *s, uint64_t generation, uint64_t start) {
+    // Pauses before this generation are behind its start, and its writer maps only the ones after it.
+    s->skipsMapped.store(s->skipsMade.load(std::memory_order_acquire), std::memory_order_release);
+    s->cachedGeneration.store(generation, std::memory_order_release);
+    ps_stems_begin(s, generation, start);
+}
+
+int ps_stems_cached(PSShifter *s) {
+    uint64_t generation = s->stemsGeneration.load(std::memory_order_relaxed);
+    return generation != 0 && s->stemsOn.load(std::memory_order_relaxed) && s->cachedGeneration.load(std::memory_order_acquire) == generation ? 1 : 0;
+}
+
+uint64_t ps_stems_rewrite(PSShifter *s, uint64_t generation, uint64_t from, uint64_t guard) {
+    if (s->stemsWriting.load(std::memory_order_acquire) != generation) return 0;
+    uint64_t written = s->stems.written.load(std::memory_order_relaxed);
+    uint64_t at = std::max(from, s->stemsPlayed.load(std::memory_order_relaxed) + guard);
+    // Nothing is written there yet: the writer carries on from where it is.
+    if (at >= written) return written;
+    s->stems.written.store(at, std::memory_order_release);
+    return at;
+}
+
+uint32_t ps_stems_seek(PSShifter *s) { return s->seeksAsked.fetch_add(1, std::memory_order_acq_rel) + 1; }
+
+uint32_t ps_stems_seeks(PSShifter *s, uint32_t *answered) {
+    *answered = s->seeksAnswered.load(std::memory_order_acquire);
+    return s->seeksAsked.load(std::memory_order_acquire);
+}
+
+void ps_stems_seek_answer(PSShifter *s, uint32_t seek, uint64_t from) {
+    s->seekFrom.store(from, std::memory_order_relaxed);
+    s->seeksAnswered.store(seek, std::memory_order_release);
+}
+
+uint32_t ps_stems_skips(PSShifter *s, uint64_t *from, uint64_t *to) {
+    // Read again when another pause came while reading.
+    for (;;) {
+        uint32_t skips = s->skipsMade.load(std::memory_order_acquire);
+        *from = s->skipMadeFrom.load(std::memory_order_relaxed);
+        *to = s->skipMadeTo.load(std::memory_order_relaxed);
+        if (s->skipsMade.load(std::memory_order_acquire) == skips) return skips;
+    }
+}
+
+void ps_stems_skip_mapped(PSShifter *s, uint32_t skips) { s->skipsMapped.store(skips, std::memory_order_release); }
+
 void ps_set_paused(PSShifter *s, int paused) {
     s->paused.store(paused != 0, std::memory_order_relaxed);
 }
@@ -1246,6 +1399,9 @@ int ps_stems_started(PSShifter *s) {
 
 double ps_stems_waiting(PSShifter *s) {
     if (!s->stemsOn.load(std::memory_order_relaxed) || s->stemsStarted.load(std::memory_order_relaxed)) return -1;
+    // Cached stems take over in a moment, with nothing to count down.
+    uint64_t generation = s->stemsGeneration.load(std::memory_order_relaxed);
+    if (generation != 0 && s->cachedGeneration.load(std::memory_order_acquire) == generation) return -1;
     // While the delay waits, the lyrics count down instead.
     if (s->anchorPending.load(std::memory_order_relaxed)) return -1;
     uint64_t captured = s->captured.written.load(std::memory_order_relaxed);
@@ -1330,7 +1486,9 @@ void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *out
         s->restartWaits = 0;
     }
     uint64_t delay = s->delayFrames.load(std::memory_order_relaxed);
+    s->updateCached();
     s->updateTimeline(s->stemsOn.load(std::memory_order_relaxed), delay, restart);
+    s->updateCached();
     bool stems = s->stemsOn.load(std::memory_order_relaxed) || delay > 0;
 
     // Input: the tap's stream(s) come after any input streams of the output device.

@@ -96,6 +96,33 @@ size_t ps_captured_read(PSShifter *shifter, uint64_t *position, float *left, flo
 size_t ps_stems_room(PSShifter *shifter, uint64_t position);
 void ps_stems_begin(PSShifter *shifter, uint64_t generation, uint64_t start);
 void ps_stems_write(PSShifter *shifter, const float *const *planes, size_t frames);
+// The newest captured frame, and the frame of the stems that the output plays.
+uint64_t ps_captured_written(PSShifter *shifter);
+uint64_t ps_stems_played(PSShifter *shifter);
+
+// Stems from a cache of the whole song, for a song that Muskey Player plays. The writer has the stems of every moment,
+// so it writes them ahead of the song, lined up frame for frame with the captured song, and the output plays them at
+// the moment that plays: once they are there, they take over at once with a short crossfade, with no backspin. The
+// writer calls ps_stems_begin_cached in place of ps_stems_begin for such a generation.
+void ps_stems_begin_cached(PSShifter *shifter, uint64_t generation, uint64_t start);
+// 1 while the stems of the current generation come from the cache, whether they play yet or not.
+int ps_stems_cached(PSShifter *shifter);
+// Takes back the stems written from `from` on, so that the writer writes them again, after the song moved or its speed
+// changed: never closer than `guard` frames to the frame that the output plays, which the output may be reading. Returns
+// the frame that the writer carries on from, or 0 when `generation` isn't the one written.
+uint64_t ps_stems_rewrite(PSShifter *shifter, uint64_t generation, uint64_t from, uint64_t guard);
+// The app moved the song while cached stems play (any thread): the output goes silent at once, and stays silent until the
+// writer answered with the frame from which the stems are of the new place, for 3 seconds at most. Returns the number of
+// the move, which the answer names.
+uint32_t ps_stems_seek(PSShifter *shifter);
+// The moves asked for so far, and in `answered` the last one that the writer answered.
+uint32_t ps_stems_seeks(PSShifter *shifter, uint32_t *answered);
+void ps_stems_seek_answer(PSShifter *shifter, uint32_t seek, uint64_t from);
+// Pauses so far, and the last one: the captured song left out its silence, and from captured frame `to` on, it carries
+// on from frame `from`. The writer of cached stems writes them again from `to`, then calls ps_stems_skip_mapped with the
+// count, and until then the output reads no stems from `to` on.
+uint32_t ps_stems_skips(PSShifter *shifter, uint64_t *from, uint64_t *to);
+void ps_stems_skip_mapped(PSShifter *shifter, uint32_t skips);
 
 // Slowing down a song from another player. The player plays at its own speed, so the tap's audio waits in a backlog
 // that the output reads back slower, resampled as a record played slower is: lower as well, which the voices undo by

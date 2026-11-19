@@ -69,6 +69,35 @@ final class PitchChanger {
         didSet { if let shifter { ps_set_step_fade(shifter, fadeSteps ? 1 : 0) } }
     }
 
+    /// The cache of the song that Muskey Player plays, once its stems were separated whole: the stems then come from
+    /// there, at the moment that plays, and a move of the song plays the stems of the new place at once. Another song,
+    /// or none, starts the stems over when they came from the cache, since they belong to the old song.
+    var stemsFeed: StemsFeed? {
+        didSet {
+            guard stemsFeed !== oldValue else { return }
+            separator?.feed = stemsFeed
+            if let shifter, oldValue != nil, ps_stems_cached(shifter) != 0 { ps_stems_restart(shifter) }
+        }
+    }
+
+    /// A move of the song plays the stems of the new place at once: the cache of the song lines up with it.
+    var instantSeeks: Bool { stemsFeed.map { !$0.lost } ?? false }
+
+    /// The stems of the generation that plays come from the cache.
+    var stemsCached: Bool { shifter.map { ps_stems_cached($0) != 0 } ?? false }
+
+    /// Set while the model separates the song as it plays. Any thread.
+    let separatingLive = SharedFlag()
+
+    /// The app moves the song to `target` seconds while the stems come from the cache, or are about to: the output goes
+    /// silent until the stems of the new place are there, and stems separated as the song plays give way to the cache.
+    func cachedSeek(to target: Double) {
+        guard let shifter, let stemsFeed, stemsOn else { return }
+        stemsFeed.seekTarget = target
+        _ = ps_stems_seek(shifter)
+        if ps_stems_cached(shifter) == 0 { ps_stems_restart(shifter) }
+    }
+
     /// Called on the main thread when the stems can't be separated; the stems are back on by then.
     var onStemsFailure: ((Error) -> Void)?
     /// Called on the separation thread with how long the windows take.
@@ -322,6 +351,7 @@ final class PitchChanger {
         separator?.stop()
         if let separator { stoppingSeparators.append(separator) }
         separator = nil
+        separatingLive.value = false
         for stopping in stoppingSeparators { stopping.waitUntilStopped() }
         stoppingSeparators = []
         // The IOProc is stopped and destroyed above, so nothing on the audio thread can still reach the shifter.
@@ -351,12 +381,15 @@ final class PitchChanger {
                 }
             }
             separator.log = stemsLog
+            separator.feed = stemsFeed
+            separator.separating = separatingLive
             separator.start(shifter: shifter, rate: rate)
             self.separator = separator
         } else if !stemsOn, let separator {
             separator.stop()
             stoppingSeparators.append(separator)
             self.separator = nil
+            separatingLive.value = false
         }
         stoppingSeparators.removeAll { $0.stopped }
         ps_stems_enable(shifter, stemsOn ? 1 : 0)
@@ -873,6 +906,8 @@ enum PitchSelfTest {
         report(pausedLevel < 0.001 && resumedLevel > 0.3 && abs(paused.heldWritten) < 1 && abs(paused.heldClock) < 1,
                String(format: "slow pause       level %.4f while paused, lowest %.2f after, backlog grew %.0f and clock %.0f frames during it",
                       pausedLevel, resumedLevel, paused.heldWritten, paused.heldClock))
+
+        CachedStemsTest.run(report)
 
         return failures == 0 ? 0 : 1
     }

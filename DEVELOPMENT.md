@@ -26,7 +26,7 @@ The helper also sends two commands to the player: play or pause, for Space over 
 
 With the lyrics showing, the keys `←` and `→` seek 5 seconds back or ahead, and in karaoke the keys `0` to `9` move the song to its start or to a tenth of its length. While karaoke's stems show, the number keys stay with the stems. `N` and `P` play the next and the previous song in every layout.
 
-The seek keys and their hints exist only while a seek is instant. While the stems are separated live, a seek would start their countdown again, and while the lyrics play behind the song, it would start the lyrics delay over. In both cases the arrows and the keys `1` to `9` do nothing. The key `0` in karaoke still starts the song over, the same way as Start song from beginning does while the stems play.
+The seek keys and their hints exist only while a seek is instant. While the stems are separated live, a seek would start their countdown again, and while the lyrics play behind the song, it would start the lyrics delay over. In both cases the arrows and the keys `1` to `9` do nothing. The key `0` in karaoke still starts the song over, the same way as Start song from beginning does while the stems play. A song in Muskey Player whose stems are in the cache (see Stems) keeps the seek keys with the stems on, since the stems of every moment of it are there already.
 
 Players differ in the move they take, so Muskey tries three in turn:
 
@@ -110,6 +110,14 @@ The Winds stem comes from a second model: the woodwind and brass heads of [MVSep
 
 Muskey downloads both models from lowtechguys.com into `~/Library/Application Support/Muskey/Models`. The commands `make stems-model` and `make winds-model` make them from the checkpoints.
 
+#### Stems from the cache
+
+The first time that the stems are used on a song that Muskey Player plays, Muskey also separates the whole song in the background and keeps its stems in `~/Library/Caches/Muskey/Stems`. The stems are kept as 16-bit samples, about 1.2 MB for each second of the song, and the folder keeps up to 2 GB, the songs played longest ago going first. While the stems also play live, the separation of the whole song waits as long as each window took, so that the live stems keep up.
+
+From then on, the stems of that song come from the cache. Muskey finds where the song is in the cache by correlation: it compares the last 100 ms that the tap heard with the song as the cache has it, read at the speed that Muskey Player plays it, around the place that Muskey Player reports. The stems are then written a second ahead of the song, lined up with what the tap hears, and they take over at once with a short crossfade, with no step back and no countdown. Every half second, Muskey checks that the song is still where it expects, and follows a change of speed or a gap in the tap with a 10 ms crossfade.
+
+A seek, karaoke's start over and a move during a pause are silent until the stems of the new place play, about 0.2 seconds after the key. When the song can't be found where the cache has it for 3 seconds, the stems are separated as the song plays again.
+
 ### Whisper
 
 Muskey uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with the large-v3-turbo model on the GPU, or a server with a `POST /v1/audio/transcriptions` endpoint. Muskey sends one phrase of the vocals at a time, cut at the pauses in the singing.
@@ -132,7 +140,7 @@ Muskey matches the heard words to the lyrics in order, so a chorus that repeats 
 
 A song in Muskey Player is rendered from its file, faster than it plays:
 
-1. The stems are separated from the whole song with the model of the live stems, and mixed by their levels. While the stems also play live, this separation waits as long as each window took, so that the live stems keep up.
+1. The stems are separated from the whole song with the model of the live stems, and mixed by their levels. While the stems also play live, this separation waits as long as each window took, so that the live stems keep up. A song whose stems are in the cache is mixed from there.
 2. [Rubber Band](https://breakfastquay.com/rubberband/)'s R3 engine changes the tempo and the key in its offline mode, which reads the whole song first. Muskey Player's speed changes the pitch too, which the live output undoes with an extra shift. A file at that speed needs only the time stretch.
 3. The limiter of the live output holds the peaks under −1 dBFS.
 4. M4A is AAC at 256 kbit/s, WAV is 16-bit, and MP3 is 320 kbit/s from [LAME](https://lame.sourceforge.io), with the LAME tag that tells players how much padding the encoder added.
@@ -151,6 +159,7 @@ Muskey writes the song to a temporary file, which replaces the chosen one once i
 
 - A pitch change moves every note by the same amount, so a major song stays major. Muskey reaches a key in the other mode through its relative, which has the same notes: from A major, C minor plays as E♭ major.
 - While a song from another player is slowed down, every other sound that the Mac plays is slowed down and delayed with it, since the pitch change hears every app.
+- While the stems of a song in Muskey Player come from the cache, other sounds that the Mac plays aren't heard, since the output plays the stems in place of everything that the tap hears.
 - A screen recording that includes system audio records both the original song and the shifted one. To record only the shifted song, use a recorder that captures per-app audio, and leave out the app that plays the song.
 
 ## Flags for testing
@@ -177,6 +186,8 @@ Builds made with `make` or `make install` take these flags, and release builds i
 | `--stems-only NAMES` | Play only the stems in NAMES, like `guitar,vocals` |
 | `--stems-after N` | Start the stems after N seconds (3 by default, and 0 starts with a cold model) |
 | `--stems-file PATH --stems-out DIR` | Separate a song file into DIR and print how long it took |
+| `--stems-cache PATH` | Separate a song file whole into the cache, play it through the pitch change as Muskey Player would at `--speed S`, with the vocals muted, two moves and a pause, print how far the stems from the cache were from the song, and quit |
+| `--stems-cache-dir DIR` | Keep the stems of whole songs in DIR instead of the cache folder |
 | `--stems-install ZIP`, `--winds-install ZIP` | Install a separation model from a zip |
 | `--stems-download`, `--winds-download`, `--whisper-download` | Download a model the way Settings does |
 

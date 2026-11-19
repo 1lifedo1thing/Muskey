@@ -1021,6 +1021,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static func main() {
         if TestFlags.has("--selftest") { exit(PitchSelfTest.run()) }
+        if let path = TestFlags.value("--stems-cache") { exit(CachedStemsTest.runFile(path, speed: TestFlags.value("--speed").flatMap(Double.init) ?? 1)) }
         let app = NSApplication.shared
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
@@ -1087,6 +1088,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let nowPlaying = NowPlaying()
     /// Plays the files and links that Muskey opens, through Muskey Player.
     private let filePlayer = FilePlayer()
+    /// Separates the whole song that Muskey Player plays into the cache, the first time that its stems are used.
+    private let stemsCache = StemsCacheBuilder()
+    /// The song whose stems were looked up in the cache last. It is looked up again for another song, or once its
+    /// separation is done.
+    private var stemsCacheLooked: String?
+    /// Songs whose whole separation failed, which aren't separated whole again until Muskey quits.
+    private var stemsCacheFailed: Set<String> = []
     private let activityPill = ActivityPill()
     private lazy var locationPanel: OpenLocationPanel = {
         let panel = OpenLocationPanel()
@@ -1241,6 +1249,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pauseDeferredUntil = nil
         if pitch.paused == track.playing, Self.logKeys || pitch.stemsEngaged { log(track.playing ? "song plays" : "song paused") }
         if !track.playing {
+            // A move during the pause: the stems from the cache wait for the song at its new place, from the moment it
+            // plays again.
+            if cachedStems, let (song, position) = pausedAt, song == track.song, let position, let now = track.position(at: Date()), abs(now - position) > 2 {
+                log(String(format: "the song moved to %.1f s during the pause", now))
+                pitch.cachedSeek(to: now)
+                pausedAt = (song, now)
+            }
             pausedAt = pausedAt ?? (track.song, track.position(at: Date()))
         } else if let (song, position) = pausedAt {
             pausedAt = nil
@@ -1399,6 +1414,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Stems that already play for this song are ready, as when karaoke opens again: it opens on them at once,
         // where the song is, with nothing to separate again.
         if pitch.stemsPlaying { return log("karaoke: the stems already play, the song goes on from where it is") }
+        // The stems from the cache play at once wherever the song is, so the song moves to its start as for a seek.
+        if cachedStems {
+            log("karaoke: the song starts over, with the stems from the cache")
+            pitch.cachedSeek(to: 0)
+            return moveSong(track, to: 0)
+        }
         // Core ML prepares the model for an unknown time, and the stems separated meanwhile would be wasted, so the song
         // plays on and starts over once the model is ready.
         guard StemModel.prepared else {
@@ -1901,6 +1922,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshStatus()
             self?.syncSpeed()
         }
+        stemsCache.log = { [weak self] in self?.log($0) }
+        stemsCache.live = { [separating = pitch.separatingLive] in separating.value }
+        stemsCache.onDone = { [weak self] path, ok in
+            guard let self else { return }
+            if !ok { stemsCacheFailed.insert(path) }
+            stemsCacheLooked = nil
+            syncStemsCache()
+        }
         statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === panel else { return event }
@@ -2275,6 +2304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The song that Muskey opened plays: the HUD opens on it as the hotkey opens it, unless it already shows. During a
     /// pitch change or with a key locked, that is the key picker, since the song change moves the song already.
     private func filePlays() {
+        syncStemsCache()
         guard state == .idle else { return }
         (pitch.running && pitchWanted) || keptKey != nil ? pickKey() : start()
     }
@@ -2801,7 +2831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let id = track.bundleID, unseekable.contains(id) { return log("start over: \(id) ignored the last seek") }
         if case .seeking = karaokeRestart { return log("start over: the last move isn't done yet") }
         guard !lyricsDelayed else { return log("start over: the song plays behind itself while Whisper writes its lyrics") }
-        guard model.stemsEngaged else { return seek(to: 0, flash: "0%") }
+        guard model.stemsEngaged, !cachedStems else { return seek(to: 0, flash: "0%") }
         if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: "0%") }
         guard StemModel.prepared else {
             log("karaoke: the song starts over once the model is ready")
@@ -2970,14 +3000,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer { try? FileManager.default.removeItem(at: temporary) }
             do {
                 let audio: StereoAudio
+                var path: String?
                 if let recorded {
                     audio = recorded
-                } else if case let .file(path) = job.source {
-                    audio = try SongRender.read(URL(fileURLWithPath: path))
+                } else if case let .file(file) = job.source {
+                    audio = try SongRender.read(URL(fileURLWithPath: file))
+                    path = file
                 } else {
                     throw SaveError(message: "The song has no file")
                 }
-                let rendered = try SongRender.render(audio, changes: changes, live: { live }) { report($0 * 0.95) }
+                let rendered = try SongRender.render(audio, changes: changes, path: path, live: { live }) { report($0 * 0.95) }
                 try SongRender.write(rendered, as: job.format, to: temporary) { report(0.95 + $0 * 0.05) }
                 if FileManager.default.fileExists(atPath: job.url.path) { try FileManager.default.removeItem(at: job.url) }
                 try FileManager.default.moveItem(at: temporary, to: job.url)
@@ -3142,11 +3174,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Seeks are instant only while nothing plays behind the song: with the stems separated live, a seek would wait
-    /// for them again under a countdown, and the lyrics delay would start over.
+    /// for them again under a countdown, and the lyrics delay would start over. A song in Muskey Player with its stems
+    /// in the cache seeks at once with the stems on, since the stems of the new place are there already.
     private func syncSeekable() {
         let track = nowPlaying.track
         let restartable = track?.title?.isEmpty == false && !(track?.bundleID.map(unseekable.contains) ?? false) && !lyricsDelayed
-        let seekable = restartable && !model.stemsEngaged
+        let seekable = restartable && (!model.stemsEngaged || cachedStems)
         guard seekable != model.seekable || restartable != model.restartable else { return }
         model.restartable = restartable
         model.seekable = seekable
@@ -3174,6 +3207,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         seekTarget = (track.song, target, Date())
         log(String(format: "seek to %.1f s", target))
         if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: flash) }
+        // The output goes quiet until the stems of the new place play, a moment after the player moves the song.
+        if model.stemsEngaged, cachedStems { pitch.cachedSeek(to: target) }
         moveSong(track, to: target)
     }
 
@@ -3418,7 +3453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard engaged != model.stemsEngaged || engaged != pitch.stemsEngaged else { return }
         model.stemsEngaged = engaged
         pitch.stemsEngaged = engaged
-        syncSeekable()
+        syncStemsCache()
         if !engaged {
             model.stemsProgress = nil
             model.karaokeCountdown = nil
@@ -3431,6 +3466,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if !pitchWanted, !model.picking, follow == nil, pitch.running {
             pitch.stopSmoothly { [self] in logShift() }
         }
+    }
+
+    /// The stems from the cache, for the song that Muskey Player plays, once the whole song was separated: they play at
+    /// the moment that plays, so a seek or karaoke's start over is instant. The whole song is separated in the
+    /// background the first time that its stems are used, while the stems are separated as it plays.
+    private var cachedStems: Bool { playsInFilePlayer && pitch.instantSeeks }
+
+    private func syncStemsCache() {
+        let path = playsInFilePlayer ? filePlayer.current?.path : nil
+        if path != stemsCacheLooked {
+            stemsCacheLooked = path
+            let cache = path.flatMap { StemsCache.open(for: $0) }
+            if pitch.stemsFeed?.path != path || (pitch.stemsFeed == nil) != (cache == nil) {
+                pitch.stemsFeed = path.flatMap { path in cache.map { StemsFeed(cache: $0, path: path, speed: filePlayer.speed) } }
+                if pitch.stemsFeed != nil { log("stems: the whole song is in the cache") }
+            }
+        }
+        if let feed = pitch.stemsFeed, let player = nowPlaying.player {
+            feed.speed = filePlayer.speed
+            feed.report(elapsed: player.elapsed, timestamp: player.timestamp, rate: player.rate)
+        }
+        // Another song stops the separation of the last one.
+        if let building = stemsCache.path, building != path { stemsCache.cancel() }
+        if let path, pitch.stemsFeed == nil, model.stemsEngaged, !stemsCacheFailed.contains(path) { stemsCache.start(path) }
+        syncSeekable()
     }
 
     /// The Separate instruments and vocals button: separates the song with every stem playing, and shows the stems in
@@ -3536,9 +3596,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard stemMeterClock == nil else { return }
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let progress = pitch.stemsWaited.map { waited -> StemsProgress in
+            // Stems from the cache take over in a moment, with nothing to wait for.
+            let progress = cachedStems ? nil : pitch.stemsWaited.map { waited -> StemsProgress in
                 StemModel.prepared ? .separating(min(0.97, waited / Self.stemsWait)) : .loading
             }
+            // A cache that stopped lining up with the song takes the seek keys away again.
+            syncSeekable()
             if model.stemsProgress != progress { model.stemsProgress = progress }
             if karaokeRestart == .waitingForModel, StemModel.prepared { beginKaraokeRestart() }
             let countdown = karaokeCountdown(progress)
@@ -4093,6 +4156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Muskey Player's speed, and the correction that keeps its song in its key. The pitch change hears every app, so
     /// the correction applies only while Muskey Player is the player that macOS shows as playing.
     private func syncSpeed() {
+        defer { syncStemsCache() }
         // Another player taking over, or a save that records the song, ends the slowing: the output jumps to the player.
         if slow.active, nowPlaying.player?.bundleID != slowedPlayer || songRecording != nil {
             slow.stop(songRecording != nil ? "the song is recorded for a save" : "another player plays")

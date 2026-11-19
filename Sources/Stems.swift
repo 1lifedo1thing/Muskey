@@ -335,11 +335,20 @@ final class StemStream {
 }
 
 /// Separates the song while the pitch change plays it: reads what the tap captured, separates it on its own
-/// thread, and hands the stems back to the IOProc, which plays them a few seconds behind the song.
+/// thread, and hands the stems back to the IOProc, which plays them a few seconds behind the song. A song that Muskey
+/// Player plays, with its stems in the cache, gets them from there instead, at the moment that plays.
 final class StemSeparator: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
     private let done = DispatchSemaphore(value: 0)
+    private var _feed: StemsFeed?
+
+    /// The cache of the song that Muskey Player plays, which each generation that starts at the moment that plays
+    /// takes its stems from, unless the cache didn't line up with the song before.
+    var feed: StemsFeed? {
+        get { lock.withLock { _feed } }
+        set { lock.withLock { _feed = newValue } }
+    }
 
     /// Runs on the separation thread when the model fails to load, or fails on two windows in a row.
     var onFailure: (Error) -> Void = { _ in }
@@ -350,6 +359,9 @@ final class StemSeparator: @unchecked Sendable {
 
     /// The thread has stopped reading the shifter.
     var stopped: Bool { lock.withLock { finished } }
+
+    /// Set while the model separates the song as it plays, which a separation of a whole song leaves the GPU to.
+    var separating: SharedFlag?
 
     func start(shifter: OpaquePointer, rate: Double) {
         let thread = Thread { [self] in
@@ -375,16 +387,8 @@ final class StemSeparator: @unchecked Sendable {
     private var isCancelled: Bool { lock.withLock { cancelled } }
 
     private func run(shifter: OpaquePointer, rate: Double) {
-        let model: StemModel
-        do {
-            model = try StemModel.shared()
-        } catch {
-            onFailure(error)
-            return
-        }
-        let winds = StemModel.sharedWinds()
-        let stream = StemStream(model: model, winds: winds)
-        log("stems: \(winds == nil ? "6 stems" : "7 stems, with winds")")
+        // The model loads with the first generation that separates the song as it plays: cached stems need none.
+        var stream: StemStream?
         let read = Int(rate / 4)
         var left = [Float](repeating: 0, count: read), right = [Float](repeating: 0, count: read)
         var generation: UInt64 = 0
@@ -392,6 +396,7 @@ final class StemSeparator: @unchecked Sendable {
         var input: Resampler?, outputs: [Resampler] = []
         var windows = 0, spent = 0.0, slowest = 0.0
         var failures = 0
+        var cached: CachedStemsWriter?
 
         while !isCancelled {
             var start: UInt64 = 0
@@ -399,13 +404,53 @@ final class StemSeparator: @unchecked Sendable {
             if current != generation, current != 0 {
                 generation = current
                 position = start
-                stream.reset()
-                input = rate == StemModel.sampleRate ? nil : Resampler(from: rate, to: StemModel.sampleRate)
-                outputs = rate == StemModel.sampleRate ? [] : Stem.allCases.map { _ in Resampler(from: StemModel.sampleRate, to: rate) }
-                ps_stems_begin(shifter, generation, start)
+                // Cached stems for a generation that starts at the moment that plays. One that starts in the past, for
+                // the lyrics delay, is separated as the song plays, since the song may have paused or moved since.
+                if let feed, !feed.lost, start + UInt64(rate) > ps_captured_written(shifter) {
+                    let writer = CachedStemsWriter(shifter: shifter, rate: rate, feed: feed, generation: generation, start: start)
+                    writer.log = log
+                    cached = writer
+                    ps_stems_begin_cached(shifter, generation, start)
+                    log("stems: from the cache")
+                } else {
+                    cached = nil
+                    if stream == nil {
+                        do {
+                            let winds = StemModel.sharedWinds()
+                            stream = StemStream(model: try StemModel.shared(), winds: winds)
+                            log("stems: \(winds == nil ? "6 stems" : "7 stems, with winds")")
+                        } catch {
+                            onFailure(error)
+                            return
+                        }
+                    }
+                    stream?.reset()
+                    input = rate == StemModel.sampleRate ? nil : Resampler(from: rate, to: StemModel.sampleRate)
+                    outputs = rate == StemModel.sampleRate ? [] : Stem.allCases.map { _ in Resampler(from: StemModel.sampleRate, to: rate) }
+                    ps_stems_begin(shifter, generation, start)
+                }
             }
             guard generation != 0 else {
                 Thread.sleep(forTimeInterval: 0.02)
+                continue
+            }
+            separating?.value = cached == nil && stream != nil
+            if let writer = cached {
+                if writer.step() == .lost {
+                    // Separated as the song plays from here on, in a generation of its own.
+                    feed?.markLost()
+                    cached = nil
+                    ps_stems_restart(shifter)
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+                continue
+            }
+            // A move asked for while the song is separated as it plays has nothing to wait for.
+            var answered: UInt32 = 0
+            let asked = ps_stems_seeks(shifter, &answered)
+            if asked != answered { ps_stems_seek_answer(shifter, asked, 0) }
+            guard let stream else {
+                Thread.sleep(forTimeInterval: 0.01)
                 continue
             }
             // With the song playing far behind for the lyrics, the separation waits for the output to catch up.
@@ -453,6 +498,16 @@ final class StemSeparator: @unchecked Sendable {
                 }
             }
         }
+    }
+}
+
+/// A flag that one thread sets and others read.
+final class SharedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var value: Bool {
+        get { lock.withLock { flag } }
+        set { lock.withLock { flag = newValue } }
     }
 }
 

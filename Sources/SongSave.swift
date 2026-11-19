@@ -112,14 +112,14 @@ enum SongRender {
 
     /// The song with its changes. `progress` gets the part done, from 0 to 1, and stops the render when it returns
     /// false. `live` is true while the stems are separated for the output too, which the separation here then leaves
-    /// half of the time to.
-    static func render(_ audio: StereoAudio, changes: SongChanges, live: @escaping () -> Bool = { false },
+    /// half of the time to. `path` is the file of the song, whose stems may be in the cache already.
+    static func render(_ audio: StereoAudio, changes: SongChanges, path: String? = nil, live: @escaping () -> Bool = { false },
                        progress: @escaping (Double) -> Bool) throws -> StereoAudio {
         var audio = audio
         // The stems take most of the time, when there are any to mix.
         let stemsPart = changes.stemGains == nil ? 0.0 : 0.8
         if let gains = changes.stemGains {
-            audio = try mixStems(audio, gains: gains, live: live) { progress($0 * stemsPart) }
+            audio = try mixStems(audio, gains: gains, path: path, live: live) { progress($0 * stemsPart) }
         }
         let pitchScale = pow(2, Double(changes.semitones) / 12)
         return try stretch(audio, timeRatio: 1 / changes.speed, pitchScale: pitchScale) { progress(stemsPart + $0 * (1 - stemsPart)) }
@@ -152,44 +152,75 @@ enum SongRender {
     }
 
     /// Separates the whole song into its stems with the model of the live stems, and mixes them by `gains`, at the
-    /// model's sample rate.
-    static func mixStems(_ audio: StereoAudio, gains: [Float], live: @escaping () -> Bool, progress: @escaping (Double) -> Bool) throws -> StereoAudio {
-        let model = try StemModel.shared()
-        let stream = StemStream(model: model, winds: StemModel.sharedWinds())
+    /// model's sample rate. The stems that the cache keeps of the song at `path` are mixed instead, when it has them.
+    static func mixStems(_ audio: StereoAudio, gains: [Float], path: String? = nil, live: @escaping () -> Bool,
+                         progress: @escaping (Double) -> Bool) throws -> StereoAudio {
         let input = audio.rate == StemModel.sampleRate ? [audio.left, audio.right]
             : Resampler(from: audio.rate, to: StemModel.sampleRate).convert(audio.left[...], audio.right[...])
         let frames = input[0].count
         var left = [Float](), right = [Float]()
-        left.reserveCapacity(frames + StemModel.chunk)
-        right.reserveCapacity(frames + StemModel.chunk)
-        // The song goes in a window at a time, so each block comes back as soon as it is separated.
-        var at = 0
-        let tail = [Float](repeating: 0, count: StemModel.chunk)
-        while left.count < frames {
-            let began = CACurrentMediaTime()
-            let blocks: [[[[Float]]]]
-            if at < frames {
-                let end = min(frames, at + StemStream.step)
-                blocks = try stream.push(input[0][at ..< end], input[1][at ..< end])
-                at = end
-            } else {
-                blocks = try stream.push(tail[...], tail[...])
+        left.reserveCapacity(frames)
+        right.reserveCapacity(frames)
+        func mix(_ block: [[[Float]]]) {
+            let count = block[0][0].count
+            var mixLeft = [Float](repeating: 0, count: count), mixRight = mixLeft
+            for (s, stem) in block.enumerated() where s < gains.count && gains[s] > 0 {
+                vDSP.add(multiplication: (stem[0], gains[s]), mixLeft, result: &mixLeft)
+                vDSP.add(multiplication: (stem[1], gains[s]), mixRight, result: &mixRight)
             }
-            for block in blocks {
-                let count = block[0][0].count
-                var mixLeft = [Float](repeating: 0, count: count), mixRight = mixLeft
-                for (s, stem) in block.enumerated() where s < gains.count && gains[s] > 0 {
-                    vDSP.add(multiplication: (stem[0], gains[s]), mixLeft, result: &mixLeft)
-                    vDSP.add(multiplication: (stem[1], gains[s]), mixRight, result: &mixRight)
-                }
-                left += mixLeft
-                right += mixRight
+            left += mixLeft
+            right += mixRight
+        }
+        // A resampled song can come out a few frames shorter at its end, which the cache's silence fills in.
+        if let path, let cache = StemsCache.open(for: path), abs(cache.frames - frames) < Int(StemModel.sampleRate * 0.05) {
+            let block = 65536
+            var samples = [Float](repeating: 0, count: block * StemsCache.planes)
+            for at in stride(from: 0, to: frames, by: block) {
+                let count = min(block, frames - at)
+                samples.withUnsafeMutableBufferPointer { cache.copy(Array(0 ..< StemsCache.planes), from: at, count: count, into: $0.baseAddress!) }
+                mix(Stem.allCases.map { stem in (0 ..< 2).map { c in Array(samples[(stem.rawValue * 2 + c) * count ..< (stem.rawValue * 2 + c + 1) * count]) } })
+                guard progress(Double(at + count) / Double(frames)) else { throw CancellationError() }
             }
-            guard progress(min(1, Double(left.count) / Double(frames))) else { throw CancellationError() }
-            // The live stems come first: with them running, this separation waits as long as its last window took.
-            if !blocks.isEmpty, live() { Thread.sleep(forTimeInterval: CACurrentMediaTime() - began) }
+        } else {
+            var at = 0
+            try separate(frames: frames, read: { count in
+                guard at < frames else { return nil }
+                let end = min(frames, at + count)
+                defer { at = end }
+                return [Array(input[0][at ..< end]), Array(input[1][at ..< end])]
+            }, live: live, progress: progress, take: mix)
         }
         return StereoAudio(left: Array(left.prefix(frames)), right: Array(right.prefix(frames)), rate: StemModel.sampleRate)
+    }
+
+    /// Separates a whole song with the model of the live stems, a window at a time, and hands each block of stems to
+    /// `take` in order from the song's start, as [stem][channel][frame] at the model's sample rate, `frames` in all.
+    /// `read` gives the next frames of the song at the model's rate, as many as asked for or fewer, and nil at its end.
+    /// The live stems come first: while `live` is true, this waits as long as each window took.
+    static func separate(frames: Int, read: (Int) throws -> [[Float]]?, live: () -> Bool, progress: (Double) -> Bool,
+                         take: ([[[Float]]]) throws -> Void) throws {
+        let model = try StemModel.shared()
+        let stream = StemStream(model: model, winds: StemModel.sharedWinds())
+        // The song goes in a window at a time, so each block comes back as soon as it is separated.
+        let tail = [Float](repeating: 0, count: StemModel.chunk)
+        var done = 0, ended = false
+        while done < frames {
+            let began = CACurrentMediaTime()
+            let blocks: [[[[Float]]]]
+            if !ended, let next = try read(StemStream.step), let first = next.first, !first.isEmpty {
+                blocks = try stream.push(next[0][...], next[1][...])
+            } else {
+                ended = true
+                blocks = try stream.push(tail[...], tail[...])
+            }
+            for block in blocks where done < frames {
+                let count = min(block[0][0].count, frames - done)
+                try take(count == block[0][0].count ? block : block.map { $0.map { Array($0.prefix(count)) } })
+                done += count
+            }
+            guard progress(min(1, Double(done) / Double(frames))) else { throw CancellationError() }
+            if !blocks.isEmpty, live() { Thread.sleep(forTimeInterval: CACurrentMediaTime() - began) }
+        }
     }
 
     /// Writes the song in `format`. WAV is 16-bit, M4A is AAC at 256 kbit/s, and MP3 is 320 kbit/s.
