@@ -412,6 +412,7 @@ struct HUDCard: View {
                 } else {
                     if let track {
                         RecordDisc(track: track, artwork: model.artwork, spinning: model.shown && model.playing, side: record, flash: model.playFlash)
+                            .onHover { model.overRecord = $0 }
                             .transition(.opacity)
                     } else {
                         EmptyPlatter(side: record)
@@ -459,10 +460,13 @@ struct HUDCard: View {
                             .font(.system(size: 11, weight: .medium, design: .rounded))
                             .foregroundStyle(palette.muted)
                     }
+                    SongTimeBar(track: track, ticking: model.shown && model.playing, palette: palette, width: 110)
+                        .padding(.top, 3)
                 }
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: ring)
+                .onHover { model.overRecord = $0 }
                 .padding(.top, 10)
                 .id(track.song.map { $0 ?? "" }.joined(separator: "\u{1F}"))
                 .transition(.opacity)

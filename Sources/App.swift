@@ -215,6 +215,9 @@ final class HUDModel: ObservableObject {
     /// How far a slowed song has come back to 100 %, 0 to 1, while the output catches up with the player.
     @Published var tempoReturn: Double?
     var onOpenFile: () -> Void = {}
+    var onSeekFraction: (Double) -> Void = { _ in }
+    /// The pointer is over the record and its time bar, where ← → and 0 move the song.
+    @Published var overRecord = false
     var onOpenLocation: () -> Void = {}
     /// A seek would be instant: the stems aren't separated live, the lyrics don't play behind, and the player took
     /// the last seek. The seek keys and their hints exist only then.
@@ -489,7 +492,8 @@ struct HUDView: View {
         } isTargeted: { model.dropTargeted = $0 }
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.songArriving, model.songArriving)
-        .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }))
+        .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) },
+                                                    seek: { model.onSeekFraction($0) }, seekable: model.seekable))
         .environment(\.recordPlaying, model.playing)
         .environment(\.openURL, OpenURLAction { url in
             model.onLink(url)
@@ -565,6 +569,7 @@ struct HUDView: View {
                         .transition(.opacity)
                     TurntableDeck(track: track, artwork: model.artwork, playing: model.playing, spinning: model.shown && model.playing,
                                   flash: model.playFlash, palette: palette)
+                        .onHover { model.overRecord = $0 }
                         .padding(.leading, 30)
                         .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
@@ -1987,6 +1992,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onSave = { [weak self] in self?.saveSong() }
         model.onOpen = { [weak self] urls in self?.open(urls) }
         model.onOpenFile = { [weak self] in self?.openFile() }
+        model.onSeekFraction = { [weak self] in self?.seek(toFraction: $0) }
         model.onStemsClose = { [weak self] in self?.closeStems() }
         model.onOpenLocation = { [weak self] in self?.openLocation() }
         slow.onReturn = { [weak self] progress in self?.model.tempoReturn = progress }
@@ -2045,6 +2051,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.syncTrack()
             self?.startOnKnownKey()
             self?.syncSongKey()
+        }
+        // The keys over the record differ from the ones over the rest of the HUD.
+        overRecordChange = model.$overRecord.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateHoverKeys() }
         }
         // Published before the change, so the new value comes from the publisher.
         shownChange = model.$shown.removeDuplicates().sink { [weak self] shown in
@@ -2912,6 +2922,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// exist only while they are instant (`model.seekable`): a seek while the stems are separated live would start
     /// their countdown again.
     private func handleSongKey(_ code: Int, option: Bool) -> Bool {
+        // Over the record and its time bar, ← → move the song 5 seconds and 0 starts it over, in every layout.
+        if model.overRecord, !option {
+            switch code {
+            case kVK_LeftArrow where model.seekable: seek(by: -5); return true
+            case kVK_RightArrow where model.seekable: seek(by: 5); return true
+            case kVK_ANSI_0 where model.restartable: startOver(); return true
+            default: break
+            }
+        }
         switch code {
         case kVK_ANSI_N where !option: skip(1)
         case kVK_ANSI_P where !option: skip(-1)
@@ -4136,6 +4155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForRestart = false
     private var hoverKeysForSave = false
     private var hoverKeysForIdle = false
+    private var hoverKeysForRecord = false
+    private var overRecordChange: AnyCancellable?
 
     /// Open File… or Open URL… is open. Its text would otherwise reach the keys over the HUD, which are global
     /// hotkeys, whenever the pointer rests on the HUD.
@@ -4150,7 +4171,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard wanted == hoverKeys.isEmpty
             || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
-                || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable || hoverKeysForIdle != (model.phase == .idle)))
+                || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable || hoverKeysForIdle != (model.phase == .idle)
+                || hoverKeysForRecord != model.overRecord))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -4163,6 +4185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForRestart = model.restartable
         hoverKeysForSave = model.savable
         hoverKeysForIdle = model.phase == .idle
+        hoverKeysForRecord = model.overRecord
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) }
         if model.stemsAvailable {
@@ -4182,6 +4205,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keys += Self.letters.keys.flatMap { code in modifiers.map { (code, $0) } }
             keys += [kVK_Delete, kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow].map { ($0, 0) }
         }
+        // Over the record, the arrows move the song and 0 starts it over.
+        if model.overRecord, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
+        if model.overRecord, model.restartable { keys.append((kVK_ANSI_0, 0)) }
         // A key that two lists add is registered once.
         keys = keys.reduce(into: []) { unique, key in if !unique.contains(where: { $0 == key }) { unique.append(key) } }
         hoverKeys = keys.compactMap { code, modifiers in
@@ -4527,7 +4553,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state = .idle
         let current = session
         panel.fadeOut { [self] in
-            if session == current { panel.orderOut(nil); model.shown = false }
+            if session == current { panel.orderOut(nil); model.shown = false; model.overRecord = false }
         }
         autoListenIfNeeded()
     }

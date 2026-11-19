@@ -170,6 +170,10 @@ struct TurntableDeck: View {
 struct RecordActions {
     var playPause: () -> Void = {}
     var skip: (Int) -> Void = { _ in }
+    /// Moves the song to a fraction of its length, from the time bar.
+    var seek: (Double) -> Void = { _ in }
+    /// The song moves at once in its player, so the time bar takes clicks and drags.
+    var seekable = false
 }
 
 /// Previous, play or pause, and next in karaoke, apart from the record, whose cover shows the instruments and vocals
@@ -911,24 +915,8 @@ private struct Details: View {
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(palette.muted)
             }
-            if let duration = track.duration, duration > 0 {
-                TimelineView(.animation(minimumInterval: 1, paused: !ticking)) { context in
-                    let position = min(duration, max(0, track.position(at: context.date) ?? 0))
-                    HStack(spacing: 7) {
-                        Text(Self.time(position))
-                        Capsule().fill(palette.ink.opacity(0.15))
-                            .overlay(alignment: .leading) {
-                                GeometryReader { bar in Capsule().fill(palette.muted).frame(width: bar.size.width * position / duration) }
-                            }
-                            .frame(width: 84, height: 4)
-                        Text(Self.time(duration))
-                    }
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(palette.muted)
-                    .padding(.top, 3)
-                }
-            }
+            SongTimeBar(track: track, ticking: ticking, palette: palette)
+                .padding(.top, 3)
         }
         .lineLimit(1)
         .truncationMode(.tail)
@@ -940,6 +928,65 @@ private struct Details: View {
         let total = Int(seconds.rounded(.down))
         let (hours, minutes, secs) = (total / 3600, total / 60 % 60, total % 60)
         return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, secs) : String(format: "%d:%02d", minutes, secs)
+    }
+}
+
+/// The time of the song with a bar between the time played and its length. While the song moves at once in its
+/// player, a click on the bar or a drag along it moves the song there.
+struct SongTimeBar: View {
+    let track: NowPlaying.Track
+    let ticking: Bool
+    let palette: Palette
+    var width: CGFloat = 84
+    @Environment(\.recordActions) private var actions
+    /// Where a drag along the bar is, from 0 to 1, until it ends.
+    @State private var dragged: Double?
+    @State private var hovering = false
+
+    var body: some View {
+        if let duration = track.duration, duration > 0 {
+            TimelineView(.animation(minimumInterval: 1, paused: !ticking || dragged != nil)) { context in
+                let played = min(1, max(0, (track.position(at: context.date) ?? 0) / duration))
+                let fraction = dragged ?? played
+                HStack(spacing: 7) {
+                    Text(Details.time(fraction * duration))
+                    bar(fraction)
+                    Text(Details.time(duration))
+                }
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(palette.muted)
+            }
+        }
+    }
+
+    private func bar(_ fraction: Double) -> some View {
+        let grows = actions.seekable && (hovering || dragged != nil)
+        return Capsule().fill(palette.ink.opacity(0.15))
+            .overlay(alignment: .leading) {
+                GeometryReader { bar in Capsule().fill(grows ? palette.ink.opacity(0.7) : palette.muted).frame(width: bar.size.width * fraction) }
+            }
+            .frame(width: width, height: grows ? 6 : 4)
+            // A taller strip to aim at than the bar itself.
+            .frame(height: 14)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        guard actions.seekable else { return }
+                        dragged = min(1, max(0, drag.location.x / width))
+                    }
+                    .onEnded { drag in
+                        guard actions.seekable else { return }
+                        actions.seek(min(1, max(0, drag.location.x / width)))
+                        // The bar holds the place until the player reports the move.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { dragged = nil }
+                    },
+                isEnabled: actions.seekable
+            )
+            .animation(.easeOut(duration: 0.12), value: grows)
+            .help(actions.seekable ? "Move the song (← →, 0 for the start)" : "")
     }
 }
 
