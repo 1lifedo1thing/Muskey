@@ -226,6 +226,18 @@ private struct GeneralPane: View {
                     if !(1 ... 3600).contains(seconds) { prefs.pauseStopSeconds = min(max(seconds, 1), 3600) }
                 }
             }
+            Section("Cache") {
+                LabeledContent {
+                    Picker("Cache cleanup", selection: $prefs.cacheCleanup) {
+                        ForEach(CacheCleanup.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                } label: {
+                    Text("Cache cleanup")
+                    Text("Delete separated stems and downloaded songs that weren't played for this long")
+                }
+            }
             Section("Menu bar icon") {
                 HStack(spacing: 14) {
                     ChoiceTile(title: "Always", selected: prefs.menuBarIcon == .always) { prefs.menuBarIcon = .always } preview: {

@@ -762,6 +762,21 @@ final class LinkCache {
         (try? Data(contentsOf: index)).flatMap { try? JSONDecoder().decode([String: FilePlayer.Song].self, from: $0) } ?? [:]
     }
 
+    /// Deletes the songs that weren't opened for `age`, except the ones at `kept`, and forgets their links.
+    func sweep(olderThan age: TimeInterval, keeping kept: Set<String>) -> Int {
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let deadline = Date().addingTimeInterval(-age)
+        var removed = 0
+        for file in files where file.lastPathComponent != "links.json" && !kept.contains(file.path) {
+            guard let date = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date < deadline else { continue }
+            if (try? FileManager.default.removeItem(at: file)) != nil { removed += 1 }
+        }
+        guard removed > 0 else { return 0 }
+        let songs = load().filter { FileManager.default.fileExists(atPath: $0.value.path) }
+        if let data = try? JSONEncoder().encode(songs) { try? data.write(to: index, options: .atomic) }
+        return removed
+    }
+
     private func trim(_ songs: inout [String: FilePlayer.Song]) {
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys)) ?? []

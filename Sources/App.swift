@@ -1159,6 +1159,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let filePlayer = FilePlayer()
     /// Separates the whole song that Muskey Player plays into the cache, the first time that its stems are used.
     private let stemsCache = StemsCacheBuilder()
+    private var cacheSweeper: Timer?
+    private static let cacheSweepQueue = DispatchQueue(label: "Muskey cache cleanup", qos: .utility)
     /// The song whose stems were looked up in the cache last. It is looked up again for another song, or once its
     /// separation is done.
     private var stemsCacheLooked: String?
@@ -1863,6 +1865,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.mainMenu = mainMenu()
         Updates.shared.start()
+        prefs.$cacheCleanup.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.sweepCaches() } }.store(in: &prefChanges)
+        cacheSweeper = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.sweepCaches() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.sweepCaches() }
         prefs.$hotkey.combineLatest(prefs.$recordingHotkey).sink { [weak self] shortcut, recording in
             self?.registerHotKey(recording ? nil : shortcut)
         }.store(in: &prefChanges)
@@ -3324,6 +3329,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.seekable = seekable
         if Self.logKeys { log("seek keys \(seekable ? "on" : "off")") }
         updateHoverKeys()
+    }
+
+    /// Deletes the cached stems and the songs downloaded from links that weren't played for the period in Settings >
+    /// General > Cache. The song in Muskey Player and its stems stay, however long it has been playing.
+    private func sweepCaches() {
+        let age = prefs.cacheCleanup.rawValue
+        guard age > 0 else { return }
+        let playing = filePlayer.current?.path
+        Self.cacheSweepQueue.async { [weak self] in
+            var kept: Set<String> = []
+            if let playing {
+                kept.insert(playing)
+                if let stems = StemsCache.url(for: playing) { kept.formUnion([stems.path, stems.appendingPathExtension("partial").path]) }
+            }
+            let stems = StemsCache.sweep(olderThan: age, keeping: kept)
+            let songs = LinkCache().sweep(olderThan: age, keeping: kept)
+            guard stems + songs > 0 else { return }
+            DispatchQueue.main.async { self?.log("cache cleanup: deleted \(stems) stems files and \(songs) downloaded songs") }
+        }
     }
 
     private func seek(by seconds: Double) {

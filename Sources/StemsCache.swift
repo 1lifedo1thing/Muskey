@@ -107,6 +107,19 @@ final class StemsCache: @unchecked Sendable {
         return cache
     }
 
+    /// Deletes the stems of the songs that weren't played for `age`, except the ones at `kept`. A build in progress
+    /// writes its partial file all the time, so it is never that old.
+    static func sweep(olderThan age: TimeInterval, keeping kept: Set<String>) -> Int {
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let deadline = Date().addingTimeInterval(-age)
+        var removed = 0
+        for file in files where ["stems", "partial"].contains(file.pathExtension) && !kept.contains(file.path) {
+            guard let date = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date < deadline else { continue }
+            if (try? FileManager.default.removeItem(at: file)) != nil { removed += 1 }
+        }
+        return removed
+    }
+
     /// Removes the songs played longest ago until the folder is under its limit, and files that a build left behind.
     static func trim(keeping kept: URL? = nil) {
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]

@@ -56,6 +56,32 @@ enum MenuBarIcon: String, CaseIterable {
     case always, pitchChange
 }
 
+/// How long cached stems and songs downloaded from links are kept after they were last played. The same periods as
+/// Clop's cleanup of its working folder.
+enum CacheCleanup: TimeInterval, CaseIterable {
+    case every10Minutes = 600
+    case hourly = 3600
+    case every12Hours = 43200
+    case daily = 86400
+    case every3Days = 259_200
+    case weekly = 604_800
+    case monthly = 2_592_000
+    case never = 0
+
+    var title: String {
+        switch self {
+        case .every10Minutes: "10 minutes"
+        case .hourly: "1 hour"
+        case .every12Hours: "12 hours"
+        case .daily: "1 day"
+        case .every3Days: "3 days"
+        case .weekly: "1 week"
+        case .monthly: "1 month"
+        case .never: "Never"
+        }
+    }
+}
+
 /// What listens to the song to time its lyrics, and to write lyrics that LRCLIB doesn't have.
 /// How the song steps back in itself when the separated stems take over, or the lyrics delay starts.
 enum RewindEffect: String, CaseIterable {
@@ -150,13 +176,17 @@ final class Preferences: ObservableObject {
     @Published var pauseStopSeconds: Int {
         didSet { defaults.set(pauseStopSeconds, forKey: "pauseStopSeconds") }
     }
+    /// Cached stems and downloaded songs that weren't played for this long are deleted (Settings > General > Cache).
+    @Published var cacheCleanup: CacheCleanup {
+        didSet { defaults.set(cacheCleanup.rawValue, forKey: "cacheCleanup") }
+    }
     /// The base URL of the Whisper server, up to `/v1`.
     @Published var whisperServer: String {
         didSet { defaults.set(whisperServer, forKey: "whisperServer") }
     }
 
     private init() {
-        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10])
+        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10, "cacheCleanup": CacheCleanup.weekly.rawValue])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always
@@ -175,6 +205,7 @@ final class Preferences: ObservableObject {
         karaokeBackdrop = defaults.bool(forKey: "karaokeBackdrop")
         pauseStop = defaults.bool(forKey: "pauseStop")
         pauseStopSeconds = min(max(defaults.integer(forKey: "pauseStopSeconds"), 1), 3600)
+        cacheCleanup = CacheCleanup(rawValue: defaults.double(forKey: "cacheCleanup")) ?? .weekly
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }
