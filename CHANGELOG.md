@@ -1,3 +1,16 @@
+# 1.1.1
+
+**[Download Muskey 1.1.1 →](https://files.lowtechguys.com/releases/Muskey-1.1.1.dmg)**
+## Fixes
+
+- Fix `Space`, `N`, `P` and `⌘V` doing nothing over the HUD while it listens for a new song's key
+- Keep the HUD the same size while it listens to a new song, instead of moving the record away from the pointer
+- Pause the listen while the song is paused, instead of showing *Nothing playing*
+
+## Improvements
+
+- Keys like `Space`, `N`, `P` and `⌘V` work over the HUD while it shows *Nothing playing*
+
 # 1.1.0
 
 **[Download Muskey 1.1.0 →](https://files.lowtechguys.com/releases/Muskey-1.1.0.dmg)**

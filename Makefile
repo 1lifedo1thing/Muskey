@@ -193,8 +193,12 @@ CHANGELOG.md: $(wildcard ReleaseNotes/*.md)
 Releases/changelog.html: CHANGELOG.md
 	pandoc -f gfm --section-divs -o $@ --standalone --metadata title="$(APP) Changelog" --css "$(RELEASE_CSS)" $<
 
+# INCLUDE_RELEASES=1.1.0 (or 1.1.0/1.0.1) adds the notes of those versions under the new ones, for a small update.
+INCLUDE_RELEASES=
+
 Releases/$(APP)-%.html: ReleaseNotes/$(VERSION).md
-	pandoc -f gfm --section-divs -o $@ --standalone --metadata title="$(APP) $(FULL_VERSION) - Release Notes" --css "$(RELEASE_CSS)" $<
+	{ cat $<; for v in $(subst /, ,$(INCLUDE_RELEASES)); do echo; echo "## From v$$v"; echo; cat "ReleaseNotes/$$v.md"; done; } \
+		| pandoc -f gfm --section-divs -o $@ --standalone --metadata title="$(APP) $(FULL_VERSION) - Release Notes" --css "$(RELEASE_CSS)"
 
 appcast: Releases/$(APP)-$(FULL_VERSION).html Releases/changelog.html | $(SPARKLE)
 	rm -f Releases/$(APP).dmg Releases/$(APP)$(FULL_VERSION)*.delta
