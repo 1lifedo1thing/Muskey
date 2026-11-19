@@ -2621,8 +2621,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tick() {
         let elapsed = Date().timeIntervalSince(startedAt)
         model.progress = min(1, elapsed / seconds)
-        // Nothing has made a sound in 3 seconds of a listen that the hotkey started: the HUD offers to play.
-        if follow == nil, !model.picking, elapsed >= Self.idleAfter, peak < 0.0005 { return nothingPlays(after: elapsed) }
+        // Nothing has made a sound in 3 seconds of a listen that the hotkey started, and no player says that it plays:
+        // the HUD offers to play. A song that starts quietly gets its whole listen.
+        if follow == nil, !model.picking, elapsed >= Self.idleAfter, peak < 0.0005, nowPlaying.track?.playing != true {
+            return nothingPlays(after: elapsed)
+        }
         // A song that starts quietly gets the whole listen when it has to be moved to the kept key.
         if ((follow == nil || followByPerson) && elapsed >= silenceAfter && estimated && peak < 0.0005) || elapsed >= seconds { finish() }
     }
