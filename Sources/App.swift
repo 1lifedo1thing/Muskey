@@ -2530,7 +2530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_: Notification) {
         filePlayer.stop()
         cancelAutoListen()
-        pitch.stop()
+        pitch.stop(waiting: true)
         lyricsSync.end()
         nowPlaying.watching = false
     }
@@ -2543,7 +2543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             signal(number, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
             source.setEventHandler { [weak self] in
-                self?.pitch.stop()
+                self?.pitch.stop(waiting: true)
                 self?.lyricsSync.end()
                 self?.filePlayer.stop()
                 exit(0)

@@ -236,14 +236,16 @@ final class PitchChanger {
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &Self.defaultOutputAddress, .main, listener)
     }
 
-    func stop() {
+    /// `waiting` lets the separation threads finish their window before this returns, for quitting, which would
+    /// otherwise end them in the middle of it.
+    func stop(waiting: Bool = false) {
         stopTimer?.invalidate()
         stopTimer = nil
         if let outputListener {
             AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &Self.defaultOutputAddress, .main, outputListener)
         }
         outputListener = nil
-        teardown()
+        teardown(waiting: waiting)
     }
 
     private var stopTimer: Timer?
@@ -350,7 +352,11 @@ final class PitchChanger {
         }
     }
 
-    private func teardown() {
+    /// Shifters that separation threads may still read, destroyed once those threads stopped. A thread finishes its
+    /// window or its model load first, which can take seconds, so nothing on the main thread waits for it.
+    private static let disposal = DispatchQueue(label: "muskey.pitch.disposal", qos: .utility)
+
+    private func teardown(waiting: Bool = false) {
         recordingTimer?.invalidate()
         recordingTimer = nil
         if aggregateID != kAudioObjectUnknown {
@@ -371,12 +377,22 @@ final class PitchChanger {
         if let separator { stoppingSeparators.append(separator) }
         separator = nil
         separatingLive.value = false
-        for stopping in stoppingSeparators { stopping.waitUntilStopped() }
+        let separators = stoppingSeparators
         stoppingSeparators = []
         // The IOProc is stopped and destroyed above, so nothing on the audio thread can still reach the shifter.
         if let shifter {
             gaps += ps_underruns(shifter)
-            ps_destroy(shifter)
+            if waiting {
+                for stopping in separators { stopping.waitUntilStopped() }
+                ps_destroy(shifter)
+            } else {
+                // Off the main thread, the wait can cover a model load that runs long, after which the thread would
+                // still reach the shifter.
+                Self.disposal.async {
+                    for stopping in separators { stopping.waitUntilStopped(seconds: 30) }
+                    ps_destroy(shifter)
+                }
+            }
         }
         shifter = nil
     }
