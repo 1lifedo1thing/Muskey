@@ -395,6 +395,12 @@ final class PitchChanger {
             }
         }
         shifter = nil
+        if waiting {
+            // The threads of a pitch change stopped before quitting get a few seconds to finish too.
+            let drained = DispatchSemaphore(value: 0)
+            Self.disposal.async { drained.signal() }
+            _ = drained.wait(timeout: .now() + 3)
+        }
     }
 
     /// Sets the gains of the stems, and starts or stops their separation.
