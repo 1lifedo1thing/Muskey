@@ -4165,9 +4165,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `--log-keys` logs the hover over the HUD and every key that reaches it, for testing the keys from a script.
     private static let logKeys = TestFlags.has("--log-keys")
 
-    /// The key hints show while the keys work: with the pointer over the HUD, or with the HUD holding the keyboard.
+    /// The key hints, the stems' number keys and the tempo keycaps show only with the pointer over the HUD. The keys
+    /// also work while the HUD holds the keyboard, but the HUD stays compact then, as it does whenever the pointer is
+    /// away from it.
     private func updateKeysActive() {
-        let active = model.hovering || panel.isKeyWindow
+        let active = model.hovering
         if model.keysActive != active { model.keysActive = active }
     }
 
@@ -4663,7 +4665,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -4745,8 +4747,10 @@ extension EnvironmentValues {
             // A finished listen found the tempo of the song, and a listen still running hasn't yet.
             if phase == .done { model.tempo = SongTempo(song: song?.song, bpm: 124) }
             // A song in Muskey Player at 85 % of its speed.
-            model.speedAdjustable = variant == "-tempo"
+            model.speedAdjustable = variant.hasPrefix("-tempo")
             model.speed = variant == "-tempo" ? 0.85 : 1
+            // A slowed song on its way back to 100 %, with the ring on the tempo pill part filled.
+            model.tempoReturn = variant == "-tempo-return" ? 0.6 : nil
             // The arm on the record, or lifted off it with the pause glyph that Space shows.
             model.playing = !variant.hasSuffix("-paused")
             if variant.hasSuffix("-paused") { model.playFlash = PlayFlash(playing: false, id: 1) }
