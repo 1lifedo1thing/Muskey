@@ -2807,13 +2807,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var format = prefs.saveFormat
         panel.allowedContentTypes = [format.type]
         panel.nameFieldStringValue = "\(name).\(format.rawValue)"
-        let accessory = NSHostingView(rootView: SaveAccessory(format: format, caveat: caveat) { picked in
+        let pick = { (picked: SaveFormat) in
             format = picked
             panel.allowedContentTypes = [picked.type]
             panel.nameFieldStringValue = ((panel.nameFieldStringValue as NSString).deletingPathExtension as NSString).appendingPathExtension(picked.rawValue) ?? name
-        })
+        }
+        let accessory = NSHostingView(rootView: SaveAccessory(format: format, caveat: caveat, picked: pick))
         accessory.frame.size = accessory.fittingSize
         panel.accessoryView = accessory
+        // `--save-pick wav` picks a format a second after the panel opens, as the Format picker does: macOS draws the
+        // panel in a service process, which takes neither posted clicks nor accessibility.
+        if let test = Self.stringOption("--save-pick").flatMap(SaveFormat.init(rawValue:)) {
+            let timer = Timer(timeInterval: 1, repeats: false) { [weak self] _ in
+                pick(test)
+                self?.log("save: picked \(test.name) for the test, the name reads \(panel.nameFieldStringValue)")
+            }
+            RunLoop.main.add(timer, forMode: .common)
+        }
         guard inFront({ panel.runModal() }) == .OK, let url = panel.url else { return nil }
         prefs.saveFormat = format
         return (url, format)

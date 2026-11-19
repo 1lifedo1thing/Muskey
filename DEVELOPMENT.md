@@ -224,6 +224,7 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--render-song PATH` | Render a song as Save Song does, write it to `--render-out PATH` (M4A, MP3 or WAV by its extension), print how long each part took, and quit |
 | `--render-semitones N`, `--render-speed S`, `--render-mute vocals,drums` | The changes of `--render-song`: the key, the speed, and the stems that are muted |
 | `--record-everything` | Record every app but Muskey when a song from another player is saved, as for a player that Core Audio doesn't list |
+| `--save-pick m4a\|mp3\|wav` | Pick that format a second after the save panel opens, as the Format picker does, since the panel takes neither posted clicks nor accessibility |
 
 ### Tests
 
