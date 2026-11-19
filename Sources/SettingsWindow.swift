@@ -194,14 +194,20 @@ private struct GeneralPane: View {
     var body: some View {
         Form {
             Section("Keyboard") {
-                LabeledContent("Hotkey") {
+                // A Form sizes a row by its label, so a 24 pt button sticks out above a one-line label and leaves
+                // the row with more space below it than above. A label as tall as the button centres both, and the
+                // negative padding keeps the row as tall as the others.
+                LabeledContent {
                     ShortcutRecorder(shortcut: $prefs.hotkey, recording: $prefs.recordingHotkey, failed: prefs.hotkeyFailed)
+                } label: {
+                    Text("Hotkey").frame(minHeight: 24)
                 }
+                .padding(.vertical, -2)
             }
             Section("Trackpad") {
                 Toggle(isOn: $prefs.naturalSwipes) {
                     Text("Natural swiping")
-                    Text("Next song on a swipe to the left")
+                    Text("Swipe left for next song and right for previous song")
                 }
             }
             Section("Playback") {
@@ -220,7 +226,7 @@ private struct GeneralPane: View {
                     }
                 } label: {
                     Text("Cut sound adjustments after pausing music")
-                    Text("If Muskey HUD is hidden and music was paused for \(prefs.pauseStopSeconds) seconds, automatically stop pitch and tempo adjustments on system audio")
+                    Text("If Muskey HUD is hidden and music was paused for \(prefs.pauseStopSeconds) seconds, automatically stop pitch and tempo adjustments")
                 }
                 .onChange(of: prefs.pauseStopSeconds) { _, seconds in
                     if !(1 ... 3600).contains(seconds) { prefs.pauseStopSeconds = min(max(seconds, 1), 3600) }
@@ -235,7 +241,7 @@ private struct GeneralPane: View {
                     .fixedSize()
                 } label: {
                     Text("Cache cleanup")
-                    Text("Delete separated stems and downloaded songs that weren't played for this long")
+                    Text("Delete cached audio older than the configured period")
                 }
             }
             Section("Menu bar icon") {
