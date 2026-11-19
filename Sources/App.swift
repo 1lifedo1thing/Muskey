@@ -929,9 +929,49 @@ final class HUDPanel: NSPanel {
     /// `clickable` for a result with a Change Key button, `keyboard` while a key is being picked.
     /// The panel stops being key when it is ordered out after the fade.
     func setInteraction(clickable: Bool, keyboard: Bool) {
-        ignoresMouseEvents = !clickable
+        wantsClicks = clickable
+        watchPointer(clickable)
+        updatePassThrough()
         takesKeyboard = keyboard
         if keyboard { makeKey() }
+    }
+
+    /// The panel takes the mouse only while the pointer is over the glass. The window server lets left clicks through
+    /// the clear margin around the glass, but not right clicks, which then did nothing anywhere under the panel, and
+    /// the pointer over the margin counted as over the HUD, which took its keys.
+    private var wantsClicks = false
+    private var pointerMonitors: [Any] = []
+
+    func updatePassThrough() {
+        let ignore = !(wantsClicks && overGlass(NSEvent.mouseLocation))
+        if ignoresMouseEvents != ignore { ignoresMouseEvents = ignore }
+    }
+
+    private func overGlass(_ point: NSPoint) -> Bool {
+        let glass = model.glassFrame
+        guard !glass.isEmpty else { return true }
+        // The glass frame is in the window's coordinates, from its top left.
+        let local = CGPoint(x: point.x - frame.minX, y: frame.maxY - point.y)
+        return glass.insetBy(dx: -4, dy: -4).contains(local)
+    }
+
+    /// The pointer moves over other apps while the panel lets it through, and over the panel while it doesn't.
+    private func watchPointer(_ on: Bool) {
+        guard on != !pointerMonitors.isEmpty else { return }
+        if on {
+            acceptsMouseMovedEvents = true
+            let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
+            pointerMonitors = [
+                NSEvent.addGlobalMonitorForEvents(matching: events) { [weak self] _ in self?.updatePassThrough() },
+                NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
+                    self?.updatePassThrough()
+                    return event
+                },
+            ].compactMap { $0 }
+        } else {
+            pointerMonitors.forEach(NSEvent.removeMonitor)
+            pointerMonitors = []
+        }
     }
 
     func present() {
@@ -2043,6 +2083,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.karaokeChanged(on) }
         }
         glassChange = model.$glassFrame.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.panel.updatePassThrough() }
             // Published before the change, so the panel reads the new frame on the next turn of the run loop.
             DispatchQueue.main.async { [weak self] in
                 guard let self, panel.isVisible else { return }
