@@ -224,7 +224,7 @@ final class LyricsSync {
         let aligner = LyricsAligner(texts: texts, estimate: lyrics.lines.map(\.time), keepsSpacing: lyrics.otherVersion)
         self.aligner = aligner
         stored = store.heard(for: song)
-        realign()
+        realign(now: true)
         let lines = texts.filter { !$0.isEmpty }.count
         guard anchored < lines * 9 / 10 else { return log("lyrics: \(anchored) of \(lines) lines timed from an earlier play") }
         text = texts.joined(separator: "\n")
@@ -295,6 +295,8 @@ final class LyricsSync {
         heardSaved = .distantPast
         song = nil
         aligner = nil
+        // An alignment still being worked out belongs to this song, and is dropped.
+        alignments.withLock { $0 += 1 }
         alignment = LyricsAligner.Alignment()
         stored = []
         marks = []
@@ -612,9 +614,35 @@ final class LyricsSync {
         }
     }
 
-    private func realign() {
+    /// Matching the heard words to the lyrics fills a table as large as both, and a guess of the listener comes about
+    /// once a second, so it is worked out off the main thread.
+    private static let aligning = DispatchQueue(label: "muskey.lyrics.align", qos: .userInitiated)
+    /// Counts the alignments asked for, so that only the latest one is worked out and applied.
+    private let alignments = OSAllocatedUnfairLock(initialState: 0)
+
+    /// Matches the heard words to the lyrics again. `now` does it before returning, for the start of a song, which
+    /// needs to know how many lines the earlier plays timed.
+    private func realign(now: Bool = false) {
         guard let aligner else { return }
-        alignment = aligner.align(Self.merge(stored, current))
+        let heard = Self.merge(stored, current)
+        let number = alignments.withLock {
+            $0 += 1
+            return $0
+        }
+        if now { return apply(aligner.align(heard)) }
+        let alignments = alignments
+        Self.aligning.async { [weak self] in
+            guard alignments.withLock({ $0 }) == number else { return }
+            let alignment = aligner.align(heard)
+            DispatchQueue.main.async {
+                guard let self, alignments.withLock({ $0 }) == number else { return }
+                self.apply(alignment)
+            }
+        }
+    }
+
+    private func apply(_ alignment: LyricsAligner.Alignment) {
+        self.alignment = alignment
         if (anchored == 0) != (alignment.anchored == 0) {
             anchored = alignment.anchored
             onChange()
