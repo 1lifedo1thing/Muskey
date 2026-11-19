@@ -1,16 +1,16 @@
 import SwiftUI
 
 extension Stem {
-    /// A hue for each stem, apart enough to tell them apart and soft enough for the warm glass.
+    /// A warm hue for each stem, from rose to gold, which sits with the warm glass and still tells the stems apart.
     var hue: Double {
         switch self {
-        case .vocals: 8
-        case .drums: 75
-        case .bass: 295
-        case .guitar: 42
-        case .piano: 210
-        case .other: 150
-        case .winds: 110
+        case .vocals: 20
+        case .piano: 30
+        case .drums: 45
+        case .other: 58
+        case .bass: 70
+        case .winds: 82
+        case .guitar: 95
         }
     }
 
@@ -26,8 +26,19 @@ extension Stem {
         }
     }
 
+    /// The ring that pulses with the sound.
     func color(_ scheme: ColorScheme, opacity: Double = 1) -> Color {
-        .oklch(scheme == .dark ? 0.78 : 0.62, 0.12, hue, opacity: opacity)
+        scheme == .dark ? .oklch(0.74, 0.13, hue, opacity: opacity) : .oklch(0.66, 0.14, hue, opacity: opacity)
+    }
+
+    /// The pastel that the circle takes on as the stem gets louder.
+    func fill(_ scheme: ColorScheme, opacity: Double = 1) -> Color {
+        scheme == .dark ? .oklch(0.44, 0.07, hue, opacity: opacity) : .oklch(0.9, 0.055, hue, opacity: opacity)
+    }
+
+    /// The symbol on the circle, a deeper tone of the same hue.
+    func ink(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? .oklch(0.9, 0.07, hue) : .oklch(0.45, 0.11, hue)
     }
 }
 
@@ -308,13 +319,15 @@ private struct StemHalo: View {
                     Circle()
                         .stroke(stem.color(scheme, opacity: on ? 0.25 + 0.5 * level : 0), lineWidth: 2)
                         .padding(crowded ? -2 - 3 * level : -3 - 5 * level)
+                    // Grey while the stem is quiet, taking on its pastel as it gets louder, so the circles move with the
+                    // song as well as their rings.
                     Circle()
-                        .fill(on ? stem.color(scheme, opacity: hovering ? 0.6 : 0.45) : palette.ink.opacity(hovering ? 0.08 : 0.05))
-                        .overlay(Circle().strokeBorder(stem.color(scheme, opacity: on ? 0.75 : 0), lineWidth: 1))
+                        .fill(palette.ink.opacity(hovering ? 0.1 : 0.07))
+                        .overlay(Circle().fill(stem.fill(scheme, opacity: on ? min(1, 0.15 + 1.1 * level + (hovering ? 0.15 : 0)) : 0)))
                     Image(systemName: solo ? "headphones" : stem.symbol)
                         .font(.system(size: (crowded ? 11 : compact ? 12 : 15) * (expanded ? 1 : 0.85), weight: .semibold))
                         .offset(y: lift)
-                        .foregroundStyle(on || solo ? palette.ink : palette.muted.opacity(0.4))
+                        .foregroundStyle(on ? stem.ink(scheme) : solo ? palette.ink : palette.muted.opacity(0.4))
                         // Option is a key held for a moment, so the swap runs at three times the usual speed.
                         .contentTransition(.symbolEffect(.replace, options: .speed(3)))
                     if !on, !solo {
@@ -329,7 +342,6 @@ private struct StemHalo: View {
                             .transition(.opacity)
                     }
                 }
-                .shadow(color: on ? stem.color(scheme, opacity: 0.6 * level) : .clear, radius: 8)
                 Text(adjusting || volume != 1 ? "\(Int((volume * 100).rounded()))%" : stem.name)
                     .contentTransition(.numericText(value: volume))
                     .monospacedDigit()
