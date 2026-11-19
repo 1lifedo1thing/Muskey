@@ -381,7 +381,7 @@ struct PitchControls: View {
 
 /// The single card: the record in the middle, with a ring around it that fills as the listen goes on, and from the
 /// first estimate the twelve keys around it by fifths. The title, the pills and the song go under it, and Lock Key and
-/// Stop Pitch Change along the bottom, with the keyboard shortcuts behind a ? button.
+/// Stop Pitch Change along the bottom, with a ? button for the shortcuts, which take the place of the whole card.
 struct HUDCard: View {
     @ObservedObject var model: HUDModel
     let palette: Palette
@@ -399,13 +399,7 @@ struct HUDCard: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
-                // The shortcuts take the place of the record and the keys, until the ? button is pressed again.
-                if model.shortcuts, showsKeys, let key = model.key {
-                    KeyHints(style: .list, tempo: model.speedAdjustable, save: model.savable, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
-                        .frame(width: ring, height: ring)
-                        .background(RoundedRectangle(cornerRadius: 22).fill(palette.ink.opacity(0.06)))
-                        .transition(.opacity)
-                } else if model.lyricsShown, showsKeys {
+                if model.lyricsShown, showsKeys {
                     LyricsPanel(state: model.lyrics, line: model.lyricLine, palette: palette, width: ring - 24, height: ring, downloading: model.lyricsDownloading,
                                 writing: model.lyricsWriting && !model.lyricsSkipped, waiting: model.lyricsWaiting, retry: model.onLyricsRetry, add: model.onLyricsEdit, edit: model.onLyricsEdit)
                         .transition(.opacity)
@@ -424,11 +418,11 @@ struct HUDCard: View {
                             .transition(.opacity)
                     }
                 }
-                // Over the lyrics or the shortcuts, which take the place of the record.
-                if (model.shortcuts || model.lyricsShown) && showsKeys {
+                // Over the lyrics, which take the place of the record.
+                if model.lyricsShown && showsKeys {
                     PlayFlashView(flash: model.playFlash, size: 72)
                 }
-                if !model.shortcuts, !model.lyricsShown, showsKeys, let key = model.key {
+                if !model.lyricsShown, showsKeys, let key = model.key {
                     FifthsRing(original: key, shift: model.shift, relative: model.relative, palette: palette, radius: radius,
                                innerRadius: Self.innerRadius, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative, select: model.onShift)
                         // The ring still has the last song's keys while a new song waits for its key.
@@ -472,7 +466,7 @@ struct HUDCard: View {
                 .transition(.opacity)
             }
 
-            if showsKeys, model.stemsAvailable, !model.shortcuts {
+            if showsKeys, model.stemsAvailable {
                 if model.stemsOpen {
                     StemsRow(model: model, palette: palette, compact: true, card: true)
                         .padding(.top, 14)
@@ -496,7 +490,7 @@ struct HUDCard: View {
                     PitchControls(model: model, palette: palette, small: true)
                         .modifier(FocusDim(on: true))
                     Spacer(minLength: 0)
-                    RoundButton(text: "?", help: "Keyboard Shortcuts", isOn: model.shortcuts, palette: palette) { model.shortcuts.toggle() }
+                    RoundButton(text: "?", help: "Shortcuts (?)", isOn: model.shortcuts, palette: palette) { model.shortcuts.toggle() }
                 }
                 .padding(.top, 14)
                 .transition(.opacity)
@@ -507,7 +501,6 @@ struct HUDCard: View {
         .padding(.bottom, showsKeys ? 12 : 18)
         // Wide enough for Lock Key and Stop Pitch Change on one line between the two 20-point ends of the bottom row.
         .frame(width: ring + 84)
-        .animation(.snappy(duration: 0.25), value: model.shortcuts)
         .animation(.snappy(duration: 0.25), value: model.lyricsShown)
         .animation(.snappy(duration: 0.3), value: model.relativeKeys)
     }

@@ -702,12 +702,11 @@ private struct StepButton: View {
 }
 
 /// The keys of the key picker. `band` is the short list on one line at the left of the hint bar of the wide layout,
-/// which has Lock Key and Stop Pitch Change at its right end. `list` is every key in a column, which the ? button of
-/// the single card shows in place of the keys around the record.
+/// which has Lock Key and Stop Pitch Change at its right end. Every key is on the shortcuts, which ? shows.
 struct KeyHints: View {
-    /// The band along the bottom of the wide layout, the list of shortcuts on the card, and the hints under the
-    /// instruments and vocals.
-    enum Style { case band, list, stems, footer }
+    /// The band along the bottom of the wide layout, the hints under the instruments and vocals, and karaoke's
+    /// footer.
+    enum Style { case band, stems, footer }
 
     var style = Style.band
     /// The lyrics show in place of the key row, and only the keys that work there are listed.
@@ -722,10 +721,6 @@ struct KeyHints: View {
     var restart = false
     /// The key row shows in karaoke, and the keys that change the key are listed.
     var karaokeKeys = false
-    /// A song in Muskey Player, whose tempo the brackets change.
-    var tempo = false
-    /// The song can be saved with its changes, with ⌘S.
-    var save = false
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -757,15 +752,6 @@ struct KeyHints: View {
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["L"], name: "lyrics"),
              Hint(keys: ["esc"], name: "close")]
-        case .list:
-            [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥"], name: otherMode), Hint(keys: ["⇧"], name: "♯ or ♭"),
-             Hint(keys: ["←", "→"], name: "fifth"),
-             Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["K"], name: "lock key"),
-             Hint(keys: ["L"], name: "lyrics"), Hint(keys: ["⌘", "K"], name: "karaoke"), Hint(keys: ["S"], name: "wide style"), Hint(keys: ["space"], name: "play or pause"),
-             Hint(keys: ["N", "P"], name: "next or previous song")]
-                + (tempo ? [Hint(keys: ["[", "]"], name: "tempo"), Hint(keys: ["="], name: "original tempo")] : [])
-                + (save ? [Hint(keys: ["⌘", "S"], name: "save song")] : []) + [
-             Hint(keys: ["esc"], name: "close")]
         case .stems:
             // The lyrics list V in their own hints, so the tray under them leaves it out.
             [Hint(keys: ["1–\(Stem.shown.count)"], name: "mute"), Hint(keys: ["⌥", "1–\(Stem.shown.count)"], name: "solo")]
@@ -774,27 +760,12 @@ struct KeyHints: View {
     }
 
     var body: some View {
-        Group {
-            switch style {
-            case .band, .stems, .footer:
-                HStack(spacing: style == .stems ? 11 : style == .footer ? 10 : 13) {
-                    ForEach(hints, id: \.name) { hint in
-                        HStack(spacing: 5) { keycaps(hint); name(hint) }
-                    }
-                }
-                .opacity(0.62)
-            case .list:
-                Grid(alignment: .leading, horizontalSpacing: 9, verticalSpacing: 6) {
-                    ForEach(Array(hints.enumerated()), id: \.offset) { _, hint in
-                        GridRow {
-                            keycaps(hint).gridColumnAlignment(.trailing)
-                            name(hint)
-                        }
-                    }
-                }
-                .opacity(0.8)
+        HStack(spacing: style == .stems ? 11 : style == .footer ? 10 : 13) {
+            ForEach(hints, id: \.name) { hint in
+                HStack(spacing: 5) { keycaps(hint); name(hint) }
             }
         }
+        .opacity(0.62)
         .fixedSize()
         .accessibilityElement(children: .combine)
     }

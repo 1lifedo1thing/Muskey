@@ -389,7 +389,7 @@ struct HUDView: View {
     private var cardStemsOpen: Bool { model.card && model.saving == nil && !focus && showsStrip && model.stemsAvailable && model.stemsOpen && !model.shortcuts }
 
     /// The large lyrics take the place of either layout.
-    private var focus: Bool { model.saving == nil && model.lyricsFocus && model.lyricsShown && showsStrip }
+    private var focus: Bool { model.saving == nil && !model.shortcuts && model.lyricsFocus && model.lyricsShown && showsStrip }
 
     /// The record shows while a song with a title plays, from the start of a listen.
     private var deckTrack: NowPlaying.Track? {
@@ -416,6 +416,11 @@ struct HUDView: View {
                            spinning: model.shown && (saving.left == nil || model.playing), palette: palette,
                            cancel: model.onSaveCancel, stop: model.onSaveStop)
                     .transition(.opacity)
+            } else if model.shortcuts {
+                // Every key and gesture, in place of the layout that they work on, until ?, Escape or the ✕ closes
+                // them. A key opens them, so they show at once.
+                ShortcutsSheet(card: model.card, otherMode: model.key.map { $0.minor != model.relative ? "major" : "minor" } ?? "major",
+                               hotkey: Preferences.shared.hotkey.symbols, palette: palette) { model.shortcuts = false }
             } else if focus {
                 lyricsFocus(palette)
             } else if model.card {
@@ -433,7 +438,8 @@ struct HUDView: View {
             if model.picking || karaokeTiming != nil {
                 HStack(spacing: 10) {
                     if model.picking {
-                        CloseButton(size: focus ? 16 : 14, action: model.onClose)
+                        // Over the shortcuts, the ✕ closes them and leaves the HUD open, as Escape does.
+                        CloseButton(size: focus ? 16 : 14, action: { if model.shortcuts { model.shortcuts = false } else { model.onClose() } })
                             .transition(.opacity)
                     }
                     if let timing = karaokeTiming {
@@ -449,7 +455,7 @@ struct HUDView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if showsStrip, model.saving == nil {
+            if showsStrip, model.saving == nil, !model.shortcuts {
                 HStack(spacing: 6) {
                     if !focus, model.savable {
                         RoundButton(symbol: "square.and.arrow.down", help: "Save the song with its changes (⌘S)", label: "Save", key: "⌘S",
@@ -597,6 +603,7 @@ struct HUDView: View {
                         .opacity(model.hintsOpacity)
                     Spacer(minLength: 0)
                     PitchControls(model: model, palette: palette, small: true)
+                    RoundButton(text: "?", help: "Shortcuts (?)", isOn: model.shortcuts, palette: palette) { model.shortcuts.toggle() }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.leading, 20)
@@ -2036,8 +2043,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === panel else { return event }
-            // A save in progress leaves the stems and the songs as they are.
-            if model.saving != nil { return nil }
+            // A save in progress leaves the stems and the songs as they are, and so do the shortcuts, which hide them.
+            if model.saving != nil || model.shortcuts { return nil }
             return adjust(event) || swipe(event) ? nil : event
         }
         nowPlaying.log = { [weak self] in self?.log($0) }
@@ -2076,6 +2083,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The keys over the record differ from the ones over the rest of the HUD.
         overRecordChange = model.$overRecord.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateHoverKeys() }
+        }
+        // A save and the shortcuts leave the HUD only the keys that end them.
+        lockChange = model.$saving.map { $0 != nil }.removeDuplicates().combineLatest(model.$shortcuts.removeDuplicates()).sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateHoverKeys() }
         }
         // Published before the change, so the new value comes from the publisher.
@@ -2857,6 +2868,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if Int(event.keyCode) == kVK_Escape { return self.handleKey(kVK_Escape, shift: false, option: false) ? nil : event }
                 return flags.contains(.command) && !Self.hudCommandKeys.contains(Int(event.keyCode)) ? event : nil
             }
+            // The shortcuts hide what the HUD's keys with Command change, so those keys wait until they close.
+            if let self, self.model.shortcuts, event.window === self.panel, flags.contains(.command) {
+                return Self.hudCommandKeys.contains(Int(event.keyCode)) ? nil : event
+            }
             // ⌘V plays the file or the link on the clipboard.
             if let self, self.model.picking, event.window === self.panel, flags.contains(.command), Int(event.keyCode) == kVK_ANSI_V {
                 let urls = Self.pastedURLs()
@@ -2912,6 +2927,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A save in progress leaves the HUD only Escape, which closes it while the save goes on.
         if model.saving != nil {
             if code == kVK_Escape { dismiss() }
+            return true
+        }
+        // ? shows every key and gesture in place of the HUD, and closes them again. While they show, Escape closes
+        // them too, and the other keys do nothing, since what they change is hidden under them.
+        if code == kVK_ANSI_Slash, shift {
+            model.shortcuts.toggle()
+            return true
+        }
+        if model.shortcuts {
+            if code == kVK_Escape { model.shortcuts = false }
             return true
         }
         if !shift, handleSongKey(code, option: option) { return true }
@@ -4264,7 +4289,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForSave = false
     private var hoverKeysForIdle = false
     private var hoverKeysForRecord = false
+    /// A save leaves the HUD only Escape, and the shortcuts only Escape and ?, which close them.
+    private var hoverKeysLock = HoverKeysLock.none
+    private enum HoverKeysLock { case none, saving, shortcuts }
     private var overRecordChange: AnyCancellable?
+    private var lockChange: AnyCancellable?
 
     /// Open File… or Open URL… is open. Its text would otherwise reach the keys over the HUD, which are global
     /// hotkeys, whenever the pointer rests on the HUD.
@@ -4273,6 +4302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateHoverKeys() {
+        let lock: HoverKeysLock = model.saving != nil ? .saving : model.shortcuts ? .shortcuts : .none
         let wanted = model.hovering && model.shown && model.key != nil && (model.picking || model.phase == .done || model.phase == .listening)
             && lyricsEditor == nil && !dialogOpen
         // The lyrics take fewer keys than the key row, so the keys change when the panel does.
@@ -4280,7 +4310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable || hoverKeysForIdle != (model.phase == .idle)
-                || hoverKeysForRecord != model.overRecord))
+                || hoverKeysForRecord != model.overRecord || hoverKeysLock != lock))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -4294,8 +4324,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForSave = model.savable
         hoverKeysForIdle = model.phase == .idle
         hoverKeysForRecord = model.overRecord
+        hoverKeysLock = lock
+        if lock != .none {
+            let keys = lock == .saving ? [(kVK_Escape, 0)] : [(kVK_Escape, 0), (kVK_ANSI_Slash, shiftKey)]
+            hoverKeys = keys.compactMap { code, modifiers in
+                try? HotKey(keyCode: code, modifiers: modifiers) { [weak self] in self?.handleKey(code, shift: modifiers & shiftKey != 0, option: false) }
+            }
+            return
+        }
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
-        var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) }
+        // ? shows the shortcuts.
+        var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + [(kVK_ANSI_Slash, shiftKey)]
         if model.stemsAvailable {
             // V mutes the vocals or plays them again, in every layout.
             keys += Self.stemKeys.flatMap { code in [(code, 0), (code, optionKey)] } + [(kVK_ANSI_0, 0), (kVK_ANSI_V, 0)]
@@ -4744,18 +4783,18 @@ extension EnvironmentValues {
     var long = track
     long.title = "Paper Lanterns (Extended Version, Recorded Live at the Harbour Hall)"
     let songs: [(String, NowPlaying.Track?, NSImage?)] = [("", nil, nil), ("-song", track, cover), ("-nocover", track, nil), ("-long", long, cover)]
-    // The single card for the states that change it most, with a song, and once with the shortcuts in place of the keys.
+    // The single card for the states that change it most, with a song, and the shortcuts once from each layout.
     let cardStates = ["listening-start", "listening-Csm", "done-Csm+2", "picking-Csm-3", "picking-A-to-Cm", "listening-waiting-Cm", "silent"]
     for (name, phase, result, progress, shift, picking, relative, keep) in states {
         for (suffix, song, artwork) in songs {
-        for layout in ["", "-card", "-card-shortcuts"] {
+        for layout in ["", "-card", "-card-shortcuts", "-shortcuts"] {
             if layout.isEmpty {
                 // Only a few states with a song, and the cover-less record once.
                 if song != nil, !["listening-start", "done-Csm+2", "picking-Csm-3", "picking-A-to-Cm", "listening-waiting-Cm"].contains(name) { continue }
                 if song != nil, artwork == nil || suffix == "-long", name != "picking-Csm-3" { continue }
             } else {
                 guard cardStates.contains(name), suffix == "-song" || (suffix.isEmpty && ["listening-start", "silent"].contains(name)) else { continue }
-                if layout == "-card-shortcuts", name != "picking-Csm-3" { continue }
+                if layout.hasSuffix("-shortcuts"), name != "picking-Csm-3" { continue }
             }
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
@@ -4767,7 +4806,7 @@ extension EnvironmentValues {
             let karaokeSong = variant == "-lyrics-focus" && ["-long", "-nocover"].contains(suffix)
             // The glyphs on the record once more over a plain label, the lightest cover there is.
             let lightCover = variant.hasPrefix("-skip") && suffix == "-nocover"
-            if !variant.isEmpty, !["picking-Csm-3", "picking-A-to-Cm"].contains(name) || (suffix != "-song" && !noRecord && !karaokeSong && !lightCover) || layout == "-card-shortcuts" { continue }
+            if !variant.isEmpty, !["picking-Csm-3", "picking-A-to-Cm"].contains(name) || (suffix != "-song" && !noRecord && !karaokeSong && !lightCover) || layout.hasSuffix("-shortcuts") { continue }
             if variant.hasPrefix("-lyrics") || variant.hasPrefix("-stems"), name != "picking-Csm-3" { continue }
         for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
             let model = HUDModel()
@@ -4828,8 +4867,8 @@ extension EnvironmentValues {
                 // Made-up levels of a loud passage.
                 if variant != "-stems-waiting" { model.stemMeters.levels = [0.13, 0.2, 0.025, 0.16, 0.05, 0.07, 0.09] }
             }
-            model.card = !layout.isEmpty
-            model.shortcuts = layout == "-card-shortcuts"
+            model.card = layout.hasPrefix("-card")
+            model.shortcuts = layout.hasSuffix("-shortcuts")
             model.phase = phase
             model.key = result.flatMap(DetectedKey.init)
             model.progress = progress
