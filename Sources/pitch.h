@@ -117,6 +117,8 @@ uint64_t ps_stems_rewrite(PSShifter *shifter, uint64_t generation, uint64_t from
 uint32_t ps_stems_seek(PSShifter *shifter);
 // The moves asked for so far, and in `answered` the last one that the writer answered.
 uint32_t ps_stems_seeks(PSShifter *shifter, uint32_t *answered);
+// The writer found the move `seek`, and the stems are of the new place from frame `from` on. An answer while a restart
+// is pending, or for a generation that a restart replaced, doesn't count: the next generation's writer answers it.
 void ps_stems_seek_answer(PSShifter *shifter, uint32_t seek, uint64_t from);
 // Pauses so far, and the last one: the captured song left out its silence, and from captured frame `to` on, it carries
 // on from frame `from`. The writer of cached stems writes them again from `to`, then calls ps_stems_skip_mapped with the

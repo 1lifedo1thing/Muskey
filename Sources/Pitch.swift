@@ -92,10 +92,13 @@ final class PitchChanger {
     /// The app moves the song to `target` seconds while the stems come from the cache, or are about to: the output goes
     /// silent until the stems of the new place are there, and stems separated as the song plays give way to the cache.
     func cachedSeek(to target: Double) {
+        stemsFeed?.moved(to: target)
         guard let shifter, let stemsFeed, stemsOn else { return }
         stemsFeed.seekTarget = target
-        _ = ps_stems_seek(shifter)
+        // Stems separated as the song plays start over from the cache, which finds the move: the restart comes first,
+        // so that the separation doesn't answer the move in between.
         if ps_stems_cached(shifter) == 0 { ps_stems_restart(shifter) }
+        _ = ps_stems_seek(shifter)
     }
 
     /// Called on the main thread when the stems can't be separated; the stems are back on by then.

@@ -1069,6 +1069,11 @@ struct PSShifter {
             skipMadeTo.store(skipTo, std::memory_order_relaxed);
             skipsMade.fetch_add(1, std::memory_order_release);
         }
+        if (!hold && holding && cachedNow && aligned) {
+            // Cached stems in line with the song carry on in line with it: the output read on into the stems of the
+            // song to come while it faded out, and the song carries on from where it stopped.
+            jumpPending = jumpToLive = true;
+        }
         holding = hold;
         quietFrames = quiet ? quietFrames + frames : 0;
         if (!quiet) silentRun = 0;
@@ -1311,6 +1316,10 @@ uint32_t ps_stems_seeks(PSShifter *s, uint32_t *answered) {
 }
 
 void ps_stems_seek_answer(PSShifter *s, uint32_t seek, uint64_t from) {
+    // A move asked with a restart is for the next generation's writer to find, and the output waits in silence until
+    // then: the stems separated as the song plays would answer it at once, and the song would play with every stem.
+    if (s->restartStems.load(std::memory_order_acquire)
+        || s->stemsWriting.load(std::memory_order_acquire) != s->stemsGeneration.load(std::memory_order_acquire)) return;
     s->seekFrom.store(from, std::memory_order_relaxed);
     s->seeksAnswered.store(seek, std::memory_order_release);
 }

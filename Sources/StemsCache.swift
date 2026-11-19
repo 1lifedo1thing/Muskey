@@ -354,13 +354,21 @@ final class StemsFeed: @unchecked Sendable {
     let path: String
     private let lock = NSLock()
     private var _speed: Double
-    private var _hint: () -> Double? = { nil }
+    private var _hint: (() -> Double?)?
     private var _seekTarget: Double?
+    private var seekAsked = -Double.infinity
     private var _lost = false
+    /// Seconds since 1970, the clock of the player's reports; a self-test runs its own.
+    private let clock: () -> Double
+    /// Where the player last said the song was, at a moment, moving on at a rate: its report, or a move that it made
+    /// since, which Now Playing may report seconds later.
+    private var place: (seconds: Double, at: Double, rate: Double)?
+    private var rate = 0.0
 
-    init(cache: StemsCache, path: String, speed: Double) {
+    init(cache: StemsCache, path: String, speed: Double, clock: @escaping () -> Double = { Date().timeIntervalSince1970 }) {
         self.cache = cache
         self.path = path
+        self.clock = clock
         _speed = speed
     }
 
@@ -370,25 +378,50 @@ final class StemsFeed: @unchecked Sendable {
         set { lock.withLock { _speed = newValue } }
     }
 
-    /// Seconds into the song that the player is at now, as it last reported, for finding the song in the cache.
+    /// Seconds into the song that the player is at now, for finding the song in the cache: from the player's last
+    /// report or move, or from `hint` when a self-test sets it.
     var hint: () -> Double? {
-        get { lock.withLock { _hint } }
+        get {
+            lock.withLock {
+                if let _hint { return _hint }
+                let place = place, clock = clock
+                return { place.map { $0.seconds + (clock() - $0.at) * $0.rate } }
+            }
+        }
         set { lock.withLock { _hint = newValue } }
     }
 
-    /// The player's report of the song: where it was, when, and at what rate.
+    /// The player's report of the song: where it was, when, and at what rate. A report from before the player's last
+    /// move is older than the move.
     func report(elapsed: Double?, timestamp: Double?, rate: Double?) {
-        guard let elapsed else { return hint = { nil } }
-        hint = {
-            guard let timestamp, let rate, rate > 0 else { return elapsed }
-            return elapsed + (Date().timeIntervalSince1970 - timestamp) * rate
+        guard let elapsed else { return }
+        lock.withLock {
+            let at = timestamp ?? clock()
+            self.rate = rate ?? 0
+            if let place, place.at > at { return }
+            self.place = (elapsed, at, self.rate)
         }
+    }
+
+    /// The player moved the song to `seconds`, now.
+    func moved(to seconds: Double) {
+        lock.withLock { place = (seconds, clock(), rate) }
     }
 
     /// The place that the app moved the song to last, in seconds, set before the move is asked of the shifter.
     var seekTarget: Double? {
         get { lock.withLock { _seekTarget } }
-        set { lock.withLock { _seekTarget = newValue } }
+        set {
+            lock.withLock {
+                _seekTarget = newValue
+                seekAsked = clock()
+            }
+        }
+    }
+
+    /// The app asked for a move to `seconds` a moment ago, which the player's own word of the move repeats.
+    func asked(_ seconds: Double) -> Bool {
+        lock.withLock { _seekTarget.map { abs($0 - seconds) < 0.05 } == true && clock() - seekAsked < 1 }
     }
 
     /// The cache didn't line up with what the player plays, and the stems are separated as the song plays again.
@@ -441,6 +474,8 @@ final class CachedStemsWriter {
     private var readers: [Double: SincReader] = [:]
     /// The answer to a move, given once the stems of the new place are written.
     private var answer: (number: UInt32, from: UInt64)?
+    /// The pauses mapped so far, told to the shifter once the stems from where the song carries on are written.
+    private var mapped: (skips: UInt32, from: UInt64)?
     var log: (String) -> Void = { _ in }
 
     /// How much of the song a search compares, how far ahead the stems are written, and how often they are checked.
@@ -483,6 +518,15 @@ final class CachedStemsWriter {
         }
         if align(now) == .lost { return .lost }
         writeAhead(now)
+        // The output reads the stems of the new place once they are written, and not before.
+        if let answer, written > answer.from {
+            ps_stems_seek_answer(shifter, answer.number, answer.from)
+            self.answer = nil
+        }
+        if let mapped, written > mapped.from {
+            ps_stems_skip_mapped(shifter, mapped.skips)
+            self.mapped = nil
+        }
         return .going
     }
 
@@ -494,13 +538,18 @@ final class CachedStemsWriter {
         var from: UInt64 = 0, to: UInt64 = 0
         let skips = ps_stems_skips(shifter, &from, &to)
         guard skips != skipsSeen else { return }
+        let next = skips == skipsSeen &+ 1
+        skipsSeen = skips
+        // Nothing to write again: the output may read on at once, or once the stems of a pause before are written.
+        var mappedNow = true
         defer {
-            skipsSeen = skips
-            ps_stems_skip_mapped(shifter, skips)
+            if mappedNow {
+                if mapped == nil { ps_stems_skip_mapped(shifter, skips) } else { mapped?.skips = skips }
+            }
         }
         // A pause that started with the song's silence left nothing out.
-        guard let span = span(at: from), to != from || skips != skipsSeen &+ 1 else { return }
-        guard skips == skipsSeen &+ 1, to > from else {
+        guard let span = span(at: from), to != from || !next else { return }
+        guard next, to > from else {
             // Pauses came faster than they were read, so where the song carries on is found again in silence.
             log("cached stems: pauses came too fast, finding the song again")
             seek = (ps_stems_seek(shifter), nil, ps_captured_written(shifter))
@@ -510,6 +559,8 @@ final class CachedStemsWriter {
         let at = ps_stems_rewrite(shifter, generation, to, 0)
         guard at > 0 else { return }
         place(Span(from: to, mapping: mapping, fade: 0), writingFrom: at)
+        mapped = (skips, to)
+        mappedNow = false
     }
 
     private func takeSeeks(_ now: UInt64) {
@@ -729,11 +780,6 @@ final class CachedStemsWriter {
                 pointers.withUnsafeBufferPointer { ps_stems_write(shifter, $0.baseAddress!, count) }
             }
             written += UInt64(count)
-        }
-        // The output comes back once the stems of the new place are written, and not before.
-        if let answer {
-            ps_stems_seek_answer(shifter, answer.number, answer.from)
-            self.answer = nil
         }
     }
 

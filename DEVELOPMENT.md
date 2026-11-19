@@ -116,7 +116,9 @@ The first time that the stems are used on a song that Muskey Player plays, Muske
 
 From then on, the stems of that song come from the cache. Muskey finds where the song is in the cache by correlation: it compares the last 100 ms that the tap heard with the song as the cache has it, read at the speed that Muskey Player plays it, around the place that Muskey Player reports. The stems are then written a second ahead of the song, lined up with what the tap hears, and they take over at once with a short crossfade, with no step back and no countdown. Every half second, Muskey checks that the song is still where it expects, and follows a change of speed or a gap in the tap with a 10 ms crossfade.
 
-A seek, karaoke's start over and a move during a pause are silent until the stems of the new place play, about 0.2 seconds after the key. When the song can't be found where the cache has it for 3 seconds, the stems are separated as the song plays again.
+A seek, karaoke's start over and a move during a pause are silent until the stems of the new place are written and play. The first of these moves after the cache is ready, while the stems are still separated as the song plays, starts the stems over from the cache. When the song can't be found where the cache has it for 3 seconds, the stems are separated as the song plays again.
+
+Muskey Player tells Muskey of every move of its song, including the ones from Control Center's scrubber and from Previous, which starts the song over. Now Playing reports some of these moves seconds later, and the stems would look for the song in the wrong place until then.
 
 ### Whisper
 

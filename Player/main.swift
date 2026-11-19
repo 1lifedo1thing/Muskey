@@ -13,6 +13,8 @@
 //   ready <seconds>   the song plays, and lasts that long
 //   failed <reason>   the song can't be played
 //   ended             the song played to its end
+//   moved <seconds>   the song moved to that place, for any move: Muskey's, Control Center's scrubber, Previous that
+//                     starts the song over, or play at the end. Now Playing reports some of these seconds later.
 //   next, previous    the next or previous track command came, from the media keys, Control Center or Muskey's HUD;
 //                     Muskey keeps the songs, so it opens the other one. Previous more than 3 seconds into a song
 //                     starts it over, as music apps do, and says nothing.
@@ -196,7 +198,10 @@ final class Player: NSObject, NSApplicationDelegate {
         guard let item = player.currentItem else { return .noActionableNowPlayingItem }
         if playing {
             // Play at the end starts the song over, as music apps do.
-            if item.currentTime() >= item.duration - CMTime(seconds: 0.2, preferredTimescale: 600) { player.seek(to: .zero) }
+            if item.currentTime() >= item.duration - CMTime(seconds: 0.2, preferredTimescale: 600) {
+                player.seek(to: .zero)
+                say("moved 0.000")
+            }
             player.play()
         } else {
             player.pause()
@@ -213,6 +218,7 @@ final class Player: NSObject, NSApplicationDelegate {
     }
 
     private func seek(to seconds: Double) {
+        say(String(format: "moved %.3f", max(0, seconds)))
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
             DispatchQueue.main.async { self?.report() }

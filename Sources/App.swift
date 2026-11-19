@@ -1922,6 +1922,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshStatus()
             self?.syncSpeed()
         }
+        filePlayer.onMove = { [weak self] in self?.playerMoved(to: $0) }
         stemsCache.log = { [weak self] in self?.log($0) }
         stemsCache.live = { [separating = pitch.separatingLive] in separating.value }
         stemsCache.onDone = { [weak self] path, ok in
@@ -3472,6 +3473,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the moment that plays, so a seek or karaoke's start over is instant. The whole song is separated in the
     /// background the first time that its stems are used, while the stems are separated as it plays.
     private var cachedStems: Bool { playsInFilePlayer && pitch.instantSeeks }
+
+    /// Muskey Player moved its song, for Muskey's seek or Control Center's scrubber, or Previous that starts it over.
+    /// Now Playing reports some of these seconds later, so the stems from the cache learn of the move from the player,
+    /// and wait for the new place when nobody asked them.
+    private func playerMoved(to seconds: Double) {
+        guard playsInFilePlayer, let feed = pitch.stemsFeed else { return }
+        feed.moved(to: seconds)
+        // A move during the pause is known from here, before Now Playing reports it.
+        if let song = pausedAt?.0 { pausedAt = (song, seconds) }
+        if model.stemsEngaged, cachedStems, !feed.asked(seconds) {
+            log(String(format: "Muskey Player moved the song to %.1f s", seconds))
+            pitch.cachedSeek(to: seconds)
+        }
+    }
 
     private func syncStemsCache() {
         let path = playsInFilePlayer ? filePlayer.current?.path : nil

@@ -63,6 +63,8 @@ final class FilePlayer {
     var log: (String) -> Void = { _ in }
     /// Muskey Player starts or stops having a song, for Stop Playing in the menu.
     var onChange: () -> Void = {}
+    /// Muskey Player moved its song to a place, in seconds, for any move. Now Playing reports some of them seconds later.
+    var onMove: (Double) -> Void = { _ in }
 
     /// Muskey Player has a song, playing or paused. Without one, the songs that it plays next start at their tempo.
     private(set) var hasSong = false {
@@ -313,6 +315,8 @@ final class FilePlayer {
             show(.unplayable(name: opening.map { $0.isFileURL ? $0.lastPathComponent : ($0.host() ?? $0.absoluteString) } ?? "Song"))
         } else if line == "ended", index + 1 < items.count {
             skip(1)
+        } else if line.hasPrefix("moved "), let seconds = Double(line.dropFirst(6)) {
+            onMove(seconds)
         } else if line == "next" || line == "previous" {
             log("\(line) song in Muskey Player")
             skip(line == "next" ? 1 : -1)

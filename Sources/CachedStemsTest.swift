@@ -68,6 +68,11 @@ enum CachedStemsTest {
         return try StemsCache(url: url)
     }
 
+    /// The time of a run, in seconds of the song that the tap played, for the player's reports.
+    final class Clock {
+        var now = 0.0
+    }
+
     /// The stand-in for Muskey Player, the shifter, and the separation thread's part, for one run.
     final class Harness {
         let shifter: OpaquePointer
@@ -85,6 +90,12 @@ enum CachedStemsTest {
         var captures: [(captured: UInt64, tap: Int, count: Int)] = []
         var writer: CachedStemsWriter?
         var generation: UInt64 = 0
+        /// The whole song is in the cache: a generation that starts at the moment that plays takes its stems from there.
+        /// Until then, and once the cache didn't line up, the stand-in for the separation writes them as the song plays.
+        var cacheReady = true
+        /// Where the stand-in for the separation writes next, and the callbacks since its generation began.
+        var separated: UInt64 = 0
+        var separating = 0
         /// A song file in place of the song made of functions, for `--stems-cache`.
         var file: FileTap?
         /// How far the writer's place in the cache was from the song's, in frames of the cache, at each check.
@@ -111,6 +122,17 @@ enum CachedStemsTest {
             silentUntil = now + silence
         }
 
+        /// Seconds of the song that captured frame `frame` came from, nil while the tap was silent.
+        func time(ofCaptured frame: UInt64) -> Double? {
+            var low = 0, high = captures.count
+            while low < high {
+                let middle = (low + high) / 2
+                if captures[middle].captured + UInt64(captures[middle].count) <= frame { low = middle + 1 } else { high = middle }
+            }
+            guard low < captures.count, captures[low].captured <= frame else { return nil }
+            return times[captures[low].tap + Int(frame - captures[low].captured)]
+        }
+
         func checkMapping() {
             let frame = ps_captured_written(shifter) - UInt64(CachedStemsTest.rate * 0.05)
             guard let capture = captures.last(where: { $0.captured <= frame && frame < $0.captured + UInt64($0.count) }),
@@ -128,20 +150,27 @@ enum CachedStemsTest {
         var takeover: Double?
         var spins: UInt32
         var countdown: Bool
+        /// The last moment that a countdown showed.
+        var counted: Double?
         var lost: Bool
         var errors: [Double]
         var delays: [Double]
     }
 
-    static func render(_ song: Song, cache: StemsCache, start: Double, speed: Double, seconds: Double, hintError: Double = 0.4,
-                       file: FileTap? = nil, events: [(at: Double, run: (Harness) -> Void)]) -> Run {
-        let chunk = 512
+    /// Plays the song through the shifter in callbacks of `chunk` frames, with the writer stepped after every `every`
+    /// callbacks, as the separation thread may run less often than the IOProc.
+    static func render(_ song: Song, cache: StemsCache, start: Double, speed: Double, seconds: Double, hintError: Double? = 0.4,
+                       file: FileTap? = nil, chunk: Int = 512, every: Int = 1, events: [(at: Double, run: (Harness) -> Void)]) -> Run {
+        let events = events.sorted { $0.at < $1.at }
         let shifter = ps_create(rate, 0, seconds)!
         defer { ps_destroy(shifter) }
-        let feed = StemsFeed(cache: cache, path: "self-test", speed: speed)
+        let clock = Clock()
+        let feed = StemsFeed(cache: cache, path: "self-test", speed: speed) { clock.now }
         let harness = Harness(shifter: shifter, feed: feed, song: song, position: start, speed: speed)
         harness.file = file
-        feed.hint = { [unowned harness] in harness.position + hintError }
+        // Without an error to put in the hint, the player's reports are what the app gets: one at the start, and any
+        // that the events give.
+        if let hintError { feed.hint = { [unowned harness] in harness.position + hintError } } else { feed.report(elapsed: start, timestamp: 0, rate: speed) }
 
         let input = AudioBufferList.allocate(maximumBuffers: 1)
         let output = AudioBufferList.allocate(maximumBuffers: 1)
@@ -152,10 +181,26 @@ enum CachedStemsTest {
         output[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(chunk * 8), mData: outData)
 
         var full: [Float] = [], muted: [Float] = []
-        var takeover: Double?, countdown = false, lost = false
+        var takeover: Double?, countdown = false, counted: Double?, lost = false
         var frame = 0, next = 0
-        for _ in 0 ..< Int(rate * seconds) / chunk {
+        // The separation as the song plays: 2 seconds before its first stems, as the first window takes, then each
+        // captured frame's stems from the song itself, as a perfect separation would give them.
+        let most = 4096, firstWindow = Int(rate * 2) / chunk
+        let planes = UnsafeMutablePointer<Float>.allocate(capacity: Int(PS_STEMS) * 2 * most)
+        planes.initialize(repeating: 0, count: Int(PS_STEMS) * 2 * most)
+        defer { planes.deallocate() }
+        let pointers: [UnsafePointer<Float>?] = (0 ..< Int(PS_STEMS) * 2).map { UnsafePointer(planes + $0 * most) }
+        for call in 0 ..< Int(rate * seconds) / chunk {
+            // What the app sees after each callback and the separation's round that may follow it.
+            defer {
+                if takeover == nil, ps_stems_started(shifter) != 0, ps_stems_cached(shifter) != 0 { takeover = Double(frame) / rate }
+                if ps_stems_waiting(shifter) >= 0 {
+                    countdown = true
+                    counted = Double(frame) / rate
+                }
+            }
             harness.now = Double(frame) / rate
+            clock.now = harness.now
             while next < events.count, events[next].at <= harness.now {
                 events[next].run(harness)
                 next += 1
@@ -186,28 +231,59 @@ enum CachedStemsTest {
             frame += chunk
 
             // The separation thread: cached stems for each generation.
+            guard call % every == every - 1 else { continue }
             var start: UInt64 = 0
             let current = ps_stems_generation(shifter, &start)
-            if current != harness.generation {
+            if current != harness.generation, current != 0 {
                 harness.generation = current
-                harness.writer = CachedStemsWriter(shifter: shifter, rate: rate, feed: feed, generation: current, start: start)
-                if ProcessInfo.processInfo.environment["MUSKEY_TEST_LOG"] != nil {
-                    harness.writer?.log = { [unowned harness] in print(String(format: "      %.3f s  ", harness.now) + $0) }
+                if harness.cacheReady, !feed.lost, start + UInt64(rate) > ps_captured_written(shifter) {
+                    harness.writer = CachedStemsWriter(shifter: shifter, rate: rate, feed: feed, generation: current, start: start)
+                    if ProcessInfo.processInfo.environment["MUSKEY_TEST_LOG"] != nil {
+                        harness.writer?.log = { [unowned harness] in print(String(format: "      %.3f s  ", harness.now) + $0) }
+                    }
+                    ps_stems_begin_cached(shifter, current, start)
+                } else {
+                    harness.writer = nil
+                    harness.separated = start
+                    harness.separating = 0
+                    ps_stems_begin(shifter, current, start)
                 }
-                ps_stems_begin_cached(shifter, current, start)
             }
-            if let writer = harness.writer, writer.step() == .lost {
-                lost = true
-                harness.writer = nil
+            if let writer = harness.writer {
+                if writer.step() == .lost {
+                    lost = true
+                    feed.markLost()
+                    harness.writer = nil
+                    ps_stems_restart(shifter)
+                }
+            } else if harness.generation != 0 {
+                // A move asked for while the song is separated as it plays has nothing to wait for.
+                var answered: UInt32 = 0
+                let asked = ps_stems_seeks(shifter, &answered)
+                if asked != answered { ps_stems_seek_answer(shifter, asked, 0) }
+                harness.separating += every
+                let written = ps_captured_written(shifter)
+                let room = harness.separating > firstWindow && written > harness.separated
+                    ? min(ps_stems_room(shifter, harness.separated), Int(written - harness.separated)) : 0
+                for at in stride(from: 0, to: room, by: most) {
+                    let n = min(most, room - at)
+                    for i in 0 ..< n {
+                        let t = harness.time(ofCaptured: harness.separated + UInt64(at + i))
+                        for (stem, value) in [(Stem.drums, t.map(song.drums)), (.piano, t.map(song.piano)), (.vocals, t.map(song.vocals))] {
+                            planes[stem.rawValue * 2 * most + i] = Float(value ?? 0)
+                            planes[(stem.rawValue * 2 + 1) * most + i] = Float(value ?? 0)
+                        }
+                    }
+                    pointers.withUnsafeBufferPointer { ps_stems_write(shifter, $0.baseAddress!, n) }
+                }
+                harness.separated += UInt64(room)
             }
-            if takeover == nil, ps_stems_started(shifter) != 0, ps_stems_cached(shifter) != 0 { takeover = Double(frame) / rate }
-            if ps_stems_waiting(shifter) >= 0 { countdown = true }
         }
         var pairs: UnsafePointer<Float>?
         let count = ps_recording(shifter, &pairs)
         let recorded = pairs.map { Array(UnsafeBufferPointer(start: $0, count: count * 2)) } ?? []
         return Run(input: stride(from: 0, to: recorded.count, by: 2).map { recorded[$0] }, full: full, muted: muted, takeover: takeover,
-                   spins: ps_spins(shifter), countdown: countdown, lost: lost, errors: harness.errors, delays: harness.delays)
+                   spins: ps_spins(shifter), countdown: countdown, counted: counted, lost: lost, errors: harness.errors, delays: harness.delays)
     }
 
     /// The lag of the shifter's input behind `expected` that matches best in the window, and how far the input is from
@@ -402,9 +478,10 @@ enum CachedStemsTest {
 
         // Moves while the stems from the cache play: from about 32 s to 60 s, the player taking the move 30 ms later with
         // 20 ms of silence, then back to 10 s. The output goes quiet at once and comes back with the stems of the new
-        // place, and the vocals never play.
-        do {
-            let run = render(song, cache: cache, start: 30, speed: 1, seconds: 8, events: [
+        // place, and the vocals never play. The same with callbacks of 128 and 2048 frames, and the writer stepped after
+        // every third one.
+        for (chunk, every) in [(512, 1), (128, 3), (2048, 3)] {
+            let run = render(song, cache: cache, start: 30, speed: 1, seconds: 8, chunk: chunk, every: every, events: [
                 (1, { ps_stems_set_gain($0.shifter, Int32(Stem.vocals.rawValue), 0); ps_stems_enable($0.shifter, 1) }),
                 (3, { $0.announce(60) }), (3.03, { $0.jump(to: 60, silence: 0.02) }), (4.5, { $0.checkMapping() }),
                 (5, { $0.announce(10) }), (5.03, { $0.jump(to: 10, silence: 0.02) }), (7.5, { $0.checkMapping() }),
@@ -417,15 +494,20 @@ enum CachedStemsTest {
             let error = run.errors.map(abs).max() ?? .infinity
             report(run.spins == 0 && !run.lost && first.lag == live.lag && second.lag == live.lag && first.residual < -30 && second.residual < -30
                    && leak < 0.01 * before && back.allSatisfy { $0 < 0.4 } && error < 1,
-                   String(format: "cached seek     the stems of 60 s back %.0f ms after the move, of 10 s %.0f ms after, lag %d and %d, %.0f and %.0f dB off, vocals at %.1f%%, %.2f frames off, %d spins",
-                          back[0] * 1000, back[1] * 1000, first.lag, second.lag, first.residual, second.residual, leak / before * 100, error, run.spins))
+                   String(format: "%@ the stems of 60 s back %.0f ms after the move, of 10 s %.0f ms after, lag %d and %d, %.0f and %.0f dB off, vocals at %.1f%%, %.2f frames off, %d spins",
+                          chunk == 512 ? "cached seek    " : String(format: "cached seek %-4d", chunk), back[0] * 1000, back[1] * 1000, first.lag, second.lag, first.residual, second.residual, leak / before * 100, error, run.spins))
         }
 
         // A pause while the stems from the cache play, reported as the song goes silent, then the way players report it:
-        // a quarter second late, and the resume a quarter second early. The output is quiet while paused, and carries
+        // a tenth of a second late, or a quarter, and the resume as early. The output is quiet while paused, and carries
         // on from where the song stopped, at the lag it had.
-        for (name, silence, flag, clear, sound) in [("cached pause   ", 3.0, 3.0, 5.0, 5.0), ("cached late    ", 3.0, 3.25, 4.75, 5.0)] {
-            let run = render(song, cache: cache, start: 30, speed: 1, seconds: 8, events: [
+        // The same with callbacks of 128 and 2048 frames, and the writer stepped after every third one.
+        let pauses = [("cached pause", 3.0, 3.0, 5.0, 5.0), ("cached 0.1 s", 3.0, 3.1, 4.9, 5.0), ("cached late", 3.0, 3.25, 4.75, 5.0)]
+        for (pause, (chunk, every)) in pauses.flatMap({ pause in [(512, 1), (128, 3), (2048, 3)].map { (pause, $0) } }) {
+            let (base, silence, flag, clear, sound) = pause
+            let name = chunk == 512 ? base.padding(toLength: 15, withPad: " ", startingAt: 0)
+                : base.padding(toLength: 12, withPad: " ", startingAt: 0) + String(format: "%-4d", chunk)
+            let run = render(song, cache: cache, start: 30, speed: 1, seconds: 8, chunk: chunk, every: every, events: [
                 (1, { ps_stems_set_gain($0.shifter, Int32(Stem.vocals.rawValue), 0); ps_stems_enable($0.shifter, 1) }),
                 (silence, { $0.playing = false }), (flag, { ps_set_paused($0.shifter, 1) }),
                 (clear, { ps_set_paused($0.shifter, 0) }), (sound, { $0.playing = true }), (7, { $0.checkMapping() }),
@@ -435,12 +517,28 @@ enum CachedStemsTest {
             let quiet = (run.input[Int(rate * (flag + 0.15)) ..< Int(rate * (sound - 0.05))].map { Double($0 * $0) }.reduce(0, +)
                 / (rate * (sound - flag - 0.2))).squareRoot()
             let after = match(run.input, run.muted, from: sound + 0.2, to: 7.9)
-            let low = lowest(run.input, run.muted, lag: live.lag, from: sound + 0.15, to: 7.9)
+            let low = lowest(run.input, run.muted, lag: after.lag, from: sound + 0.15, to: 7.9)
             let leak = vocals(run.input, from: 1.4, to: 7.9), before = vocals(run.input, from: 0.3, to: 0.9)
             let error = run.errors.map(abs).max() ?? .infinity
             report(quiet < 0.005 && after.lag <= live.lag && steady.lag == live.lag && after.residual < -30 && low > 0.7 && leak < 0.01 * before && error < 1,
                    String(format: "%@ %.4f level while paused, lag %d then %d, %.0f dB off after it, lowest %.0f%%, vocals at %.1f%%, %.2f frames off",
                           name, quiet, steady.lag, after.lag, after.residual, low * 100, leak / before * 100, error))
+        }
+
+        // Four pauses in a row, each reported as the song goes silent: the stems stay in line with the song after each.
+        do {
+            var events: [(at: Double, run: (Harness) -> Void)] = [
+                (1, { ps_stems_set_gain($0.shifter, Int32(Stem.vocals.rawValue), 0); ps_stems_enable($0.shifter, 1) }),
+            ]
+            for at in [2.0, 2.8, 3.6, 4.4] {
+                events += [(at, { $0.playing = false; ps_set_paused($0.shifter, 1) }), (at + 0.3, { ps_set_paused($0.shifter, 0); $0.playing = true })]
+            }
+            let run = render(song, cache: cache, start: 30, speed: 1, seconds: 7, events: events)
+            let live = match(run.input, run.full, from: 0.3, to: 0.95)
+            let after = match(run.input, run.muted, from: 5, to: 6.9)
+            let low = lowest(run.input, run.muted, lag: after.lag, from: 4.85, to: 6.9)
+            report(after.lag <= live.lag && after.residual < -30 && low > 0.7,
+                   String(format: "cached pauses   lag %d then %d after four, %.0f dB off, lowest %.0f%%", live.lag, after.lag, after.residual, low * 100))
         }
 
         // The player moves the song without the app asking, as Control Center's scrubber does: within the next check,
@@ -457,6 +555,72 @@ enum CachedStemsTest {
             report(after.lag == live.lag && after.residual < -30 && leak < 0.01 * before && error < 1 && !run.lost && run.spins == 0,
                    String(format: "cached scrub    lag %d then %d, %.0f dB off the new place, vocals at %.1f%%, %.2f frames off", live.lag, after.lag,
                           after.residual, leak / before * 100, error))
+        }
+
+        // Moves that Now Playing reports seconds late, as the helper that reads it can: the app moves the song to 55 s and
+        // the player says so, which the app knows it asked for, then Control Center's scrubber moves it to 15 s and the
+        // player says so, which the app passes on. Reports from before each move come in after it, and are older than
+        // it. The stems follow each move, and the song isn't lost.
+        do {
+            var repeated = false, passed = false
+            let run = render(song, cache: cache, start: 30, speed: 1, seconds: 8, hintError: nil, events: [
+                (1, { ps_stems_set_gain($0.shifter, Int32(Stem.vocals.rawValue), 0); ps_stems_enable($0.shifter, 1) }),
+                (2.5, { $0.announce(55) }),
+                (2.53, { $0.jump(to: 55, silence: 0.02); $0.feed.moved(to: 55); repeated = $0.feed.asked(55) }),
+                (3, { $0.feed.report(elapsed: 31, timestamp: 1, rate: 1) }),
+                (4.5, { $0.jump(to: 15, silence: 0.02); $0.feed.moved(to: 15); passed = !$0.feed.asked(15); if passed { $0.announce(15) } }),
+                (5, { $0.feed.report(elapsed: 57, timestamp: 4.5 - 0.001, rate: 1) }), (6, { $0.checkMapping() }),
+                (7.5, { $0.checkMapping() }),
+            ])
+            let live = match(run.input, run.full, from: 0.3, to: 0.95)
+            let first = match(run.input, run.muted, from: 3.2, to: 4.4), second = match(run.input, run.muted, from: 5.2, to: 7.9)
+            let leak = vocals(run.input, from: 1.4, to: 7.9), before = vocals(run.input, from: 0.3, to: 0.9)
+            let error = run.errors.map(abs).max() ?? .infinity
+            report(repeated && passed && !run.lost && first.lag == live.lag && second.lag == live.lag && first.residual < -30 && second.residual < -30
+                   && leak < 0.01 * before && error < 1 && run.spins == 0,
+                   String(format: "cached late tap lag %d then %d and %d, %.0f and %.0f dB off, vocals at %.1f%%, %.2f frames off, the app's move %@, the scrubber's %@",
+                          live.lag, first.lag, second.lag, first.residual, second.residual, leak / before * 100, error,
+                          repeated ? "known" : "taken twice", passed ? "passed on" : "missed"))
+        }
+
+        // The first move after the whole song is in the cache, while the stems are separated as the song plays: the stems
+        // start over from the cache at the new place, with no backspin and no countdown, and the vocals never play.
+        do {
+            var spinsBefore: UInt32 = 0
+            let run = render(song, cache: cache, start: 30, speed: 1, seconds: 9, events: [
+                (0, { $0.cacheReady = false }),
+                (1, { ps_stems_set_gain($0.shifter, Int32(Stem.vocals.rawValue), 0); ps_stems_enable($0.shifter, 1) }),
+                (5, { $0.cacheReady = true }),
+                (6, { spinsBefore = ps_spins($0.shifter); ps_stems_restart($0.shifter); $0.announce(50) }),
+                (6.03, { $0.jump(to: 50, silence: 0.02) }), (8, { $0.checkMapping() }),
+            ])
+            let live = match(run.input, run.full, from: 0.3, to: 0.95)
+            let separated = vocals(run.input, from: 5, to: 5.9), before = vocals(run.input, from: 0.3, to: 0.9)
+            let after = match(run.input, run.muted, from: 6.6, to: 8.9)
+            let leak = vocals(run.input, from: 6, to: 8.9)
+            let error = run.errors.map(abs).max() ?? .infinity
+            report(separated < 0.01 * before && run.takeover.map { $0 - 6 < 0.4 } == true && run.spins == spinsBefore && (run.counted ?? 0) < 6
+                   && after.lag <= live.lag && after.residual < -30 && leak < 0.01 * before && error < 1 && !run.lost,
+                   String(format: "cached first    vocals at %.1f%% as separated, from the cache %.0f ms after the move, %d spins after it, %@, lag %d then %d, %.0f dB off, vocals at %.1f%%, %.2f frames off",
+                          separated / before * 100, ((run.takeover ?? 9) - 6) * 1000, run.spins - spinsBefore,
+                          (run.counted ?? 0) < 6 ? "no countdown" : "a countdown", live.lag, after.lag, after.residual, leak / before * 100, error))
+        }
+
+        // A cache that isn't the song, after a move: the move doesn't wait for it, the song is separated as it plays once
+        // the cache counts as lost, and the vocals go once its first stems are in.
+        do {
+            let run = render(song, cache: loopCache, start: 10, speed: 1, seconds: 10, events: [
+                (1, { ps_stems_set_gain($0.shifter, Int32(Stem.vocals.rawValue), 0); ps_stems_enable($0.shifter, 1) }),
+                (2, { $0.announce(25) }), (2.03, { $0.jump(to: 25, silence: 0.02) }),
+            ])
+            let level = { (from: Double, to: Double) in
+                (run.input[Int(rate * from) ..< Int(rate * to)].map { Double($0 * $0) }.reduce(0, +) / (rate * (to - from))).squareRoot()
+            }
+            let song = level(0.3, 0.9), heard = level(5.5, 9.9)
+            let leak = vocals(run.input, from: 9, to: 9.9), before = vocals(run.input, from: 0.3, to: 0.9)
+            report(run.lost && heard > 0.5 * song && leak < 0.01 * before,
+                   String(format: "cached wrong    %@, level %.0f%% of the song's after it, vocals at %.1f%% once separated", run.lost ? "lost" : "not lost",
+                          heard / song * 100, leak / before * 100))
         }
 
         // The vocals play again and the stems turn off together: the song comes back with no dip, at the same moment.
@@ -501,24 +665,25 @@ enum CachedStemsTest {
                           after.residual, low, error))
         }
 
-        // The lyrics delay of 6 seconds raised while the stems from the cache play: they step back with the song, with
-        // the vocals still muted, and when the delay ends they play at the moment that plays again.
-        do {
-            let run = render(song, cache: cache, start: 30, speed: 1, seconds: 15, events: [
+        // The lyrics delay of 6 seconds, and of 30, raised while the stems from the cache play: they step back with the
+        // song, with the vocals still muted, and when the delay ends they play at the moment that plays again.
+        for (delay, start) in [(6.0, 30.0), (30, 10)] {
+            let run = render(song, cache: cache, start: start, speed: 1, seconds: delay + 9, events: [
                 (1, { ps_stems_set_gain($0.shifter, Int32(Stem.vocals.rawValue), 0); ps_stems_enable($0.shifter, 1) }),
-                (2, { ps_set_delay($0.shifter, 6) }), (11, { $0.delays.append(ps_stems_delay($0.shifter)) }),
-                (12, { ps_set_delay($0.shifter, 0) }), (14, { $0.delays.append(ps_stems_delay($0.shifter)); $0.checkMapping() }),
+                (2, { ps_set_delay($0.shifter, delay) }), (delay + 5, { $0.delays.append(ps_stems_delay($0.shifter)) }),
+                (delay + 6, { ps_set_delay($0.shifter, 0) }), (delay + 8, { $0.delays.append(ps_stems_delay($0.shifter)); $0.checkMapping() }),
             ])
             let live = match(run.input, run.full, from: 0.3, to: 0.95)
-            let behind = Int(6 * rate) + live.lag
-            let delayed = match(run.input, run.muted, from: 9.5, to: 11.9, lags: behind - 600 ... behind + 600)
-            let after = match(run.input, run.muted, from: 12.6, to: 14.9)
-            let leak = max(vocals(run.input, from: 1.4, to: 7.9), vocals(run.input, from: 9.2, to: 14.9)), before = vocals(run.input, from: 0.3, to: 0.9)
+            let behind = Int(delay * rate) + live.lag
+            let delayed = match(run.input, run.muted, from: delay + 3.5, to: delay + 5.9, lags: behind - 600 ... behind + 600)
+            let after = match(run.input, run.muted, from: delay + 6.6, to: delay + 8.9)
+            let leak = max(vocals(run.input, from: 1.4, to: delay + 1.9), vocals(run.input, from: delay + 3.2, to: delay + 8.9))
+            let before = vocals(run.input, from: 0.3, to: 0.9)
             let delays = run.delays.map { String(format: "%.2f", $0) }.joined(separator: " then ")
-            report(run.delays.count == 2 && abs(run.delays[0] - 6) < 0.05 && run.delays[1] < 0.05 && abs(delayed.lag - behind) < 600
+            report(run.delays.count == 2 && abs(run.delays[0] - delay) < 0.05 && run.delays[1] < 0.05 && abs(delayed.lag - behind) < 600
                    && delayed.residual < -30 && after.lag == live.lag && after.residual < -30 && leak < 0.01 * before && !run.lost,
-                   String(format: "cached delay    %@ s behind, %.0f dB off 6 s back, lag %d after it, %.0f dB off, vocals at %.1f%%",
-                          delays, delayed.residual, after.lag, after.residual, leak / before * 100))
+                   String(format: "cached delay %2.0f %@ s behind, %.0f dB off %.0f s back, lag %d after it, %.0f dB off, vocals at %.1f%%",
+                          delay, delays, delayed.residual, delay, after.lag, after.residual, leak / before * 100))
         }
 
         // The speed changes from 100% to 115% while the stems from the cache play: they follow it.
