@@ -1200,9 +1200,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ].compactMap { $0 }
         log("paused for \(seconds) s with the HUD hidden, stopping \(stopped.isEmpty ? "the pitch change" : stopped.joined(separator: ", "))")
         // A slowed song's player is up to 30 seconds ahead of what was heard, so it moves back to the moment heard
-        // before the slowing stops, and plays on from there.
+        // before the slowing stops, and plays on from there. A player that is already there isn't moved.
         if slow.active, let heard = nowPlaying.track, let player = nowPlaying.player, heard.song == player.song,
-           let at = heard.position(at: Date()) {
+           let at = heard.position(at: Date()), (player.position(at: Date()).map { $0 - at > 0.5 } ?? true) {
             slow.stop("the song was paused with the HUD hidden")
             log(String(format: "the player moves back to %.1f s, where the song was heard", at))
             movePlayer(player, to: at)
