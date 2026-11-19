@@ -271,6 +271,11 @@ final class FilePlayer {
         process.standardOutput = output
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
+            // At its end, a pipe stays readable and would call the handler again at once, without end.
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
             DispatchQueue.main.async { self?.received(data) }
         }
         process.terminationHandler = { [weak self] ended in
@@ -535,6 +540,11 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
         var lastLine = Date()
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
+            // At its end, a pipe stays readable and would call the handler again at once, without end.
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self, !data.isEmpty else { return }
                 pending.append(data)
@@ -557,6 +567,10 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
         }
         errors.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
             DispatchQueue.main.async { if errorText.count < 4000 { errorText += String(decoding: data, as: UTF8.self) } }
         }
         process.terminationHandler = { [weak self] ended in
