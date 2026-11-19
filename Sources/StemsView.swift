@@ -176,8 +176,8 @@ struct StemsRow: View {
     }
 }
 
-/// The separation failed: a red Retry pill takes the place of the Separate button, with the button's symbol, and an ✕
-/// in its corner that dismisses it.
+/// The separation failed: a red pill that separates the song again, in place of the Separate button and with its
+/// symbol, and Cancel after it, which goes back to the Separate button.
 private struct FailedPill: View {
     let palette: Palette
     let retry: () -> Void
@@ -185,31 +185,23 @@ private struct FailedPill: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Button(action: retry) {
-            Label("Retry", systemImage: "slider.vertical.3")
-                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(StripColors.text(.red, colorScheme))
-                .padding(.horizontal, 11)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .help("Separate the instruments and vocals again")
-        .overlay(alignment: .topTrailing) {
-            Button(action: dismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 6.5, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .frame(width: 13, height: 13)
-                    .background(Circle().fill(Color(red: 0.93, green: 0.33, blue: 0.3)))
-                    .contentShape(Circle())
+        HStack(spacing: 6) {
+            Button(action: retry) {
+                Label("Retry instrument separation", systemImage: "slider.vertical.3")
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(StripColors.text(.red, colorScheme))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
+                    .contentShape(Capsule())
             }
             .buttonStyle(.plain)
             .focusable(false)
-            .help("Dismiss")
-            .offset(x: 5, y: -5)
+            .help("Separate the instruments and vocals again")
+            Button("Cancel", action: dismiss)
+                .buttonStyle(PillButtonStyle(palette: palette))
+                .focusable(false)
+                .help("Show the Separate button again")
         }
     }
 }
