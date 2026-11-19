@@ -207,20 +207,20 @@ private struct GeneralPane: View {
             Section("Playback") {
                 LabeledContent {
                     HStack(spacing: 6) {
-                        TextField("Pause timeout", value: $prefs.pauseStopSeconds, format: .number.grouping(.never))
+                        TextField("Cut sound adjustments after pausing music", value: $prefs.pauseStopSeconds, format: .number.grouping(.never))
                             .labelsHidden()
                             .multilineTextAlignment(.trailing)
                             .frame(width: 44)
                             .disabled(!prefs.pauseStop)
                         Text("seconds")
                             .foregroundStyle(prefs.pauseStop ? .primary : .secondary)
-                        Toggle("Pause timeout", isOn: $prefs.pauseStop)
+                        Toggle("Cut sound adjustments after pausing music", isOn: $prefs.pauseStop)
                             .labelsHidden()
                             .toggleStyle(.switch)
                     }
                 } label: {
-                    Text("Pause timeout")
-                    Text("Stop the pitch change, the tempo change and the stems (while paused with the HUD hidden)")
+                    Text("Cut sound adjustments after pausing music")
+                    Text("If Muskey HUD is hidden and music was paused for \(prefs.pauseStopSeconds) seconds, automatically stop pitch and tempo adjustments on system audio")
                 }
                 .onChange(of: prefs.pauseStopSeconds) { _, seconds in
                     if !(1 ... 3600).contains(seconds) { prefs.pauseStopSeconds = min(max(seconds, 1), 3600) }
