@@ -821,6 +821,8 @@ struct Keycap: View {
     var body: some View {
         Text(text)
             .font(.system(size: small ? 9 : 10, weight: .semibold, design: .rounded))
+            // Brackets reach below the baseline, which centres them a point lower than the text beside the keycap.
+            .offset(y: text == "[" || text == "]" ? -1 : 0)
             .foregroundStyle(palette.ink.opacity(0.8))
             .padding(.horizontal, small ? 3 : 4)
             .frame(minWidth: small ? 14 : 17, minHeight: small ? 13 : 16)

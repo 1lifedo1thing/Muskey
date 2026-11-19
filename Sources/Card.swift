@@ -43,7 +43,7 @@ struct HUDSymbol: View {
             .symbolEffect(.bounce, value: model.phase == .done)
             .contentTransition(.symbolEffect(.replace))
             .font(.system(size: size, weight: .semibold))
-            .foregroundStyle(model.phase == .silent ? palette.muted : palette.accent)
+            .foregroundStyle(model.phase == .silent || model.phase == .idle ? palette.muted : palette.accent)
     }
 
     private var name: String {
@@ -53,6 +53,7 @@ struct HUDSymbol: View {
         case .silent: "speaker.slash"
         case .failed: "exclamationmark.triangle"
         case .denied: "lock"
+        case .idle: "speaker.slash"
         }
     }
 }
@@ -85,9 +86,56 @@ struct TitleLine: View {
             } else if model.phase == .listening {
                 ListenTitle(text: "Listening", size: listeningSize, progress: progress, palette: palette)
                     .transition(.opacity)
+            } else if model.phase == .idle {
+                ListenTitle(text: "Nothing playing", size: listeningSize * 0.8, progress: nil, palette: palette)
+                    .transition(.opacity)
             }
         }
         .lineLimit(1)
+    }
+}
+
+/// While nothing plays: open a song file or a link. The empty record beside them plays whatever macOS played last.
+struct IdleActions: View {
+    @ObservedObject var model: HUDModel
+    let palette: Palette
+
+    var body: some View {
+        HStack(spacing: 8) {
+            IdleButton(symbol: "doc", title: "Open File", key: "⌘O", palette: palette, action: model.onOpenFile)
+            IdleButton(symbol: "link", title: "Open URL", key: "⌘L", palette: palette, action: model.onOpenLocation)
+        }
+    }
+}
+
+private struct IdleButton: View {
+    let symbol: String
+    let title: String
+    let key: String
+    let palette: Palette
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                Text(key)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(palette.muted)
+            }
+            .foregroundStyle(palette.ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(palette.ink.opacity(hovering ? 0.14 : 0.08)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
@@ -130,7 +178,19 @@ struct ShiftPills: View {
             ScrollLifted(region: .tempo, scroll: model.scroll, depth: 2.5) { inner, _ in
                 HStack(spacing: 6) {
                     TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
-                              slower: model.speed > 0.5, faster: model.speed < model.fastestSpeed, palette: palette, lift: inner, step: model.onSpeed)
+                              slower: model.speed > 0.5, faster: model.speed < model.fastestSpeed, keysShown: model.keysActive, palette: palette, lift: inner, step: model.onSpeed)
+                        // The return of a slowed song to 100 %, while the output catches up with the player: the
+                        // border fills as the song gets back to its tempo.
+                        .overlay {
+                            if let progress = model.tempoReturn {
+                                Capsule().inset(by: 0.75)
+                                    .trim(from: 0, to: progress)
+                                    .stroke(palette.accent, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                                    .animation(.linear(duration: 0.2), value: progress)
+                                    .transition(.opacity)
+                            }
+                        }
+                        .animation(.easeOut(duration: 0.15), value: model.tempoReturn == nil)
                     if let failed = model.slowFailed {
                         FailedSpeedPill(speed: failed, dismiss: { model.slowFailed = nil }, retry: model.onSlowRetry)
                             .offset(y: inner)
@@ -202,24 +262,27 @@ struct TempoPill: View {
     let adjustable: Bool
     /// The speed can go down or up from here: a song from another player can only be slowed down.
     var slower = true, faster = true
+    /// The keys [ and ] work only while the pointer is over the HUD, so their keycaps show only then.
+    var keysShown = true
     let palette: Palette
     /// The extra lift of the text and the keycaps while a scroll changes the speed.
     var lift: CGFloat = 0
     let step: (Int) -> Void
 
     var body: some View {
+        let caps = adjustable && keysShown
         HStack(spacing: 5) {
-            if adjustable, slower { cap("[", help: "Slower ([)", step: -1) }
+            if caps, slower { cap("[", help: "Slower ([)", step: -1) }
             Text(bpm.map { "\(Int($0.rounded())) BPM" } ?? "Tempo")
                 .contentTransition(.numericText(value: bpm ?? 0))
-            if adjustable, faster { cap("]", help: "Faster (])", step: 1) }
+            if caps, faster { cap("]", help: "Faster (])", step: 1) }
         }
         .offset(y: lift)
         .font(.system(size: 11, weight: .bold, design: .rounded))
         .monospacedDigit()
         .foregroundStyle(palette.ink)
-        .padding(.leading, adjustable && slower ? 4 : 8)
-        .padding(.trailing, adjustable && faster ? 4 : 8)
+        .padding(.leading, caps && slower ? 4 : 8)
+        .padding(.trailing, caps && faster ? 4 : 8)
         .padding(.vertical, 3)
         .background(Capsule().fill(palette.ink.opacity(0.1)))
         .fixedSize()
@@ -366,7 +429,7 @@ struct HUDCard: View {
                 }
                 if !model.shortcuts, !model.lyricsShown, showsKeys, let key = model.key {
                     FifthsRing(original: key, shift: model.shift, relative: model.relative, palette: palette, radius: radius,
-                               innerRadius: Self.innerRadius, showsRelatives: model.relativeKeys, flipped: model.flipped, select: model.onShift)
+                               innerRadius: Self.innerRadius, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative, select: model.onShift)
                         // The ring still has the last song's keys while a new song waits for its key.
                         .opacity(model.pending == nil ? 1 : 0.4)
                         .allowsHitTesting(model.pending == nil)
@@ -379,6 +442,11 @@ struct HUDCard: View {
                 .padding(.top, 8)
             ShiftPills(model: model, palette: palette)
                 .padding(.top, 5)
+            if model.phase == .idle {
+                IdleActions(model: model, palette: palette)
+                    .padding(.top, 10)
+                    .transition(.opacity)
+            }
 
             if let track {
                 VStack(spacing: 2) {

@@ -31,6 +31,13 @@ final class SlowStream {
     var refresh: () -> Void = {}
     /// The speed that the backlog is read at changed, so the correction changes with it.
     var onReadSpeed: () -> Void = {}
+    /// How far the return to 100 % has come, 0 to 1, or nil once the output plays the tap as it is.
+    var onReturn: (Double?) -> Void = { _ in }
+    /// The backlog when the song went back to 100 %, which the return counts down from.
+    private var returnFrom: Double?
+    /// The speed that the output catches up with the player at, once the song plays at 100 % again. The pitch change
+    /// keeps the key, so the song plays a quarter faster for a few seconds instead of a twentieth for a minute.
+    static let catchUp = 1.25
     /// Slowing had to stop because the player didn't take the moves back. Gets the speed that was asked for.
     var onFailed: (Double) -> Void = { _ in }
     var log: (String) -> Void = { _ in }
@@ -195,6 +202,10 @@ final class SlowStream {
     }
 
     private func finish() {
+        if returnFrom != nil {
+            returnFrom = nil
+            onReturn(nil)
+        }
         active = false
         next = nil
         current = nil
@@ -306,6 +317,11 @@ final class SlowStream {
             refresh()
         }
         let backlog = Double(state.written - min(state.written, state.reading)) / rate
+        if speed == 1 {
+            let from = max(returnFrom ?? backlog, backlog)
+            returnFrom = from
+            onReturn(from > 0.05 ? min(1, max(0, 1 - backlog / from)) : 1)
+        }
         if Self.logState, Date().timeIntervalSince(loggedAt) >= 2, let current {
             loggedAt = Date()
             log(String(format: "slow: backlog %.2f s, heard %.2f s, player %.2f s, read at %.2f, %d splices, %d missed",
@@ -327,7 +343,7 @@ final class SlowStream {
               report.song == current?.track.song, next == nil
         else { return }
         if speed == 1, backlog <= 4 {
-            if backlog > 0.05 { return setReadSpeed(1.05) }
+            if backlog > 0.05 { return setReadSpeed(Self.catchUp) }
             log("slow: caught up with the player, the output plays the tap as it is")
             return finish()
         }

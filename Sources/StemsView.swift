@@ -67,8 +67,58 @@ struct StemsRow: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var pillSize = CGSize.zero
 
+    /// The keys work only while the pointer is over the HUD, so their numbers and the hints show only then, and the
+    /// circles are smaller otherwise.
+    private var expanded: Bool { model.keysActive }
+    /// The header holds only what changes: the progress of the separation, Play all, or a failure.
+    private var header: Bool { model.stemsFailed || model.stemsProgress != nil || model.stemsAdjusted }
+
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 4 : 6) {
+            if header { headerRow }
+            StemHalos(model: model, meters: model.stemMeters, palette: palette, compact: compact, card: card, expanded: expanded)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, header ? 8 : 4)
+        // Room for the top half of the hints pill, which sits on the bottom edge.
+        .padding(.bottom, expanded ? 14 : 6)
+        .background {
+            // The tray is cut around the pill, so its edge doesn't run behind the hints.
+            RoundedRectangle(cornerRadius: 13).fill(palette.ink.opacity(0.06))
+                .mask {
+                    Rectangle()
+                        .overlay(alignment: .bottom) {
+                            if expanded {
+                                Capsule()
+                                    .frame(width: pillSize.width + 4, height: pillSize.height + 4)
+                                    .offset(y: Self.pillHeight / 2 + 2)
+                                    .blendMode(.destinationOut)
+                            }
+                        }
+                        .compositingGroup()
+                }
+        }
+        .overlay(alignment: .bottom) {
+            if expanded {
+                // Nearly clear, with a hairline, so it reads as a quiet note on the edge of the tray rather than a control.
+                KeyHints(style: .stems, vocals: !model.lyricsShown, otherMode: "", palette: palette)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(palette.ink.opacity(0.025)))
+                    .overlay(Capsule().strokeBorder(palette.ink.opacity(0.09), lineWidth: 0.5))
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { pillSize = $0 }
+                    .offset(y: Self.pillHeight / 2)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: model.keysActive)
+        .animation(.snappy(duration: 0.2), value: header)
+        .animation(.snappy(duration: 0.2), value: model.stemsMuted)
+        .animation(.snappy(duration: 0.2), value: model.stemsProgress == nil)
+        .animation(.snappy(duration: 0.2), value: model.stemsFailed)
+    }
+
+    private var headerRow: some View {
             HStack(spacing: 8) {
                 if model.stemsFailed {
                     // The label turns red when the stems couldn't be separated, with Retry beside it and an ✕ that
@@ -86,10 +136,6 @@ struct StemsRow: View {
                     .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
                     Button("Retry", action: model.onStemsRetry)
                         .controlSize(.mini)
-                } else {
-                    Text("Instruments and vocals")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(palette.muted)
                 }
                 if let progress = model.stemsProgress, !model.stemsFailed {
                     ProgressPill(progress: progress, palette: palette)
@@ -105,42 +151,6 @@ struct StemsRow: View {
                 }
             }
             .frame(height: 16)
-            StemHalos(model: model, meters: model.stemMeters, palette: palette, compact: compact, card: card)
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        // Room for the top half of the hints pill, which sits on the bottom edge.
-        .padding(.bottom, 14)
-        .background {
-            // The tray is cut around the pill, so its edge doesn't run behind the hints.
-            RoundedRectangle(cornerRadius: 13).fill(palette.ink.opacity(0.06))
-                .mask {
-                    Rectangle()
-                        .overlay(alignment: .bottom) {
-                            Capsule()
-                                .frame(width: pillSize.width + 4, height: pillSize.height + 4)
-                                .offset(y: Self.pillHeight / 2 + 2)
-                                .blendMode(.destinationOut)
-                        }
-                        .compositingGroup()
-                }
-        }
-        .overlay(alignment: .bottom) {
-            // Nearly clear, with a hairline, so it reads as a quiet note on the edge of the tray rather than a control.
-            KeyHints(style: .stems, vocals: !model.lyricsShown, otherMode: "", palette: palette)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(palette.ink.opacity(0.025)))
-                .overlay(Capsule().strokeBorder(palette.ink.opacity(0.09), lineWidth: 0.5))
-                .onGeometryChange(for: CGSize.self) { $0.size } action: { pillSize = $0 }
-                .offset(y: Self.pillHeight / 2)
-                // The keys only work while the HUD takes them, and the pill is faint otherwise.
-                .opacity(model.hintsOpacity)
-        }
-        .animation(.easeOut(duration: 0.15), value: model.keysActive)
-        .animation(.snappy(duration: 0.2), value: model.stemsMuted)
-        .animation(.snappy(duration: 0.2), value: model.stemsProgress == nil)
-        .animation(.snappy(duration: 0.2), value: model.stemsFailed)
     }
 }
 
@@ -183,6 +193,7 @@ private struct StemHalos: View {
     let palette: Palette
     let compact: Bool
     let card: Bool
+    let expanded: Bool
 
     var body: some View {
         let shown = Stem.shown
@@ -194,7 +205,7 @@ private struct StemHalos: View {
                     StemHalo(stem: stem, key: index + 1, on: !model.stemsMuted.contains(stem),
                              level: model.stemsEngaged ? stemFill(meters.levels[stem.rawValue]) : 0,
                              volume: model.stemVolumes[stem] ?? 1, adjusting: adjusting, lift: inner,
-                             palette: palette, compact: compact, crowded: crowded, solo: model.flipped) { solo in model.onStem(stem, solo) }
+                             palette: palette, compact: compact, crowded: crowded, expanded: expanded, solo: model.flipped) { solo in model.onStem(stem, solo) }
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -223,6 +234,8 @@ private struct StemHalo: View {
     let palette: Palette
     let compact: Bool
     var crowded = false
+    /// The pointer is over the HUD: full size, with the number key on the edge of the circle.
+    var expanded = true
     /// Option is held, so a click plays only this stem: every circle shows headphones.
     var solo = false
     let action: (Bool) -> Void
@@ -232,7 +245,7 @@ private struct StemHalo: View {
     /// A scroll changed the volume since the pointer came over the stem: its tooltip would cover the volume.
     @State private var scrolled = false
 
-    private var side: CGFloat { crowded ? 28 : compact ? 32 : 40 }
+    private var side: CGFloat { (crowded ? 28 : compact ? 32 : 40) * (expanded ? 1 : 0.8) }
 
     var body: some View {
         Button { action(NSEvent.modifierFlags.contains(.option)) } label: {
@@ -245,7 +258,7 @@ private struct StemHalo: View {
                         .fill(on ? stem.color(scheme, opacity: hovering ? 0.6 : 0.45) : palette.ink.opacity(hovering ? 0.08 : 0.05))
                         .overlay(Circle().strokeBorder(stem.color(scheme, opacity: on ? 0.75 : 0), lineWidth: 1))
                     Image(systemName: solo ? "headphones" : stem.symbol)
-                        .font(.system(size: crowded ? 11 : compact ? 12 : 15, weight: .semibold))
+                        .font(.system(size: (crowded ? 11 : compact ? 12 : 15) * (expanded ? 1 : 0.85), weight: .semibold))
                         .offset(y: lift)
                         .foregroundStyle(on || solo ? palette.ink : palette.muted.opacity(0.4))
                         // Option is a key held for a moment, so the swap runs at three times the usual speed.
@@ -256,8 +269,11 @@ private struct StemHalo: View {
                 }
                 .frame(width: side, height: side)
                 .overlay(alignment: .bottomTrailing) {
-                    StemKeyBadge(key: key, palette: palette)
-                        .offset(x: crowded ? 5 : 4, y: 3)
+                    if expanded {
+                        StemKeyBadge(key: key, palette: palette)
+                            .offset(x: crowded ? 5 : 4, y: 3)
+                            .transition(.opacity)
+                    }
                 }
                 .shadow(color: on ? stem.color(scheme, opacity: 0.6 * level) : .clear, radius: 8)
                 Text(adjusting || volume != 1 ? "\(Int((volume * 100).rounded()))%" : stem.name)

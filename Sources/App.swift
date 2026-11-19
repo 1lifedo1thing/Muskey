@@ -175,7 +175,7 @@ func writeWAV(_ samples: [Float], rate: UInt32, channels: UInt16 = 1, to path: S
 }
 
 final class HUDModel: ObservableObject {
-    enum Phase { case listening, done, silent, failed, denied }
+    enum Phase { case listening, done, silent, failed, denied, idle }
     @Published var phase: Phase = .listening
     @Published var key: DetectedKey?
     @Published var progress: Double = 0
@@ -212,6 +212,10 @@ final class HUDModel: ObservableObject {
     /// Muskey had to stop slowing another player's song, which was asked for at this speed. The speed shows in a red
     /// pill with Retry until the slowing works again, the pill is dismissed or another player plays.
     @Published var slowFailed: Double?
+    /// How far a slowed song has come back to 100 %, 0 to 1, while the output catches up with the player.
+    @Published var tempoReturn: Double?
+    var onOpenFile: () -> Void = {}
+    var onOpenLocation: () -> Void = {}
     /// A seek would be instant: the stems aren't separated live, the lyrics don't play behind, and the player took
     /// the last seek. The seek keys and their hints exist only then.
     @Published var seekable = false
@@ -379,6 +383,8 @@ struct HUDView: View {
 
     /// The record shows while a song with a title plays, from the start of a listen.
     private var deckTrack: NowPlaying.Track? {
+        // Nothing plays: an empty record, which plays whatever macOS played last.
+        if model.phase == .idle { return NowPlaying.Track() }
         guard model.phase == .listening || model.phase == .done, let track = model.track, track.title?.isEmpty == false else { return nil }
         return track
     }
@@ -580,12 +586,16 @@ struct HUDView: View {
         VStack(spacing: 7) {
             VStack(spacing: 12) {
             TitleLine(model: model, palette: palette)
+            if model.phase == .idle {
+                IdleActions(model: model, palette: palette)
+                    .transition(.opacity)
+            }
             if model.pending ?? model.heard != nil {
                 ShiftPills(model: model, palette: palette)
                     .padding(.top, -6)
             }
             if showsStrip, let key = model.key {
-                KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.flipped,
+                KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative,
                           palette: palette, select: model.onShift)
                     // The row still has the last song's keys while a new song waits for its key.
                     .opacity(model.pending == nil ? 1 : 0.4)
@@ -686,7 +696,7 @@ struct HUDView: View {
     private func karaokeKey(_ palette: Palette) -> some View {
         ZStack(alignment: .top) {
             if model.karaokeKeys, let key = model.key {
-                KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.flipped,
+                KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative,
                           palette: palette, select: model.onShift)
                     // A new song still waits for its key.
                     .opacity(model.pending == nil ? 1 : 0.4)
@@ -1279,6 +1289,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Space over the HUD plays or pauses the song, as the play key does. The record, the tonearm and the stems
     /// change right away, before the player reports the change, and a glyph on the record confirms it.
     private func playPause() {
+        if model.phase == .idle {
+            log("nothing plays: play")
+            nowPlaying.play(true)
+            return start()
+        }
         nowPlaying.togglePlayPause()
         log("play or pause")
         guard let track = nowPlaying.track, track.title?.isEmpty == false else { return }
@@ -1917,6 +1932,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onSave = { [weak self] in self?.saveSong() }
         statusItem.onSave = { [weak self] in self?.saveSong() }
         model.onOpen = { [weak self] urls in self?.open(urls) }
+        model.onOpenFile = { [weak self] in self?.openFile() }
+        model.onOpenLocation = { [weak self] in self?.openLocation() }
+        slow.onReturn = { [weak self] progress in self?.model.tempoReturn = progress }
         model.onPlayPause = { [weak self] in self?.playPause() }
         model.onSkip = { [weak self] in self?.skip($0) }
         model.onLink = { [weak self] url in self?.log("opening \(url.host() ?? url.absoluteString) in the browser") }
@@ -1961,6 +1979,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.songChanged($0)
         }
         nowPlaying.onTrack = { [weak self] in
+            self?.listenWhenPlaying()
             self?.syncPauseStop()
             self?.syncSpeed()
             self?.syncSeekable()
@@ -2602,6 +2621,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tick() {
         let elapsed = Date().timeIntervalSince(startedAt)
         model.progress = min(1, elapsed / seconds)
+        // Nothing has made a sound in 3 seconds of a listen that the hotkey started: the HUD offers to play.
+        if follow == nil, !model.picking, elapsed >= Self.idleAfter, peak < 0.0005 { return nothingPlays(after: elapsed) }
         // A song that starts quietly gets the whole listen when it has to be moved to the kept key.
         if ((follow == nil || followByPerson) && elapsed >= silenceAfter && estimated && peak < 0.0005) || elapsed >= seconds { finish() }
     }
@@ -2676,6 +2697,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dismiss(after: 2)
     }
 
+    private static let idleAfter = 3.0
+
+    /// Nothing plays: the HUD stays up with an empty record that plays whatever macOS played last, and the buttons
+    /// that open a file or a link. A song that starts meanwhile is listened to at once.
+    private func nothingPlays(after elapsed: Double) {
+        stopCapture()
+        analyzer = nil
+        state = .showing
+        model.key = nil
+        model.phase = .idle
+        model.shown = true
+        panel.setInteraction(clickable: true, keyboard: true)
+        panel.present()
+        updateHoverKeys()
+        log(String(format: "nothing plays after %.1f s", elapsed))
+    }
+
+    /// A song plays while the HUD offers to play one: the listen starts over on it.
+    private func listenWhenPlaying() {
+        guard model.phase == .idle, model.shown, nowPlaying.track?.playing == true else { return }
+        log("a song plays, listening")
+        start()
+    }
+
     private func dismiss(after delay: TimeInterval) {
         let current = session
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
@@ -2714,6 +2759,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let urls = Self.pastedURLs()
                 guard !urls.isEmpty else { return event }
                 self.open(urls)
+                return nil
+            }
+            // ⌘⌫ takes the song back to how it was: its key, its tempo and every stem.
+            if let self, self.model.picking || self.model.phase == .idle, event.window === self.panel, flags.contains(.command),
+               Int(event.keyCode) == kVK_Delete {
+                self.resetAll()
+                return nil
+            }
+            // ⌘O and ⌘L open a file or a link while nothing plays.
+            if let self, self.model.phase == .idle, event.window === self.panel, flags.contains(.command),
+               [kVK_ANSI_O, kVK_ANSI_L].contains(Int(event.keyCode)) {
+                Int(event.keyCode) == kVK_ANSI_O ? self.openFile() : self.openLocation()
                 return nil
             }
             // ⌘K opens karaoke, or closes it.
@@ -3548,7 +3605,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         StemModel.warmUp()
     }
 
-    /// Three minutes after the HUD closed with every stem playing, the model is freed.
+    /// Fifteen minutes after the HUD closed with every stem playing, the model is freed. Each load makes Core ML
+    /// compile the model for the GPU again and write hundreds of megabytes to disk, so a HUD that opens every few
+    /// minutes keeps it.
     private func prepareStemModel(shown: Bool) {
         stemModelRelease?.cancel()
         stemModelRelease = nil
@@ -3560,7 +3619,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 StemModel.unload()
             }
             stemModelRelease = release
-            DispatchQueue.main.asyncAfter(deadline: .now() + 180, execute: release)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 900, execute: release)
         }
     }
 
@@ -4014,6 +4073,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForSeek = false
     private var hoverKeysForRestart = false
     private var hoverKeysForSave = false
+    private var hoverKeysForIdle = false
 
     /// Open File… or Open URL… is open. Its text would otherwise reach the keys over the HUD, which are global
     /// hotkeys, whenever the pointer rests on the HUD.
@@ -4028,7 +4088,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard wanted == hoverKeys.isEmpty
             || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
-                || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable))
+                || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable || hoverKeysForIdle != (model.phase == .idle)))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -4040,6 +4100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForSeek = model.seekable
         hoverKeysForRestart = model.restartable
         hoverKeysForSave = model.savable
+        hoverKeysForIdle = model.phase == .idle
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) }
         if model.stemsAvailable {
@@ -4071,6 +4132,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if model.savable, let save = try? HotKey(keyCode: kVK_ANSI_S, modifiers: cmdKey, action: { [weak self] in self?.saveSong() }) {
             hoverKeys.append(save)
+        }
+        if let reset = try? HotKey(keyCode: kVK_Delete, modifiers: cmdKey, action: { [weak self] in self?.resetAll() }) {
+            hoverKeys.append(reset)
+        }
+        if model.phase == .idle {
+            if let open = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey, action: { [weak self] in self?.openFile() }) { hoverKeys.append(open) }
+            if let link = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey, action: { [weak self] in self?.openLocation() }) { hoverKeys.append(link) }
         }
     }
 
@@ -4299,6 +4367,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Stop Pitch Change in the HUD and in the menu: back to the original key, no key kept for the next songs,
     /// and the HUD closes.
+    /// ⌘⌫: the song as it was, at once: its key, its tempo and every stem, with Lock Key released. The HUD stays up.
+    private func resetAll() {
+        log("⌘⌫: the key, the tempo and the stems back to the original")
+        if currentSpeed != 1 { playSpeed(1) }
+        if !model.stemVolumes.isEmpty {
+            model.stemVolumes = [:]
+            pitch.stemVolumes = [:]
+        }
+        follow = nil
+        model.pending = nil
+        keptKey = nil
+        model.stemsMuted = []
+        pitch.mutedStems = []
+        model.stemsEngaged = false
+        pitch.stemsEngaged = false
+        updateStemMeters(shown: model.shown)
+        setShift(0, relative: false, byPerson: true)
+        refreshStatus()
+    }
+
     private func stopPitch() {
         follow = nil
         model.pending = nil
@@ -4420,6 +4508,7 @@ extension EnvironmentValues {
         // last song's keys.
         ("listening-waiting-Cm", .listening, a, 0.1, 0, true, false, true),
         ("silent", .silent, nil, 0, 0, false, false, false),
+        ("idle", .idle, nil, 0, 0, false, false, false),
     ]
     // Each state with no song, then with a song and its cover, then with a song that has no cover.
     let track = NowPlaying.Track(title: "Paper Lanterns", artist: "Mira Vale", album: "Low Tide Radio", duration: 238, elapsed: 102, timestamp: Date().timeIntervalSince1970, rate: 0, bundleID: nil)

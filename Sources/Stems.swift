@@ -168,13 +168,18 @@ final class StemModel: @unchecked Sendable {
     /// The model, loaded once and kept until `unload()`. Core ML prepares the GPU on the first run, which takes a few
     /// seconds, so the stems would start that much later without `warmUp()`.
     static func shared(_ kind: Kind = .stems) throws -> StemModel {
-        try cacheLock.withLock {
-            if let model = cached[kind] { return model }
+        if let model = cacheLock.withLock({ cached[kind] }) { return model }
+        // Loading takes seconds, and the main thread reads `prepared` under `cacheLock` many times a second, so the
+        // load holds a lock of its own: one load at a time, and nobody else waits for it.
+        return try loadLock.withLock {
+            if let model = cacheLock.withLock({ cached[kind] }) { return model }
             let model = try StemModel(kind)
-            cached[kind] = model
+            cacheLock.withLock { cached[kind] = model }
             return model
         }
     }
+
+    private static let loadLock = NSLock()
 
     /// The winds model when it is installed and loads, which finds the winds in the song.
     static func sharedWinds() -> StemModel? {
