@@ -32,12 +32,13 @@ extension Stem {
     }
 
     /// The circle's colour: a calm tone of the stem's hue while it is quiet, which gets more saturated and brighter
-    /// as the stem gets louder (`level` from 0 to 1).
+    /// as the stem gets louder (`level` from 0 to 1). Over the loudest fifth it climbs steeply, so the circle flashes
+    /// on the peaks.
     func fill(_ scheme: ColorScheme, level: Double) -> Color {
-        let level = min(max(level, 0), 1)
+        let level = min(max(level, 0), 1), peak = pow(level, 4)
         return scheme == .dark
-            ? .oklch(0.4 + 0.16 * level, 0.05 + 0.08 * level, hue)
-            : .oklch(0.86 + 0.04 * level, 0.05 + 0.07 * level, hue)
+            ? .oklch(0.4 + 0.14 * level + 0.24 * peak, 0.05 + 0.07 * level + 0.05 * peak, hue)
+            : .oklch(0.86 + 0.03 * level + 0.07 * peak, 0.05 + 0.06 * level + 0.07 * peak, hue)
     }
 
     /// The symbol on the circle, a deeper tone of the same hue.
