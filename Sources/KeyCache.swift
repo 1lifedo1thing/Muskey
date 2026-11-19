@@ -214,7 +214,7 @@ final class StoreFile<Entries>: @unchecked Sendable {
     }
 }
 
-/// The queues of every store file, which the app waits for when it exits.
+/// The queues that write the files of the stores and of the links cache, which the app waits for when it exits.
 enum StoreFiles {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var queues: [DispatchQueue] = []

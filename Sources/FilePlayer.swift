@@ -739,9 +739,16 @@ final class LinkCache {
     let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "Muskey/Links")
     private var index: URL { folder.appending(path: "links.json") }
     private static let limit = 2_000_000_000
+    /// Every read and write of the index, from every instance and from the cleanup, one at a time. A song kept
+    /// after a download is written there off the main thread, and a read waits for it, as does quitting.
+    private static let queue: DispatchQueue = {
+        let queue = DispatchQueue(label: "muskey.links", qos: .utility)
+        StoreFiles.add(queue)
+        return queue
+    }()
 
     func song(for url: URL) -> FilePlayer.Song? {
-        guard let song = load()[url.absoluteString], FileManager.default.fileExists(atPath: song.path) else { return nil }
+        guard let song = Self.queue.sync(execute: load)[url.absoluteString], FileManager.default.fileExists(atPath: song.path) else { return nil }
         // Opened again, so it is the newest for the limit.
         try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: song.path)
         return song
@@ -749,12 +756,12 @@ final class LinkCache {
 
     /// The link was downloaded before, and its song plays at once.
     func has(_ url: URL) -> Bool {
-        load()[url.absoluteString].map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        Self.queue.sync(execute: load)[url.absoluteString].map { FileManager.default.fileExists(atPath: $0.path) } ?? false
     }
 
     /// The links that songs were downloaded from, the song opened last first.
     func recent(_ limit: Int) -> [(link: URL, song: FilePlayer.Song)] {
-        load().compactMap { key, song -> (URL, FilePlayer.Song, Date)? in
+        Self.queue.sync(execute: load).compactMap { key, song -> (URL, FilePlayer.Song, Date)? in
             guard let link = URL(string: key),
                   let date = try? URL(fileURLWithPath: song.path).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
             else { return nil }
@@ -765,11 +772,14 @@ final class LinkCache {
         .map { (link: $0.0, song: $0.1) }
     }
 
+    /// Adds the song to the index, after deleting the oldest songs past the limit, which lists the whole folder.
     func keep(_ song: FilePlayer.Song, for url: URL) {
-        var songs = load()
-        songs[url.absoluteString] = song
-        trim(&songs)
-        if let data = try? JSONEncoder().encode(songs) { try? data.write(to: index, options: .atomic) }
+        Self.queue.async { [self] in
+            var songs = load()
+            songs[url.absoluteString] = song
+            trim(&songs)
+            if let data = try? JSONEncoder().encode(songs) { try? data.write(to: index, options: .atomic) }
+        }
     }
 
     private func load() -> [String: FilePlayer.Song] {
@@ -786,8 +796,10 @@ final class LinkCache {
             if (try? FileManager.default.removeItem(at: file)) != nil { removed += 1 }
         }
         guard removed > 0 else { return 0 }
-        let songs = load().filter { FileManager.default.fileExists(atPath: $0.value.path) }
-        if let data = try? JSONEncoder().encode(songs) { try? data.write(to: index, options: .atomic) }
+        Self.queue.sync {
+            let songs = load().filter { FileManager.default.fileExists(atPath: $0.value.path) }
+            if let data = try? JSONEncoder().encode(songs) { try? data.write(to: index, options: .atomic) }
+        }
         return removed
     }
 
