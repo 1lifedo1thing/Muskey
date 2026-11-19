@@ -283,6 +283,20 @@ private struct StemHalos: View {
     }
 }
 
+/// Diagonal lines 6 points apart over the whole rect, for the circle of a muted stem.
+private struct MutedStripes: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        var x = rect.minX - rect.height
+        repeat {
+            path.move(to: CGPoint(x: x, y: rect.maxY))
+            path.addLine(to: CGPoint(x: x + rect.height, y: rect.minY))
+            x += 6
+        } while x < rect.maxX
+        return path
+    }
+}
+
 /// How far a level reaches: −48 dB at nothing, −6 dB at the most.
 func stemFill(_ level: Float) -> CGFloat {
     guard level > 0 else { return 0 }
@@ -325,22 +339,26 @@ private struct StemHalo: View {
                         .stroke(stem.color(scheme, opacity: on ? 0.25 + 0.5 * level : 0), lineWidth: 2)
                         .padding(crowded ? -2 - 3 * level : -3 - 5 * level)
                     // In the stem's colour even while it is quiet, more saturated and brighter as it gets louder, so the
-                    // circles move with the song as well as their rings. A muted stem is grey.
+                    // circles move with the song as well as their rings. A muted stem is grey with stripes, a faint red
+                    // tint and a faint red ring, which tell it apart from a quiet one at a glance.
                     Circle()
                         .fill(palette.ink.opacity(hovering ? 0.1 : 0.07))
                         .overlay {
-                            if on { Circle().fill(stem.fill(scheme, level: 1.1 * level + (hovering ? 0.15 : 0))) }
+                            if on {
+                                Circle().fill(stem.fill(scheme, level: 1.1 * level + (hovering ? 0.15 : 0)))
+                            } else if !solo {
+                                let red = { (opacity: Double) in Color.oklch(scheme == .dark ? 0.68 : 0.6, 0.2, 25, opacity: opacity) }
+                                MutedStripes().stroke(palette.muted.opacity(0.22), lineWidth: 1.5).clipShape(Circle())
+                                Circle().fill(red(0.05))
+                                Circle().strokeBorder(red(0.2), lineWidth: 2)
+                            }
                         }
                     Image(systemName: solo ? "headphones" : stem.symbol)
                         .font(.system(size: (crowded ? 11 : compact ? 12 : 15) * (expanded ? 1 : 0.85), weight: .semibold))
                         .offset(y: lift)
-                        .foregroundStyle(on ? stem.ink(scheme) : solo ? palette.ink : palette.muted.opacity(0.4))
+                        .foregroundStyle(on ? stem.ink(scheme) : solo ? palette.ink : palette.muted.opacity(0.45))
                         // Option is a key held for a moment, so the swap runs at three times the usual speed.
                         .contentTransition(.symbolEffect(.replace, options: .speed(3)))
-                    if !on, !solo {
-                        // Red, so a muted stem stands out from a quiet one at a glance.
-                        Capsule().fill(Color.oklch(scheme == .dark ? 0.68 : 0.6, 0.2, 25)).frame(width: 2, height: side - 2).rotationEffect(.degrees(-45))
-                    }
                 }
                 .frame(width: side, height: side)
                 .overlay(alignment: .bottomTrailing) {
@@ -354,7 +372,6 @@ private struct StemHalo: View {
                     .contentTransition(.numericText(value: volume))
                     .monospacedDigit()
                     .font(.system(size: crowded ? 10 : compact ? 10.5 : 12, weight: .semibold, design: .rounded))
-                    .strikethrough(!on, color: palette.muted.opacity(0.5))
                     .foregroundStyle(on ? palette.ink : palette.muted.opacity(0.5))
                     .lineLimit(1)
                     .fixedSize()
