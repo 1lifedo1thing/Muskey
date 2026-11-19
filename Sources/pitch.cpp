@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <memory>
 #include <atomic>
 #include <cmath>
 #include <vector>
@@ -188,6 +189,214 @@ struct Voice {
     }
 };
 
+// A song from another player, slowed down. The player plays at its own speed, so the tap's audio waits in a backlog,
+// and this reads it back slower with a windowed-sinc resampler, the way a record played slower sounds: lower too, and
+// the voices raise it back by the correction that the app sets. The backlog grows while the song plays; the app moves
+// the player back now and then, finds where the audio that the player plays again matches what the backlog holds, and
+// the reader steps from the old audio to the new at that moment of the song, so nothing is heard twice.
+struct Slower {
+    static constexpr int taps = 32, half = taps / 2, phases = 512;
+    // Frames that the reader keeps behind the newest audio, for the resampler's look-ahead.
+    static constexpr size_t cushion = half + 8;
+    static constexpr size_t maxFrames = 16384;
+    double rate;
+    std::vector<float> kernel; // (phases + 1) rows of `taps` weights
+    std::unique_ptr<SharedFrames> owned;
+    std::atomic<SharedFrames *> backlog{nullptr};
+    std::atomic<bool> wanted{false};
+    std::atomic<double> speed{1.0};
+    std::atomic<uint32_t> flushesAsked{0};
+    uint32_t flushesTaken = 0;
+    std::atomic<uint64_t> spliceFrom{0}, spliceTo{0}, spliceBefore{0};
+    std::atomic<uint32_t> splicesAsked{0};
+    uint32_t splicesTaken = 0;
+
+    // Read by the app.
+    std::atomic<bool> engagedOut{false};
+    std::atomic<uint64_t> readingOut{0};
+    std::atomic<double> clockOut{0};
+    std::atomic<uint32_t> splicesDone{0}, splicesMissed{0}, flushesDone{0};
+
+    // The audio thread's own state.
+    bool on = false;
+    float mix = 0; // 0 plays the tap as it is, 1 the reader
+    uint64_t at = 0;
+    double frac = 0, clock = 0;
+    bool pending = false;
+    uint64_t pendingFrom = 0, pendingTo = 0, pendingBefore = 0;
+    // A step in progress, from `at` to `at + jump`: a splice (the same audio, so a short linear crossfade) or a flush
+    // (other audio, so an equal-power one).
+    size_t stepLeft = 0, stepTotal = 0;
+    uint64_t jump = 0;
+    bool stepIsFlush = false;
+    // Paused: the reader holds where it is, after fading out, and the silence of the pause isn't written.
+    float holdGain = 1;
+    bool wasPaused = false, awaitingSound = false;
+    size_t awaitingFrames = 0;
+    std::vector<float> left, right;
+
+    explicit Slower(double rate) : rate(rate), kernel(size_t(phases + 1) * taps), left(maxFrames), right(maxFrames) {
+        // A Kaiser-windowed sinc a little under the Nyquist frequency, so reading slightly faster than 1 doesn't alias.
+        constexpr double cutoff = 0.97, beta = 8.0;
+        auto bessel = [](double x) {
+            double sum = 1, term = 1;
+            for (int k = 1; k < 30; k++) {
+                term *= (x / (2 * k)) * (x / (2 * k));
+                sum += term;
+            }
+            return sum;
+        };
+        for (int p = 0; p <= phases; p++) {
+            double f = double(p) / phases;
+            for (int t = 0; t < taps; t++) {
+                // Tap t weighs frame `at + t - half + 1`, at distance x from the point that is read.
+                double x = double(t - half + 1) - f;
+                double sinc = std::abs(x) < 1e-9 ? cutoff : std::sin(M_PI * cutoff * x) / (M_PI * x);
+                double w = std::abs(x) >= half ? 0 : bessel(beta * std::sqrt(1 - (x / half) * (x / half))) / bessel(beta);
+                kernel[size_t(p) * taps + t] = float(sinc * w);
+            }
+        }
+        // At phase 0 the read lands on a frame, which then comes out unchanged.
+        for (int t = 0; t < taps; t++) kernel[t] = t == half - 1 ? 1.0f : 0.0f;
+        for (int t = 0; t < taps; t++) kernel[size_t(phases) * taps + t] = t == half ? 1.0f : 0.0f;
+    }
+
+    // The song at frame `i` plus `f` of the next one, from the backlog.
+    void sample(const SharedFrames &b, uint64_t i, double f, float &l, float &r) const {
+        double scaled = f * phases;
+        int p = std::min(phases - 1, int(scaled));
+        float mixPhase = float(scaled - p);
+        const float *k0 = &kernel[size_t(p) * taps], *k1 = &kernel[size_t(p + 1) * taps];
+        const float *pl = b.planes[0].data(), *pr = b.planes[1].data();
+        uint64_t first = i + 1 - half;
+        float sl = 0, sr = 0;
+        for (int t = 0; t < taps; t++) {
+            float w = k0[t] + (k1[t] - k0[t]) * mixPhase;
+            size_t index = size_t((first + t) % b.capacity);
+            sl += pl[index] * w;
+            sr += pr[index] * w;
+        }
+        l = sl;
+        r = sr;
+    }
+
+    // Takes the tap's `frames` and, while slowing, leaves as many frames of the slowed song in left and right.
+    // Returns false while the tap should play as it is.
+    bool process(const float *tapLeft, const float *tapRight, size_t frames, size_t stride, bool quiet, bool paused) {
+        SharedFrames *b = backlog.load(std::memory_order_acquire);
+        if (!b || frames > maxFrames) {
+            engagedOut.store(false, std::memory_order_relaxed);
+            return false;
+        }
+        bool want = wanted.load(std::memory_order_relaxed);
+
+        // The backlog is written while it isn't read too, so the reader starts with the moment before it. The silence
+        // of a pause, and of the moment before the song plays again, isn't the song's.
+        if (wasPaused && !paused) {
+            awaitingSound = true;
+            awaitingFrames = 0;
+        }
+        wasPaused = paused;
+        if (!quiet || awaitingFrames > size_t(rate)) awaitingSound = false;
+        if (awaitingSound) awaitingFrames += frames;
+        const float *planes[2] = {tapLeft, tapRight};
+        if (!(quiet && (paused || awaitingSound))) b->write(planes, frames, stride);
+        uint64_t written = b->written.load(std::memory_order_relaxed);
+        if (!want && !on) {
+            engagedOut.store(false, std::memory_order_relaxed);
+            return false;
+        }
+
+        if (want && !on) {
+            // Starts just behind the newest audio, and crossfades in from the tap as it plays.
+            on = true;
+            at = written - frames - cushion;
+            frac = 0;
+            pending = false;
+            stepLeft = 0;
+            holdGain = paused ? 0 : 1;
+            splicesTaken = splicesAsked.load(std::memory_order_acquire);
+            flushesTaken = flushesAsked.load(std::memory_order_relaxed);
+        }
+        uint32_t flushes = flushesAsked.load(std::memory_order_relaxed);
+        if (flushes != flushesTaken) {
+            flushesTaken = flushes;
+            pending = false;
+            uint64_t newest = written - frames - cushion;
+            if (newest > at) {
+                jump = newest - at;
+                stepTotal = stepLeft = size_t(rate * 0.01);
+                stepIsFlush = true;
+            }
+            flushesDone.fetch_add(1, std::memory_order_relaxed);
+        }
+        uint32_t splices = splicesAsked.load(std::memory_order_acquire);
+        if (splices != splicesTaken) {
+            splicesTaken = splices;
+            pending = true;
+            pendingFrom = spliceFrom.load(std::memory_order_relaxed);
+            pendingTo = spliceTo.load(std::memory_order_relaxed);
+            pendingBefore = spliceBefore.load(std::memory_order_relaxed);
+        }
+
+        double step = std::clamp(speed.load(std::memory_order_relaxed), 0.25, 2.0);
+        const float holdStep = float(1.0 / (rate * 0.01)), mixStep = float(1.0 / (rate * 0.005));
+        float target = want ? 1.0f : 0.0f;
+        for (size_t f = 0; f < frames; f++) {
+            float tl = tapLeft[f * stride], tr = tapRight[f * stride];
+            float l = 0, r = 0;
+            holdGain += std::clamp((paused ? 0.0f : 1.0f) - holdGain, -holdStep, holdStep);
+            bool held = paused && holdGain <= 0;
+            if (!held) {
+                if (pending && stepLeft == 0 && at >= pendingFrom) {
+                    pending = false;
+                    if (at < pendingBefore && pendingTo > pendingFrom) {
+                        jump = pendingTo - pendingFrom;
+                        stepTotal = stepLeft = size_t(rate * 0.005);
+                        stepIsFlush = false;
+                    } else {
+                        splicesMissed.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                // Never past the newest audio, which would read frames that aren't written yet.
+                if (at + half + 1 < written) sample(*b, at, frac, l, r);
+                if (stepLeft > 0) {
+                    float nl = 0, nr = 0;
+                    if (at + jump + half + 1 < written) sample(*b, at + jump, frac, nl, nr);
+                    float x = 1 - float(stepLeft) / float(stepTotal);
+                    float out = stepIsFlush ? std::cos(x * float(M_PI / 2)) : 1 - x;
+                    float in = stepIsFlush ? std::sin(x * float(M_PI / 2)) : x;
+                    l = l * out + nl * in;
+                    r = r * out + nr * in;
+                    if (--stepLeft == 0) {
+                        at += jump;
+                        // Counted once the reader is past it, so the app never reads where it was before the step.
+                        if (!stepIsFlush) splicesDone.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                l *= holdGain;
+                r *= holdGain;
+                // The reader moves on, slower or faster than the song, but stays within the audio written.
+                double next = frac + step;
+                uint64_t whole = uint64_t(next);
+                if (at + whole + half + 1 < written) {
+                    at += whole;
+                    frac = next - double(whole);
+                    clock += step;
+                }
+            }
+            mix += std::clamp(target - mix, -mixStep, mixStep);
+            left[f] = tl * (1 - mix) + l * mix;
+            right[f] = tr * (1 - mix) + r * mix;
+        }
+        if (!want && mix <= 0) on = false;
+        engagedOut.store(on, std::memory_order_relaxed);
+        readingOut.store(at, std::memory_order_relaxed);
+        clockOut.store(clock, std::memory_order_relaxed);
+        return true;
+    }
+};
+
 } // namespace
 
 struct PSShifter {
@@ -218,6 +427,9 @@ struct PSShifter {
     std::atomic<uint64_t> underruns{0};
 
     Limiter limiter;
+
+    // Slows the tap's audio down before anything else hears it, while the app asks for it.
+    Slower slower;
 
     // Stems: while they are on, the tap's audio also goes to `captured` for the separation thread, which writes each
     // stem back to `stems` a few seconds later. Until the first block is separated, the song keeps playing as it
@@ -345,7 +557,7 @@ struct PSShifter {
           // frames that drift compensation adds or drops per callback. The output cushion covers Rubber Band's hops,
           // with room to spare at every buffer size that the self-test plays.
           primeFrames(size_t(rate * 0.003)), maxLatencyFrames(size_t(rate * 0.25)),
-          targetLatencyFrames(size_t(rate * 0.03)), cushionFrames(size_t(rate * 0.01)), limiter(rate),
+          targetLatencyFrames(size_t(rate * 0.03)), cushionFrames(size_t(rate * 0.01)), limiter(rate), slower(rate),
           inLeft(maxChunk), inRight(maxChunk), outLeft(maxChunk), outRight(maxChunk), nextLeft(maxChunk),
           nextRight(maxChunk), recording(size_t(std::max(0.0, recordSeconds) * rate) * 2),
           captured(2, size_t(rate * 60)), stems(2 * stemCount, size_t(rate * 30)), stemsCushion(size_t(rate * 0.25)), stemsLead(size_t(rate * 0.75)), stemsMargin(size_t(rate * 6)), rate(rate),
@@ -1041,6 +1253,64 @@ double ps_stems_waiting(PSShifter *s) {
     return captured > start ? double(captured - start) / s->rate : 0;
 }
 
+void ps_slow_prepare(PSShifter *s, double seconds) {
+    if (s->slower.owned) return;
+    s->slower.owned = std::make_unique<SharedFrames>(2, size_t(std::max(1.0, seconds) * s->rate));
+    s->slower.backlog.store(s->slower.owned.get(), std::memory_order_release);
+}
+
+void ps_slow_enable(PSShifter *s, int on) {
+    s->slower.wanted.store(on != 0, std::memory_order_relaxed);
+}
+
+void ps_slow_set_speed(PSShifter *s, double speed) {
+    s->slower.speed.store(speed, std::memory_order_relaxed);
+}
+
+void ps_slow_flush(PSShifter *s) {
+    s->slower.flushesAsked.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ps_slow_splice(PSShifter *s, uint64_t from, uint64_t to, uint64_t before) {
+    s->slower.spliceFrom.store(from, std::memory_order_relaxed);
+    s->slower.spliceTo.store(to, std::memory_order_relaxed);
+    s->slower.spliceBefore.store(before, std::memory_order_relaxed);
+    s->slower.splicesAsked.fetch_add(1, std::memory_order_release);
+}
+
+PSSlowState ps_slow_state(PSShifter *s) {
+    PSSlowState state{};
+    Slower &w = s->slower;
+    SharedFrames *b = w.backlog.load(std::memory_order_acquire);
+    state.engaged = w.engagedOut.load(std::memory_order_relaxed) ? 1 : 0;
+    state.written = b ? b->written.load(std::memory_order_acquire) : 0;
+    state.reading = w.readingOut.load(std::memory_order_relaxed);
+    state.clock = w.clockOut.load(std::memory_order_relaxed);
+    state.splices = w.splicesDone.load(std::memory_order_relaxed);
+    state.missed = w.splicesMissed.load(std::memory_order_relaxed);
+    state.flushes = w.flushesDone.load(std::memory_order_relaxed);
+    return state;
+}
+
+size_t ps_slow_read(PSShifter *s, uint64_t *position, float *left, float *right, size_t max) {
+    SharedFrames *b = s->slower.backlog.load(std::memory_order_acquire);
+    if (!b) return 0;
+    uint64_t written = b->written.load(std::memory_order_acquire);
+    // Frames older than the buffer were overwritten, and so may be the oldest ones that remain while this copies.
+    uint64_t oldest = written > b->capacity ? written - b->capacity + uint64_t(s->rate) : 0;
+    if (*position < oldest) *position = oldest;
+    if (*position >= written) return 0;
+    size_t n = size_t(std::min<uint64_t>(max, written - *position));
+    const float *pl = b->planes[0].data(), *pr = b->planes[1].data();
+    for (size_t i = 0; i < n; i++) {
+        size_t index = size_t((*position + i) % b->capacity);
+        left[i] = pl[index];
+        right[i] = pr[index];
+    }
+    *position += n;
+    return n;
+}
+
 size_t ps_recording(PSShifter *shifter, const float **pairs) {
     *pairs = shifter->recording.data();
     return shifter->recorded.load(std::memory_order_acquire);
@@ -1065,29 +1335,40 @@ void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *out
 
     // Input: the tap's stream(s) come after any input streams of the output device.
     UInt32 buffers = input ? input->mNumberBuffers : 0;
+    const float *l = nullptr, *r = nullptr;
+    size_t tapFrames = 0, stride = 1;
+    bool quiet = true;
     if (s->planar && buffers >= 2) {
         const AudioBuffer &left = input->mBuffers[buffers - 2], &right = input->mBuffers[buffers - 1];
         if (left.mData && right.mData) {
-            size_t frames = std::min(left.mDataByteSize, right.mDataByteSize) / sizeof(float);
-            auto *l = static_cast<const float *>(left.mData), *r = static_cast<const float *>(right.mData);
-            // Digital silence is skipped, so the heard counter only moves while something plays. The stems get
-            // every frame, silent or not, so they stay in time with the song, except while the song is paused.
-            bool quiet = silent(l, frames) && silent(r, frames);
-            if (!quiet) s->write(l, r, frames, 1);
-            const float *planes[2] = {l, r};
-            s->capture(planes, frames, 1, quiet, stems);
+            tapFrames = std::min(left.mDataByteSize, right.mDataByteSize) / sizeof(float);
+            l = static_cast<const float *>(left.mData);
+            r = static_cast<const float *>(right.mData);
+            quiet = silent(l, tapFrames) && silent(r, tapFrames);
         }
     } else if (buffers >= 1) {
         const AudioBuffer &last = input->mBuffers[buffers - 1];
         if (last.mData) {
-            size_t channels = std::max<UInt32>(1, last.mNumberChannels);
-            size_t frames = last.mDataByteSize / (sizeof(float) * channels);
-            auto *p = static_cast<const float *>(last.mData);
-            bool quiet = silent(p, frames * channels);
-            if (!quiet) s->write(p, channels > 1 ? p + 1 : p, frames, channels);
-            const float *planes[2] = {p, channels > 1 ? p + 1 : p};
-            s->capture(planes, frames, channels, quiet, stems);
+            stride = std::max<UInt32>(1, last.mNumberChannels);
+            tapFrames = last.mDataByteSize / (sizeof(float) * stride);
+            l = static_cast<const float *>(last.mData);
+            r = stride > 1 ? l + 1 : l;
+            quiet = silent(l, tapFrames * stride);
         }
+    }
+    if (l && tapFrames > 0) {
+        // A slowed song takes the tap's place from here on.
+        if (s->slower.process(l, r, tapFrames, stride, quiet, s->paused.load(std::memory_order_relaxed))) {
+            l = s->slower.left.data();
+            r = s->slower.right.data();
+            stride = 1;
+            quiet = silent(l, tapFrames) && silent(r, tapFrames);
+        }
+        // Digital silence is skipped, so the heard counter only moves while something plays. The stems get every
+        // frame, silent or not, so they stay in time with the song, except while the song is paused.
+        if (!quiet) s->write(l, r, tapFrames, stride);
+        const float *planes[2] = {l, r};
+        s->capture(planes, tapFrames, stride, quiet, stems);
     }
 
     if (!output || output->mNumberBuffers == 0) return;

@@ -206,6 +206,9 @@ final class HUDModel: ObservableObject {
     @Published var speed = 1.0
     /// The song plays in Muskey Player, whose speed the tempo keys and the tempo pill change.
     @Published var speedAdjustable = false
+    /// The fastest speed of the song that plays: 150 % in Muskey Player, and 100 % for another player's song, which can
+    /// only be slowed down.
+    @Published var fastestSpeed = 1.5
     /// A seek would be instant: the stems aren't separated live, the lyrics don't play behind, and the player took
     /// the last seek. The seek keys and their hints exist only then.
     @Published var seekable = false
@@ -1038,6 +1041,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var estimated = false
 
     private let pitch = PitchChanger(recordTo: stringOption("--shift-wav"))
+    /// A song from another player slowed down, and the song as it is heard while it is.
+    private lazy var slow = SlowStream(pitch: pitch)
+    /// The player whose song is slowed down: another player taking over stops the slowing.
+    private var slowedPlayer: String?
+    /// The speed that a slowed song had before it was recorded for a save, which it gets back after it.
+    private var speedBeforeRecording: Double?
     private let statusItem = StatusItem()
     /// The key the running pitch change starts from, kept for the menu bar item after the HUD shows another listen.
     private var shiftBase: DetectedKey?
@@ -1139,7 +1148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // While the stems or the lyrics delay play, a pause has to be heard at once, so the helper keeps telling.
         // A song that Muskey Player plays faster or slower keeps its pitch correction only while it is the one that plays.
         nowPlaying.watching = keptKey != nil || shown || songKey != nil || prefs.alwaysListen || model.stemsEngaged || lyricsDelayed
-            || filePlayer.speed != 1 || songRecording != nil
+            || filePlayer.speed != 1 || songRecording != nil || slow.active
     }
 
     /// The stems play seconds behind the song, so they hold where they are while the player pauses it. A track
@@ -1305,7 +1314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !lyricsDelayed else { return log("karaoke: the song doesn't start over while Whisper writes its lyrics") }
         guard model.stemsEngaged else {
             log("karaoke: the song starts over")
-            return movePlayer(track, to: 0)
+            return moveSong(track, to: 0)
         }
         // Stems that already play for this song are ready, as when karaoke opens again: it opens on them at once,
         // where the song is, with nothing to separate again.
@@ -1339,7 +1348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // sent to Muskey Player straight would be read only a few seconds later.
             nowPlaying.seek(to: target)
         } else {
-            movePlayer(track, to: target) { moved in if !moved { giveUp() } }
+            moveSong(track, to: target) { moved in if !moved { giveUp() } }
         }
         // The Automation question can stay open for long, so the sound comes back after a while without an answer.
         let timeout = DispatchWorkItem(block: giveUp)
@@ -1360,7 +1369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             : String(format: "seek: the song moved to %.1f s, %.2f s ago", target, position - target))
         // The player's timestamp can be a little early, and the start is better 50 ms late than in the moment
         // before the move.
-        pitch.restartStems(back: max(0, position - target - 0.05))
+        pitch.restartStems(back: max(0, (position - target) / max(track.rate ?? 1, 0.1) - 0.05))
         if model.shown { model.rewinds += 1 }
     }
 
@@ -1807,6 +1816,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return adjust(event) || swipe(event) ? nil : event
         }
         nowPlaying.log = { [weak self] in self?.log($0) }
+        nowPlaying.heard = { [weak self] report in self?.slow.heard(report) ?? report }
+        nowPlaying.onPlayerReport = { [weak self] in self?.slow.playerReported($0) }
+        slow.player = { [weak self] in self?.nowPlaying.player }
+        slow.move = { [weak self] track, seconds in self?.movePlayer(track, to: seconds) }
+        slow.movesKnown = { [weak self] id in self?.seekPaths[id] != nil || Self.forcedSeekPath != nil }
+        slow.refresh = { [weak self] in self?.nowPlaying.refresh() }
+        slow.onReadSpeed = { [weak self] in self?.syncSpeed() }
+        slow.log = { [weak self] in self?.log($0) }
         nowPlaying.onSongChange = { [weak self] in
             // Another song during karaoke's countdown plays as it comes.
             if self?.karaokeRestart != nil { self?.endKaraokeRestart() }
@@ -2105,8 +2122,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.scroll.lift = tanh(current.travel / 60)
         switch current.region {
         case .tempo:
-            let speed = min(max(((current.start + Double(current.travel) / 600) * 100).rounded() / 100, 0.5), 1.5)
-            if speed != filePlayer.speed { playSpeed(speed) }
+            let speed = min(max(((current.start + Double(current.travel) / 600) * 100).rounded() / 100, 0.5), fastestSpeed)
+            if speed != currentSpeed { playSpeed(speed) }
         case let .stem(stem):
             let volume = min(max(((current.start + Double(current.travel) / 300) * 100).rounded() / 100, 0), 1.5)
             if volume != model.stemVolumes[stem] ?? 1 { setStemVolume(stem, volume) }
@@ -2150,7 +2167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The value that a scroll over `region` starts from, or nil while it can't be adjusted.
     private func adjustedValue(_ region: ScrollRegion) -> Double? {
         switch region {
-        case .tempo: model.speedAdjustable ? filePlayer.speed : nil
+        case .tempo: model.speedAdjustable ? currentSpeed : nil
         case let .stem(stem): model.stemsAvailable ? model.stemVolumes[stem] ?? 1 : nil
         }
     }
@@ -2720,7 +2737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The changes that a save keeps, nil when the song plays as it is.
     private func saveChanges() -> SongChanges? {
-        var changes = SongChanges(semitones: model.shift, speed: playedSpeed)
+        var changes = SongChanges(semitones: model.shift, speed: currentSpeed)
         if model.stemsEngaged, model.stemsAdjusted {
             changes.stemGains = Stem.allCases.map { model.stemsMuted.contains($0) ? 0 : Float(model.stemVolumes[$0] ?? 1) }
         }
@@ -2877,6 +2894,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var songRecording: SongRecording?
 
     private func startRecording(_ job: SaveJob) {
+        // The player moves under a slowed song, which would stop the recording, so the song plays as it is while it is
+        // recorded, and the save slows it down. The slowing comes back after the save.
+        if slow.active {
+            speedBeforeRecording = slow.speed
+            slow.stop("the song is recorded for a save")
+        }
         guard case let .player(id, _, seconds) = job.source, let track = nowPlaying.track, track.bundleID == id else {
             return saveFinished(job, error: SaveError(message: "The song isn't playing anymore"), seconds: 0, length: 0)
         }
@@ -2965,6 +2988,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recording.timer?.invalidate()
         songRecording = nil
         updateWatching(shown: model.shown)
+        if let speed = speedBeforeRecording {
+            speedBeforeRecording = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.syncSpeed()
+                self?.playSpeed(speed)
+            }
+        }
         let audio = recording.recorder.stop(frames: Int(seconds * recording.recorder.rate))
         if let error { return saveFinished(recording.job, error: error, seconds: 0, length: 0) }
         log(String(format: "save: recorded %.1f s of %@ at %.0f Hz", audio.seconds, recording.job.name, audio.rate))
@@ -3028,7 +3058,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         seekTarget = (track.song, target, Date())
         log(String(format: "seek to %.1f s", target))
         if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: flash) }
-        movePlayer(track, to: target)
+        moveSong(track, to: target)
+    }
+
+    /// Moves the song that is heard: through the slowed stream while it is slowed down, which jumps to the move.
+    private func moveSong(_ track: NowPlaying.Track, to target: Double, done: ((Bool) -> Void)? = nil) {
+        guard slow.active, track.bundleID != FilePlayer.bundleID else { return movePlayer(track, to: target, done: done) }
+        slow.moved(track, to: target)
+        done?(true)
     }
 
     /// Moves the song in the player of `track` to `target` seconds. Players differ in the seek they take, so the first
@@ -3051,9 +3088,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         func check(_ sent: Date, tries: Int = 0) {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
-                guard let now = nowPlaying.track, now.song == track.song else {
-                    log(nowPlaying.track == nil ? "seek: nothing plays, the move is over"
-                        : "seek: another song plays (\(nowPlaying.track?.label ?? "")), the move is over")
+                guard let now = nowPlaying.player, now.song == track.song else {
+                    log(nowPlaying.player == nil ? "seek: nothing plays, the move is over"
+                        : "seek: another song plays (\(nowPlaying.player?.label ?? "")), the move is over")
                     return done?(false) ?? ()
                 }
                 guard let position = now.position(at: Date()) else {
@@ -3878,8 +3915,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// for a song that Muskey Player plays faster or slower, which it keeps in its key.
     private var pitchWanted: Bool { model.shift != 0 || model.stemsEngaged || lyricsDelayed || pitch.correction != 0 }
 
-    /// The speed of the song as the tap hears it: Muskey Player's speed while its song is the one that plays.
-    private var playedSpeed: Double { model.speedAdjustable ? filePlayer.speed : 1 }
+    /// The speed of the song as the tap hears it: Muskey Player's speed while its song is the one that plays. A song
+    /// from another player plays at its own speed, and only the output slows it down.
+    private var playedSpeed: Double { playsInFilePlayer ? filePlayer.speed : 1 }
+    /// The speed of the song that plays: Muskey Player's, or the one that another player's song is slowed down to.
+    private var currentSpeed: Double { playsInFilePlayer ? filePlayer.speed : slow.speed }
+    private var playsInFilePlayer: Bool { filePlayer.hasSong && nowPlaying.player?.bundleID == FilePlayer.bundleID }
+    /// A song from another player can be slowed down while the player moves its songs, which keeps the output in step
+    /// with it, and while it isn't recorded for a save.
+    private var slowable: Bool {
+        guard let player = nowPlaying.player, player.title?.isEmpty == false, (player.duration ?? 0) > 0, let id = player.bundleID,
+              id != FilePlayer.bundleID, !unseekable.contains(id), songRecording == nil
+        else { return false }
+        return true
+    }
+    /// The fastest speed: a song from another player can only be slowed down, since the player plays it as fast as it
+    /// comes.
+    private var fastestSpeed: Double { playsInFilePlayer ? 1.5 : 1 }
     /// The speed that the listens running now hear the song at.
     private var heardSpeed = 1.0
 
@@ -3888,15 +3940,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The tempo keys and pills: 5 % slower or faster, from 50 % to 150 %, or the song's own tempo with 0.
     private func changeSpeed(by step: Int) {
-        playSpeed(step == 0 ? 1 : min(max(((filePlayer.speed * 20).rounded() + Double(step)) / 20, 0.5), 1.5))
+        playSpeed(step == 0 ? 1 : min(max(((currentSpeed * 20).rounded() + Double(step)) / 20, 0.5), fastestSpeed))
     }
 
     /// `--speed S` plays the first song that Muskey Player opens at that speed, for testing the correction.
     private var testSpeed = TestFlags.value("--speed").flatMap(Double.init)
 
     private func playSpeed(_ target: Double) {
-        guard model.speedAdjustable, target != filePlayer.speed else { return }
-        filePlayer.setSpeed(target)
+        guard model.speedAdjustable, target != currentSpeed else { return }
+        if playsInFilePlayer {
+            filePlayer.setSpeed(target)
+        } else if let player = nowPlaying.player {
+            slowedPlayer = player.bundleID
+            slow.setSpeed(target, track: player)
+        }
         log(String(format: "tempo %.0f%%", target * 100))
         syncSpeed()
     }
@@ -3904,7 +3961,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Muskey Player's speed, and the correction that keeps its song in its key. The pitch change hears every app, so
     /// the correction applies only while Muskey Player is the player that macOS shows as playing.
     private func syncSpeed() {
-        let adjustable = filePlayer.hasSong && nowPlaying.track?.bundleID == FilePlayer.bundleID
+        // Another player taking over, or a save that records the song, ends the slowing: the output jumps to the player.
+        if slow.active, nowPlaying.player?.bundleID != slowedPlayer || songRecording != nil {
+            slow.stop(songRecording != nil ? "the song is recorded for a save" : "another player plays")
+        }
+        let adjustable = playsInFilePlayer || slowable || slow.active
         if model.speedAdjustable != adjustable {
             model.speedAdjustable = adjustable
             log("tempo keys \(adjustable ? "on" : "off") (playing: \(nowPlaying.track?.bundleID ?? "nothing"))")
@@ -3914,10 +3975,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [self] in playSpeed(speed) }
             }
         }
-        if model.speed != filePlayer.speed {
-            model.speed = filePlayer.speed
+        if model.speed != currentSpeed {
+            model.speed = currentSpeed
             syncSavable()
         }
+        if model.fastestSpeed != fastestSpeed { model.fastestSpeed = fastestSpeed }
         let speed = playedSpeed
         if speed != heardSpeed {
             heardSpeed = speed
@@ -3933,8 +3995,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 autoListenIfNeeded()
             }
         }
-        lyricsSync.hearsSong = speed == 1
-        let correction = speed == 1 ? 0 : -12 * log2(speed)
+        lyricsSync.hearsSong = speed == 1 && !slow.active
+        // The output reads a slowed song from another player as a record played slower, which the correction undoes.
+        let read = playsInFilePlayer ? speed : slow.active ? slow.readSpeed : 1
+        let correction = read == 1 ? 0 : -12 * log2(read)
         guard correction != pitch.correction else { return }
         pitch.correction = correction
         updateWatching(shown: model.shown)
@@ -3995,6 +4059,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func pitchFailed(_ reason: String) {
         log("pitch change failed: \(reason)")
+        slow.stop("the pitch change failed")
         pitch.stop()
         model.shift = 0
         model.relative = false

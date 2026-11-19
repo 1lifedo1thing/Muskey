@@ -129,7 +129,7 @@ struct ShiftPills: View {
             ScrollLifted(region: .tempo, scroll: model.scroll, depth: 2.5) { inner, _ in
                 HStack(spacing: 6) {
                     TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
-                              palette: palette, lift: inner, step: model.onSpeed)
+                              slower: model.speed > 0.5, faster: model.speed < model.fastestSpeed, palette: palette, lift: inner, step: model.onSpeed)
                     if model.speedAdjustable, model.speed != 1 {
                         SpeedPill(speed: model.speed, palette: palette) { model.onSpeed(0) }
                             .offset(y: inner)
@@ -195,6 +195,8 @@ struct ScrollLifted<Content: View>: View {
 struct TempoPill: View {
     let bpm: Double?
     let adjustable: Bool
+    /// The speed can go down or up from here: a song from another player can only be slowed down.
+    var slower = true, faster = true
     let palette: Palette
     /// The extra lift of the text and the keycaps while a scroll changes the speed.
     var lift: CGFloat = 0
@@ -202,16 +204,17 @@ struct TempoPill: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            if adjustable { cap("[", help: "Slower ([)", step: -1) }
+            if adjustable, slower { cap("[", help: "Slower ([)", step: -1) }
             Text(bpm.map { "\(Int($0.rounded())) BPM" } ?? "Tempo")
                 .contentTransition(.numericText(value: bpm ?? 0))
-            if adjustable { cap("]", help: "Faster (])", step: 1) }
+            if adjustable, faster { cap("]", help: "Faster (])", step: 1) }
         }
         .offset(y: lift)
         .font(.system(size: 11, weight: .bold, design: .rounded))
         .monospacedDigit()
         .foregroundStyle(palette.ink)
-        .padding(.horizontal, adjustable ? 4 : 8)
+        .padding(.leading, adjustable && slower ? 4 : 8)
+        .padding(.trailing, adjustable && faster ? 4 : 8)
         .padding(.vertical, 3)
         .background(Capsule().fill(palette.ink.opacity(0.1)))
         .fixedSize()

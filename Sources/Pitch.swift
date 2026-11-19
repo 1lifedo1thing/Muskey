@@ -100,6 +100,42 @@ final class PitchChanger {
     /// Seconds until the song steps back for the lyrics delay, nil when it doesn't wait. A pause stops the count.
     var delayWaiting: Double? { shifter.map { ps_delay_waiting($0) }.flatMap { $0 >= 0 ? $0 : nil } }
 
+    /// Slowing a song from another player down: the output reads the tap's audio from a backlog at `slowSpeed`, and
+    /// `correction` keeps the key. Ignored while the pitch change doesn't run; `build` applies it again.
+    var slowing = false {
+        didSet {
+            guard slowing != oldValue, let shifter else { return }
+            if slowing { ps_slow_prepare(shifter, Self.backlogSeconds) }
+            ps_slow_enable(shifter, slowing ? 1 : 0)
+        }
+    }
+    var slowSpeed = 1.0 {
+        didSet { if slowSpeed != oldValue, let shifter { ps_slow_set_speed(shifter, slowSpeed) } }
+    }
+    /// How much of the tap's audio the backlog holds: the most that the output can fall behind, with the audio that
+    /// the player plays again after a move.
+    static let backlogSeconds = 80.0
+    var slowState: PSSlowState? { shifter.map { ps_slow_state($0) } }
+    func slowFlush() { if let shifter { ps_slow_flush(shifter) } }
+    func slowSplice(from: UInt64, to: UInt64, before: UInt64) { if let shifter { ps_slow_splice(shifter, from, to, before) } }
+    /// The backlog's frames from `position` on, at most `count`, as one channel: the left and right averaged.
+    func slowRead(from position: UInt64, count: Int) -> (start: UInt64, samples: [Float]) {
+        guard let shifter, count > 0 else { return (position, []) }
+        var at = position
+        var left = [Float](repeating: 0, count: count), right = [Float](repeating: 0, count: count)
+        let start: UInt64
+        let got = left.withUnsafeMutableBufferPointer { l in
+            right.withUnsafeMutableBufferPointer { r in ps_slow_read(shifter, &at, l.baseAddress, r.baseAddress, count) }
+        }
+        start = at - UInt64(got)
+        guard got > 0 else { return (at, []) }
+        var mono = [Float](repeating: 0, count: got)
+        vDSP_vadd(left, 1, right, 1, &mono, 1, vDSP_Length(got))
+        vDSP_vsmul(mono, 1, [0.5], &mono, 1, vDSP_Length(got))
+        return (start, mono)
+    }
+    var sampleRate: Double { rate }
+
     var stemsOn: Bool { stemsEngaged }
     /// How many backspins the output played: one each time it stepped back in the song.
     var spins: UInt32 { shifter.map { ps_spins($0) } ?? 0 }
@@ -242,6 +278,11 @@ final class PitchChanger {
         ps_set_paused(shifter, paused ? 1 : 0)
         ps_set_delay(shifter, lyricsDelay)
         ps_set_step_fade(shifter, fadeSteps ? 1 : 0)
+        ps_slow_set_speed(shifter, slowSpeed)
+        if slowing {
+            ps_slow_prepare(shifter, Self.backlogSeconds)
+            ps_slow_enable(shifter, 1)
+        }
         applyStems()
 
         try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, nil) { _, input, _, output, _ in
@@ -809,7 +850,135 @@ enum PitchSelfTest {
         }
         try? FileManager.default.removeItem(at: folder)
 
+        // Slowing a song from another player down: a sweep that rises 50 Hz each second of the song, read back at 80 %
+        // with the correction that keeps the key, then at half speed with a move back of 2 seconds that a splice
+        // takes out, a flush to the newest audio, and a pause that holds the reader.
+        let slowed = renderSlow(seconds: 6, speed: 0.8, correction: true)
+        let slowedHz = pitch(slowed.output, from: 4.5, to: 4.7)
+        let wantHz = 300 + 50 * slowed.songAt(4.6)
+        report(abs(slowedHz / wantHz - 1) < 0.02 && abs(slowed.backlog - 5.5 * 0.2) < 0.05,
+               String(format: "slow 80%%         %.1f Hz (want %.1f), backlog %.2f s (want %.2f)", slowedHz, wantHz, slowed.backlog, 5.5 * 0.2))
+        let spliced = renderSlow(seconds: 9, speed: 0.5, seekBackAt: 4, spliceAt: 5.6)
+        let endHz = pitch(spliced.input, from: 8.7, to: 8.9)
+        let endWant = 0.5 * (300 + 50 * spliced.songAt(8.8))
+        report(spliced.state.splices == 1 && spliced.state.missed == 0 && abs(endHz / endWant - 1) < 0.02 && spliced.roughest < 0.003,
+               String(format: "slow splice      %d splice, %d missed, %.1f Hz at the end (want %.1f, %.1f if heard twice), roughest step %.4f",
+                      spliced.state.splices, spliced.state.missed, endHz, endWant, 0.5 * (300 + 50 * (spliced.songAt(8.8) - 2)), spliced.roughest))
+        let flushed = renderSlow(seconds: 5, speed: 0.5, flushAt: 4)
+        report(flushed.state.flushes == 1 && flushed.backlog < 0.6,
+               String(format: "slow flush       backlog %.2f s a second after it (want under 0.55)", flushed.backlog))
+        let paused = renderSlow(seconds: 7, speed: 0.8, pauseFrom: 3, pauseTo: 5)
+        let pausedLevel = rms(paused.input[Int(rate * 3.2) ..< Int(rate * 4.9)])
+        let resumedLevel = stride(from: 5.05, to: 5.6, by: 0.01).map { rms(paused.input[Int(rate * $0) ..< Int(rate * ($0 + 0.01))]) }.min() ?? 0
+        report(pausedLevel < 0.001 && resumedLevel > 0.3 && abs(paused.heldWritten) < 1 && abs(paused.heldClock) < 1,
+               String(format: "slow pause       level %.4f while paused, lowest %.2f after, backlog grew %.0f and clock %.0f frames during it",
+                      pausedLevel, resumedLevel, paused.heldWritten, paused.heldClock))
+
         return failures == 0 ? 0 : 1
+    }
+
+    struct SlowRun {
+        var input: [Float], output: [Float]
+        var state: PSSlowState
+        /// Seconds of audio waiting in the backlog at the end.
+        var backlog: Double
+        /// The song's time that the reader played at each second of the run, from its clock.
+        var clocks: [(at: Double, song: Double)]
+        /// The largest second difference of the slowed song, past the first second: a step in it is a click.
+        var roughest: Float
+        var heldWritten: Double, heldClock: Double
+        func songAt(_ t: Double) -> Double {
+            let after = clocks.first { $0.at >= t } ?? clocks.last!
+            return after.song
+        }
+    }
+
+    /// A song that sweeps up from 300 Hz, 50 Hz per second of it, played by a "player" that the slowing reads back
+    /// at `speed` from half a second on. `seekBackAt` moves the player back 2 seconds, and `spliceAt` hands the
+    /// splice of that move to the reader, as the app does once it has found it. `flushAt` jumps to the newest audio,
+    /// and `pauseFrom`…`pauseTo` pauses the song: the player goes silent 50 ms after the flag and plays on 100 ms
+    /// after it clears.
+    private static func renderSlow(seconds: Double, speed: Double, correction: Bool = false, seekBackAt: Double? = nil, spliceAt: Double? = nil,
+                                   flushAt: Double? = nil, pauseFrom: Double? = nil, pauseTo: Double? = nil, chunk: Int = 512) -> SlowRun {
+        let shifter = ps_create(rate, 0, seconds)!
+        defer { ps_destroy(shifter) }
+        ps_slow_prepare(shifter, 30)
+        if correction { ps_set_semitones(shifter, Float(-12 * log2(speed))) }
+
+        let input = AudioBufferList.allocate(maximumBuffers: 1)
+        let output = AudioBufferList.allocate(maximumBuffers: 1)
+        let inData = UnsafeMutablePointer<Float>.allocate(capacity: chunk * 2)
+        let outData = UnsafeMutablePointer<Float>.allocate(capacity: chunk * 2)
+        defer { free(input.unsafeMutablePointer); free(output.unsafeMutablePointer); inData.deallocate(); outData.deallocate() }
+        input[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(chunk * 8), mData: inData)
+        output[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(chunk * 8), mData: outData)
+
+        var player = 0.0, phase = 0.0, frame = 0
+        var seam: UInt64 = 0, seamSong = 0.0
+        var clocks: [(at: Double, song: Double)] = []
+        var engagedSong = 0.0
+        var held: (written: UInt64, clock: Double)?
+        var heldWritten = 0.0, heldClock = 0.0
+        let fired = { (at: Double?) in at.map { frame <= Int($0 * rate) && frame + chunk > Int($0 * rate) } ?? false }
+        for _ in 0 ..< Int(rate * seconds) / chunk {
+            let t = Double(frame) / rate
+            if fired(0.5) {
+                // The reader starts 24 frames behind the newest audio.
+                engagedSong = player - 24 / rate
+                ps_slow_set_speed(shifter, speed)
+                ps_slow_enable(shifter, 1)
+            }
+            if fired(seekBackAt) {
+                seam = ps_slow_state(shifter).written
+                seamSong = player
+                player -= 2
+            }
+            if fired(spliceAt) {
+                // The moment half a second before the move, in the old audio and in what the player played again.
+                let from = seam - UInt64(rate * 0.5), to = seam + UInt64(rate * 1.5)
+                ps_slow_splice(shifter, from, to, seam)
+                _ = seamSong
+            }
+            if fired(flushAt) { ps_slow_flush(shifter) }
+            if fired(pauseFrom) { ps_set_paused(shifter, 1) }
+            if fired(pauseTo) { ps_set_paused(shifter, 0) }
+            if let pauseFrom, let pauseTo, t >= pauseFrom + 0.2, t < pauseTo {
+                let now = ps_slow_state(shifter)
+                if let held {
+                    heldWritten = Double(now.written) - Double(held.written)
+                    heldClock = now.clock - held.clock
+                } else {
+                    held = (now.written, now.clock)
+                }
+            }
+            let silent = pauseFrom.map { t >= $0 + 0.05 && t < (pauseTo ?? 0) + 0.1 } ?? false
+            for i in 0 ..< chunk {
+                var sample: Float = 0
+                if !silent {
+                    phase += 2 * .pi * (300 + 50 * player) / rate
+                    sample = Float(0.5 * sin(phase))
+                    player += 1 / rate
+                }
+                inData[i * 2] = sample
+                inData[i * 2 + 1] = sample
+            }
+            frame += chunk
+            ps_process(shifter, input.unsafePointer, output.unsafeMutablePointer)
+            let state = ps_slow_state(shifter)
+            clocks.append((Double(frame) / rate, engagedSong + state.clock / rate))
+        }
+        var pairs: UnsafePointer<Float>?
+        let count = ps_recording(shifter, &pairs)
+        let recorded = pairs.map { Array(UnsafeBufferPointer(start: $0, count: count * 2)) } ?? []
+        let ins = stride(from: 0, to: recorded.count, by: 2).map { recorded[$0] }
+        let outs = stride(from: 1, to: recorded.count, by: 2).map { recorded[$0] }
+        var roughest: Float = 0
+        if ins.count > Int(rate) + 2 {
+            for i in Int(rate) ..< ins.count - 1 { roughest = max(roughest, abs(ins[i + 1] - 2 * ins[i] + ins[i - 1])) }
+        }
+        let state = ps_slow_state(shifter)
+        return SlowRun(input: ins, output: outs, state: state, backlog: Double(state.written - state.reading) / rate, clocks: clocks,
+                       roughest: roughest, heldWritten: heldWritten, heldClock: heldClock)
     }
 
     static func hz(_ semitones: Int) -> Double { 440 * pow(2, Double(semitones) / 12) }

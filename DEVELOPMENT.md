@@ -72,6 +72,20 @@ A song that plays in Muskey Player can be played slower or faster. The keys `[` 
 
 The pitch change hears every app, so the correction applies only while macOS shows Muskey Player as the app that plays. A listen during a speed change reads the audio at the tap's rate divided by the speed, which finds the key and the tempo of the song at 100 %. The lyrics aren't timed by ear while the speed isn't 100 %.
 
+### Slowing down songs from other players
+
+A song from another player, such as Music or Spotify, can be slowed down to 50 % with the same keys, pills and scroll, but it can't be sped up. The player keeps playing at its own speed, so Muskey's pitch change keeps the player's audio in a backlog of 80 seconds and plays it back slower. It reads the backlog the way a record played slower sounds, with a windowed-sinc resampler, which lowers the pitch too, and the same correction as for Muskey Player moves the pitch back. Everything after it (the stems, the lyrics delay, the pauses and the key change) hears the slowed song as if a player played it.
+
+While the output plays slower, it gets further and further behind the player, so Muskey keeps the two in step:
+
+1. When the output is 30 seconds behind, Muskey moves the player back to 6 seconds ahead of the moment that is heard. Muskey then looks for the old audio that the output is about to play in the audio that the player plays again, by correlation, first at an eighth of the rate and then at the full rate within 50 ms of the best match. When the output reaches that moment, it steps over to the same moment in the new audio with a 5 ms crossfade, so nothing is heard twice.
+2. Players skip a moment of the song when they play again after a pause (Music skips about 160 ms), so after a pause Muskey moves the player back 2 seconds and steps over the audio played again in the same way.
+3. A song that the player starts after the one that is heard plays once the output reaches it, and the HUD, the key, the lyrics and the time on the record stay with the song that is heard until then. A song that the player skips to, and a move made in the player, are heard at once.
+4. The seek keys and karaoke's start move the player and jump the output to the move.
+5. Back at 100 %, Muskey moves the player to 3.5 seconds ahead of the output, steps over to it, and plays 5 % faster until the output has caught up. Then the output plays the player's audio as it comes again.
+
+The first move in a player that hasn't moved a song for Muskey yet comes once the output is 8 seconds behind. When the audio after a move isn't found twice in a row, the slowing stops and the song plays at 100 %. A save from another player records the song at 100 % and slows it down in the file, and the slowing comes back after the save.
+
 ### Lyrics
 
 While the lyrics show, Muskey looks the song up once, on these services at the same time:
@@ -136,6 +150,7 @@ Muskey writes the song to a temporary file, which replaces the chosen one once i
 ## Limitations
 
 - A pitch change moves every note by the same amount, so a major song stays major. Muskey reaches a key in the other mode through its relative, which has the same notes: from A major, C minor plays as E♭ major.
+- While a song from another player is slowed down, every other sound that the Mac plays is slowed down and delayed with it, since the pitch change hears every app.
 - A screen recording that includes system audio records both the original song and the shifted one. To record only the shifted song, use a recorder that captures per-app audio, and leave out the app that plays the song.
 
 ## Flags for testing
@@ -176,7 +191,9 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--key-lookup "Title\|Artist\|Album\|Seconds"` | Ask Noiseblend for the key of that song, print the answer and quit |
 | `--glyph-sheet` | Open a window of live records with the play and pause glyph over flat covers and the images of `--glyph-covers A,B,…`, as the pointer over the record shows it and as the pointer over the cover does |
 | `--open-menu-after S` | Open the menu bar menu after S seconds, so that a posted key reaches the open menu |
-| `--speed S` | Play the first song that Muskey Player opens at speed S (0.5 to 1.5), with the pitch correction |
+| `--speed S` | Play the first song at speed S, with the pitch correction: one in Muskey Player from 0.5 to 1.5, one from another player from 0.5 to 1 |
+| `--slow-behind S` | Move the player back once a slowed song's output is S seconds behind it, instead of 30 |
+| `--log-slow` | Log the backlog, the time heard and the player's time every 2 seconds while a song from another player is slowed down |
 | `--seek-path elapsed\|command\|script` | Send every seek through that path alone, without trying the others |
 | `--seek-ignore elapsed,command` | Send nothing through those paths, the way a player that ignores them would have it, to test the paths after them |
 | `--tempo FILE` | Print the tempo of the part of FILE that a listen would hear, and quit. `--tempo-at S` moves the start from 45 seconds, and `--seconds S` sets the length |

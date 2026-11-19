@@ -43,9 +43,17 @@ final class NowPlaying {
 
     var onSongChange: (Track) -> Void = { _ in }
     var onTrack: () -> Void = {}
+    /// The song as it is heard: the player's report, or what `heard` makes of it while a song is slowed down.
     private(set) var track: Track?
+    /// The player's own report, for moving its song and for recording it.
+    private(set) var player: Track?
+    /// While set, makes the song as it is heard out of the player's report.
+    var heard: ((Track) -> Track)?
+    /// Every report of the player, before `track` is made from it.
+    var onPlayerReport: (Track) -> Void = { _ in }
     /// The cover of `track`, nil when the player sends none.
     private(set) var artwork: NSImage?
+    private var playerArtwork: NSImage?
 
     /// Runs the helper while true. The first track it reports counts as the song that was already playing.
     var watching = false {
@@ -99,7 +107,9 @@ final class NowPlaying {
         stdinPipe = input
         reported = nil
         track = nil
+        player = nil
         artwork = nil
+        playerArtwork = nil
     }
 
     /// Plays or pauses the song, the way the play key does, through the helper while it runs.
@@ -195,7 +205,9 @@ final class NowPlaying {
         buffer.removeAll()
         reported = nil
         track = nil
+        player = nil
         artwork = nil
+        playerArtwork = nil
         onTrack()
     }
 
@@ -229,13 +241,29 @@ final class NowPlaying {
 
     private func update(_ track: Track) {
         if let data = track.artwork {
-            artwork = Self.cover(data)
-        } else if track.artworkBytes == 0, track.song != self.track?.song {
+            playerArtwork = Self.cover(data)
+        } else if track.artworkBytes == 0, track.song != player?.song {
             // Players report no cover for a moment on pause and resume, so the cover only goes with its song.
-            artwork = nil
+            playerArtwork = nil
         }
         var track = track
         track.artwork = nil
+        player = track
+        onPlayerReport(track)
+        publish()
+    }
+
+    /// Makes `track` again from the player's last report, after the song as it is heard changed.
+    func refresh() {
+        guard player != nil else { return }
+        publish()
+    }
+
+    private func publish() {
+        guard let player else { return }
+        let track = heard?(player) ?? player
+        // A song heard behind the player keeps its cover until the output reaches the player's song.
+        if track.song == player.song { artwork = playerArtwork }
         self.track = track
         onTrack()
         guard let reported else { return self.reported = track.song }

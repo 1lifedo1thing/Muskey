@@ -97,6 +97,38 @@ size_t ps_stems_room(PSShifter *shifter, uint64_t position);
 void ps_stems_begin(PSShifter *shifter, uint64_t generation, uint64_t start);
 void ps_stems_write(PSShifter *shifter, const float *const *planes, size_t frames);
 
+// Slowing down a song from another player. The player plays at its own speed, so the tap's audio waits in a backlog
+// that the output reads back slower, resampled as a record played slower is: lower as well, which the voices undo by
+// the correction that the app adds to the semitones, as for a song that Muskey Player plays slower. Everything after
+// the slowing (the stems, the delay, the pauses, the voices) hears the slowed song as if a player played it.
+//
+// ps_slow_prepare sets aside the backlog, `seconds` long, once, off the audio thread; nothing slows down before it.
+// ps_slow_enable starts or stops reading through the backlog, with a 5 ms crossfade either way. Any thread.
+void ps_slow_prepare(PSShifter *shifter, double seconds);
+void ps_slow_enable(PSShifter *shifter, int on);
+// The speed that the backlog is read at, from 0.25 to 2. Above 1 the reader catches up with the player.
+void ps_slow_set_speed(PSShifter *shifter, double speed);
+// The reader jumps to the newest audio with a 10 ms crossfade: after the song moved or changed.
+void ps_slow_flush(PSShifter *shifter);
+// The player played a moment again, after the app moved it back: backlog frame `to` holds the same moment of the song
+// as frame `from`. When the reader reaches `from` it steps to `to`, with a 5 ms crossfade, so nothing is heard twice.
+// A reader already at `before` (where the audio of the move starts) has heard the move, and the splice is dropped.
+void ps_slow_splice(PSShifter *shifter, uint64_t from, uint64_t to, uint64_t before);
+
+typedef struct {
+    int engaged;          // the output reads through the backlog
+    uint64_t written;     // backlog frames written so far, counted from an arbitrary start
+    uint64_t reading;     // the frame that the reader is at
+    double clock;         // frames of the song that the reader has played: the song's time, apart from moves
+    uint32_t splices;     // splices that the reader stepped through
+    uint32_t missed;      // splices that came after the reader had passed them
+    uint32_t flushes;     // flushes that the reader carried out
+} PSSlowState;
+PSSlowState ps_slow_state(PSShifter *shifter);
+// Copies backlog frames from `position` on, at most `max`, for finding a splice. Returns how many were copied; frames
+// already overwritten are skipped, and `position` moves past them.
+size_t ps_slow_read(PSShifter *shifter, uint64_t *position, float *left, float *right, size_t max);
+
 // What was recorded so far as interleaved (input, output) pairs of the left channel, and how many frames.
 size_t ps_recording(PSShifter *shifter, const float **pairs);
 
