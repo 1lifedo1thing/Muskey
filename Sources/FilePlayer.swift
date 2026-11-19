@@ -41,7 +41,7 @@ enum OpenActivity: Equatable {
     case unplayable(name: String)
     /// A song is saved with its changes: rendered, or recorded as it plays from another player, with the time left.
     case saving(name: String, progress: Double?)
-    case recording(name: String, left: String)
+    case recording(name: String, left: String, progress: Double? = nil)
     /// The song was saved, and Show in Finder shows the file.
     case saved(name: String)
     /// Saving failed, and Retry saves it again.

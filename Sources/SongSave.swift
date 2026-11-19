@@ -351,55 +351,59 @@ struct SavingState: Equatable {
     let left: String?
 }
 
-/// The HUD while a song is saved: the save and its progress on a frosted cover, with Cancel, and with Stop and Save
-/// while a song from another player is recorded. Nothing under the cover takes clicks until the save ends.
-struct SavingCover: View {
+/// The HUD while a song is saved, compact like the card: the record, turning while the song is rendered or plays for
+/// the recording, inside a ring that fills with the part done, and under it the save, with Cancel, and with Stop and
+/// Save while a song from another player is recorded.
+struct SavingCard: View {
     let saving: SavingState
+    let track: NowPlaying.Track?
+    let artwork: NSImage?
+    let spinning: Bool
     let palette: Palette
     let cancel: () -> Void
     let stop: () -> Void
 
     private var recording: Bool { saving.left != nil }
     private static let red = Color(red: 0.93, green: 0.33, blue: 0.3)
+    private static let record: CGFloat = 150
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: recording ? "record.circle" : "square.and.arrow.down")
-                .font(.system(size: 26, weight: .medium))
-                .foregroundStyle(recording ? Self.red : palette.accent)
-                .symbolEffect(.pulse, isActive: recording)
-            VStack(spacing: 3) {
-                Text(recording ? "Recording" : "Saving")
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
-                    .foregroundStyle(palette.ink)
+        VStack(spacing: 16) {
+            ZStack {
+                if let track {
+                    RecordDisc(track: track, artwork: artwork, spinning: spinning, side: Self.record)
+                } else {
+                    EmptyPlatter(side: Self.record)
+                }
+                Circle()
+                    .stroke(palette.ink.opacity(0.08), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: max(0.01, saving.progress ?? 0))
+                    .stroke(recording ? Self.red : palette.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.linear(duration: 0.3), value: saving.progress)
+            }
+            .frame(width: Self.record + 18, height: Self.record + 18)
+            VStack(spacing: 4) {
+                HStack(spacing: 6) {
+                    if recording {
+                        Circle().fill(Self.red).frame(width: 8, height: 8)
+                            .symbolEffect(.pulse, isActive: true)
+                    }
+                    Text(recording ? "Recording" : "Saving")
+                }
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundStyle(palette.ink)
                 Text(saving.name)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(palette.muted)
                     .lineLimit(1)
                     .truncationMode(.middle)
-            }
-            if let left = saving.left {
-                Text(left)
+                Text(saving.left ?? "\(Int(((saving.progress ?? 0) * 100).rounded(.down)))%")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(palette.muted)
-            } else {
-                HStack(spacing: 8) {
-                    Capsule()
-                        .fill(palette.ink.opacity(0.1))
-                        .frame(width: 160, height: 5)
-                        .overlay(alignment: .leading) {
-                            Capsule()
-                                .fill(palette.accent)
-                                .frame(width: max(5, 160 * (saving.progress ?? 0)), height: 5)
-                                .animation(.linear(duration: 0.2), value: saving.progress)
-                        }
-                    Text("\(Int(((saving.progress ?? 0) * 100).rounded(.down)))%")
-                        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(palette.muted)
-                        .frame(width: 34, alignment: .trailing)
-                }
+                    .padding(.top, 2)
             }
             HStack(spacing: 8) {
                 CoverButton(title: "Cancel", tint: palette.ink, filled: false, action: cancel)
@@ -410,21 +414,11 @@ struct SavingCover: View {
                 }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-            // Frosted like the glass under it, and cut to its corners.
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                Rectangle().fill(Color(white: colorScheme == .dark ? 0 : 1).opacity(0.35))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 26))
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {}
+        .padding(.top, 34)
+        .padding(.bottom, 22)
+        .padding(.horizontal, 28)
+        .frame(width: 300)
     }
-
-    @Environment(\.colorScheme) private var colorScheme
 
     private struct CoverButton: View {
         let title: String

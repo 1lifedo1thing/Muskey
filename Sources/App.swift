@@ -386,10 +386,10 @@ struct HUDView: View {
     /// How much taller the card gets when the stems take the place of the Separate instruments and vocals button.
     private static let cardStemsGrowth: CGFloat = 79.5
 
-    private var cardStemsOpen: Bool { model.card && !focus && showsStrip && model.stemsAvailable && model.stemsOpen && !model.shortcuts }
+    private var cardStemsOpen: Bool { model.card && model.saving == nil && !focus && showsStrip && model.stemsAvailable && model.stemsOpen && !model.shortcuts }
 
     /// The large lyrics take the place of either layout.
-    private var focus: Bool { model.lyricsFocus && model.lyricsShown && showsStrip }
+    private var focus: Bool { model.saving == nil && model.lyricsFocus && model.lyricsShown && showsStrip }
 
     /// The record shows while a song with a title plays, from the start of a listen.
     private var deckTrack: NowPlaying.Track? {
@@ -409,7 +409,14 @@ struct HUDView: View {
     var body: some View {
         let palette = Palette.of(colorScheme)
         Group {
-            if focus {
+            if let saving = model.saving {
+                // A save takes the whole HUD until it ends, in a compact layout with the record, so nothing else
+                // changes while the song is saved.
+                SavingCard(saving: saving, track: model.track?.title?.isEmpty == false ? model.track : nil, artwork: model.artwork,
+                           spinning: model.shown && (saving.left == nil || model.playing), palette: palette,
+                           cancel: model.onSaveCancel, stop: model.onSaveStop)
+                    .transition(.opacity)
+            } else if focus {
                 lyricsFocus(palette)
             } else if model.card {
                 HUDCard(model: model, palette: palette, showsKeys: showsStrip, track: deckTrack)
@@ -442,7 +449,7 @@ struct HUDView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if showsStrip {
+            if showsStrip, model.saving == nil {
                 HStack(spacing: 6) {
                     if !focus, model.savable {
                         RoundButton(symbol: "square.and.arrow.down", help: "Save the song with its changes (⌘S)", label: "Save", key: "⌘S",
@@ -490,14 +497,7 @@ struct HUDView: View {
             }
         }
         .animation(.easeOut(duration: 0.12), value: model.dropTargeted)
-        .overlay {
-            // A save takes the whole HUD until it ends, so nothing else changes while the song is saved.
-            if let saving = model.saving {
-                SavingCover(saving: saving, palette: Palette.of(colorScheme), cancel: model.onSaveCancel, stop: model.onSaveStop)
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeOut(duration: 0.15), value: model.saving == nil)
+        .animation(.smooth(duration: 0.3), value: model.saving == nil)
         .modifier(HUDBackground(tint: tint, scheme: colorScheme))
         .dropDestination(for: DroppedSong.self) { songs, _ in
             model.onOpen(songs.map(\.url))
@@ -3053,7 +3053,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activityPill.show(openActivity ?? saveActivity)
             let saving: SavingState? = switch saveActivity {
             case let .saving(name, progress): SavingState(name: name, progress: progress, left: nil)
-            case let .recording(name, left): SavingState(name: name, progress: nil, left: left)
+            case let .recording(name, left, progress): SavingState(name: name, progress: progress, left: left)
             default: nil
             }
             if model.saving != saving { model.saving = saving }
@@ -3326,7 +3326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if recording.recorder.heard, let position = track?.position(at: Date()), abs(position - Double(frames) / rate) > 4 {
                 return endRecording(error: SaveError(message: String(format: "The song moved to %.0f s", position)))
             }
-            saveActivity = .recording(name: recording.job.name, left: Self.clock(Double(target - frames) / rate))
+            saveActivity = .recording(name: recording.job.name, left: Self.clock(Double(target - frames) / rate), progress: Double(frames) / Double(max(1, target)))
         }
     }
 

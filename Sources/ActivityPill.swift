@@ -102,8 +102,8 @@ struct ActivityPillView: View {
             failure(name) { EmptyView() }
         case let .saving(name, progress):
             working("Saving \(name)", progress: progress)
-        case let .recording(name, left):
-            working("Recording \(name)", progress: nil, detail: left)
+        case let .recording(name, left, progress):
+            working("Recording \(name)", progress: progress, detail: left)
         case let .saved(name):
             done("\(name) saved") { button("Show in Finder", action: model.reveal) }
         case let .saveFailed(name):
