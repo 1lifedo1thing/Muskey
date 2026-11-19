@@ -33,6 +33,8 @@ final class SlowStream {
     var onReadSpeed: () -> Void = {}
     /// How far the return to 100 % has come, 0 to 1, or nil once the output plays the tap as it is.
     var onReturn: (Double?) -> Void = { _ in }
+    /// The output plays the tap as it is again, so the pitch change can stop if nothing else needs it.
+    var onEnd: () -> Void = {}
     /// The backlog when the song went back to 100 %, which the return counts down from.
     private var returnFrom: Double?
     /// The speed that the output catches up with the player at, once the song plays at 100 % again. The pitch change
@@ -214,9 +216,15 @@ final class SlowStream {
         timer?.invalidate()
         timer = nil
         pitch.slowing = false
+        missingSince = nil
         setReadSpeed(1)
         refresh()
+        onEnd()
     }
+
+    /// When the pitch change was first found gone while slowing. It starts over for another output device in a moment,
+    /// but one that stays gone took the backlog with it, and there is nothing left to read or catch up with.
+    private var missingSince: Date?
 
     private func setReadSpeed(_ value: Double) {
         guard value != readSpeed else { return }
@@ -297,7 +305,17 @@ final class SlowStream {
     private var lastWritten: UInt64 = 0
 
     private func tick() {
-        guard active, let state = pitch.slowState else { return }
+        guard active else { return }
+        guard let state = pitch.slowState else {
+            let since = missingSince ?? Date()
+            missingSince = since
+            if Date().timeIntervalSince(since) > 3 {
+                log("slow: the pitch change stopped, the output plays the tap as it is")
+                finish()
+            }
+            return
+        }
+        missingSince = nil
         // Until the output engages, the reader's frame is still 0, and the backlog would read as days long.
         guard state.engaged != 0 else { return }
         defer { lastWritten = state.written }
@@ -341,7 +359,15 @@ final class SlowStream {
         }
         guard let report = player(), report.playing, let at = report.position(at: Date()), let duration = report.duration,
               report.song == current?.track.song, next == nil
-        else { return }
+        else {
+            // Back at 100 %, a player that plays another song than the one heard, and that the output isn't on its way
+            // to, leaves no moment to catch up with.
+            if speed == 1, let report = player(), report.playing, report.song != current?.track.song, next == nil {
+                log("slow: the player plays another song, the output plays the tap as it is")
+                finish()
+            }
+            return
+        }
         if speed == 1, backlog <= 4 {
             if backlog > 0.05 { return setReadSpeed(Self.catchUp) }
             log("slow: caught up with the player, the output plays the tap as it is")

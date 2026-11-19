@@ -58,36 +58,35 @@ struct ShortcutsSheet: View {
         let playback = KeyGroup(name: "Playback", symbol: "playpause", hue: 45, rows: [
             Row(caps: [.key("space")], name: "play or pause"),
             Row(caps: [.key("N"), .key("P")], name: "next or previous song"),
-            Row(caps: [.key("←"), .key("→")], name: "5 seconds back or ahead", condition: "over the record or the lyrics"),
-            Row(caps: [.key("0")], name: "start over", condition: "over the record"),
+            Row(caps: [.key("←"), .key("→")], name: "5 seconds back/forward", condition: "when hovering the record"),
+            Row(caps: [.key("0")], name: "from the beginning", condition: "when hovering the record"),
         ])
         let lyrics = KeyGroup(name: "Lyrics and karaoke", symbol: "quote.bubble", hue: 8, rows: [
             Row(caps: [.key("L")], name: "lyrics"),
-            Row(caps: [.key("↩")], name: "karaoke", condition: "with the lyrics"),
             Row(caps: [.key("⌘"), .key("K")], name: "karaoke"),
-            Row(caps: [.key("0–9")], name: "seek", condition: "in karaoke"),
+            Row(caps: [.key("↩")], name: "karaoke", condition: "when lyrics are visible"),
+            Row(caps: [.key("0–9")], name: "seek to 0%-90%", condition: "in karaoke"),
         ])
         let instruments = KeyGroup(name: "Instruments and vocals", symbol: "slider.vertical.3", hue: 82, rows: [
-            Row(caps: [.key(stems)], name: "mute"),
-            Row(caps: [.key("⌥"), .key(stems)], name: "solo"),
-            Row(caps: [.key("V")], name: "vocals"),
+            Row(caps: [.key(stems)], name: "mute instrument"),
+            Row(caps: [.key("⌥"), .key(stems)], name: "solo instrument"),
+            Row(caps: [.key("V")], name: "toggle vocals"),
             Row(caps: [.key("0")], name: "play all"),
         ])
         let song = KeyGroup(name: "Song", symbol: "music.note", hue: 32, rows: [
             Row(caps: [.key("⌘"), .key("S")], name: "save song"),
             Row(caps: [.key("⌘"), .key("⌫")], name: "original song"),
             Row(caps: [.key("⌘"), .key("V")], name: "play copied file or link"),
-            Row(caps: [.key("⌘"), .key("O")], name: "open file", condition: "while nothing plays"),
-            Row(caps: [.key("⌘"), .key("L")], name: "open URL", condition: "while nothing plays"),
+            Row(caps: [.key("⌘"), .key("O")], name: "open file"),
+            Row(caps: [.key("⌘"), .key("L")], name: "open URL"),
         ])
         let pointer = KeyGroup(name: "Mouse and trackpad", symbol: "computermouse", hue: 58, rows: [
-            Row(caps: [.gesture("click", symbol: "cursorarrow.click")], name: "play or pause", condition: "on the record"),
-            Row(caps: [.gesture("swipe", symbol: "arrow.left.and.right")], name: "next or previous song", condition: "two fingers across the HUD"),
-            Row(caps: [.gesture("scroll", symbol: "arrow.up.and.down")], name: "volume", condition: "over an instrument"),
-            Row(caps: [.gesture("scroll", symbol: "arrow.up.and.down")], name: "tempo", condition: "over the tempo"),
-            Row(caps: [.gesture("drag", symbol: "hand.draw")], name: "move in the song", condition: "on the time bar"),
-            Row(caps: [.key("⌥"), .gesture("click", symbol: "cursorarrow.click")], name: "solo", condition: "on an instrument"),
-            Row(caps: [.gesture("drop", symbol: "arrow.down.doc")], name: "play file or link"),
+            Row(caps: [.gesture("click record", symbol: "cursorarrow.click")], name: "play or pause"),
+            Row(caps: [.gesture("swipe", symbol: "arrow.left.and.right")], name: "next or previous song"),
+            Row(caps: [.gesture("scroll on instrument", symbol: "arrow.up.and.down")], name: "adjust volume"),
+            Row(caps: [.gesture("scroll on tempo", symbol: "arrow.up.and.down")], name: "adjust tempo"),
+            Row(caps: [.key("⌥"), .gesture("click instrument", symbol: "cursorarrow.click")], name: "solo instrument"),
+            Row(caps: [.gesture("drop file", symbol: "arrow.down.doc")], name: "play file or link"),
         ])
         return [[key, tempo, hud], [playback, lyrics, instruments], [song, pointer]]
     }
@@ -105,7 +104,9 @@ struct ShortcutsSheet: View {
                         // on one line.
                         ForEach(column) { GroupTile(group: $0, fills: $0.id == column.last?.id, palette: palette) }
                     }
-                    .frame(width: Self.width)
+                    // As wide as its widest group, the mouse and trackpad's chips with their words included.
+                    .frame(minWidth: Self.width)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -114,7 +115,7 @@ struct ShortcutsSheet: View {
         .padding(.top, 10)
         .padding(.bottom, 20)
         .overlay(alignment: .topTrailing) {
-            RoundButton(text: "?", help: "Close the shortcuts (?)", isOn: true, palette: palette, action: close)
+            RoundButton(symbol: "questionmark", help: "Close the shortcuts (?)", isOn: true, palette: palette, action: close)
                 .padding(10)
         }
     }

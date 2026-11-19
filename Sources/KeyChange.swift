@@ -21,6 +21,9 @@ struct HUDButton: View {
     @State private var hovering = false
     @Environment(\.colorScheme) private var colorScheme
 
+    /// The height of a small pill, which the round ? button beside Lock Key matches, so their edges line up.
+    static let smallHeight: CGFloat = 22
+
     private var on: Bool { isOn == true }
 
     var body: some View {
@@ -32,6 +35,7 @@ struct HUDButton: View {
                 .foregroundStyle(on ? StripColors.text(.red, colorScheme) : palette.ink)
                 .padding(.horizontal, small ? 9 : 12)
                 .padding(.vertical, small ? 4 : 6)
+                .frame(minHeight: small ? Self.smallHeight : 0)
                 .background(Capsule().fill(background))
                 .contentShape(Capsule())
         }

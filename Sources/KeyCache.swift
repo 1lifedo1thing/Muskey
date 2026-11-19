@@ -67,9 +67,9 @@ final class KeyCache: ObservableObject {
 
     /// A full listen of the song found `key`. A listen that finds another key replaces the remembered one only when
     /// it is at least as sure of its key as the listen that found the remembered one, since the Mac may have played
-    /// something other than the song that Now Playing named, and the tempo goes with the key that is kept. Returns a
-    /// line for the log.
-    func store(_ key: DetectedKey, strength: Float, bpm: Double? = nil, for song: [String?]) -> String {
+    /// something other than the song that Now Playing named, and the tempo goes with the key that is kept. `replace`
+    /// keeps the new key anyway, for a listen that a person asked for again. Returns a line for the log.
+    func store(_ key: DetectedKey, strength: Float, bpm: Double? = nil, for song: [String?], replace: Bool = false) -> String {
         guard let id = Self.id(song) else { return "no title to remember the key by" }
         // JSONEncoder refuses NaN, which would make every later save fail.
         let strength = strength.isFinite ? strength : 0
@@ -83,10 +83,15 @@ final class KeyCache: ObservableObject {
                 entry.bpm = bpm ?? entry.bpm
                 entries[id] = entry
                 result = "confirmed the remembered \(key.name), found by \(entry.count) listens"
-            } else if strength >= entry.strength {
+            } else if strength >= entry.strength || replace {
                 entries[id] = Entry(pitchClass: key.pitchClass, minor: key.minor, strength: strength, count: 1, date: Date(), bpm: bpm ?? entry.bpm)
                 result = String(format: "remembered %@ instead of %@ (strength %.3f, was %.3f)", key.name, entry.key.name, strength, entry.strength)
             } else {
+                // A key remembered before tempos were kept takes the tempo of this listen.
+                if entry.bpm == nil, let bpm {
+                    entry.bpm = bpm
+                    entries[id] = entry
+                }
                 result = String(format: "kept the remembered %@ over %@ (strength %.3f, this listen %.3f)", entry.key.name, key.name, entry.strength, strength)
             }
         } else {

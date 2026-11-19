@@ -68,7 +68,11 @@ struct TitleLine: View {
     var relativeSize: CGFloat = 17
     var listeningSize: CGFloat = 40
 
+    @State private var hovering = false
+
     private var progress: Double? { model.phase == .listening ? model.progress : nil }
+    /// A click on the key listens to the song again, once a key shows that isn't the one a new song waits for.
+    private var redetectable: Bool { model.pending == nil && (model.phase == .done || model.phase == .listening) }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -79,10 +83,19 @@ struct TitleLine: View {
                     Accidental.text(key.relative.name, color: palette.muted)
                         .font(.system(size: relativeSize, weight: .medium, design: .rounded))
                         .foregroundStyle(palette.muted)
+                        .opacity(hovering ? 0 : 1)
+                        // In the relative key's place, over it, so the title doesn't move when it shows.
+                        .overlay(alignment: .leading) {
+                            if hovering { RedetectPill(palette: palette).fixedSize().transition(.opacity) }
+                        }
                 }
                 // Less faded than before the title filled, since the part that hasn't filled is already faint.
                 .opacity(model.pending == nil ? 1 : 0.65)
                 .contentTransition(.interpolate)
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 && redetectable }
+                .onTapGesture { if redetectable { hovering = false; model.onRedetect() } }
+                .animation(.easeOut(duration: 0.12), value: hovering)
             } else if model.phase == .listening {
                 ListenTitle(text: "Listening", size: listeningSize, progress: progress, palette: palette)
                     .transition(.opacity)
@@ -92,6 +105,24 @@ struct TitleLine: View {
             }
         }
         .lineLimit(1)
+    }
+}
+
+/// The pill that shows over the key while the pointer is on it: a click on the key listens to the song again.
+private struct RedetectPill: View {
+    let palette: Palette
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 10, weight: .bold))
+            Text("Re-detect key")
+                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+        }
+        .foregroundStyle(palette.ink)
+        .padding(.horizontal, 9)
+        .frame(height: 22)
+        .background(Capsule().fill(palette.ink.opacity(0.1)))
     }
 }
 
@@ -485,12 +516,12 @@ struct HUDCard: View {
             if showsKeys {
                 HStack(spacing: 8) {
                     // As wide as the ? button, so Lock Key and Stop Pitch Change sit in the middle.
-                    Color.clear.frame(width: 20, height: 1)
+                    Color.clear.frame(width: HUDButton.smallHeight, height: 1)
                     Spacer(minLength: 0)
                     PitchControls(model: model, palette: palette, small: true)
                         .modifier(FocusDim(on: true))
                     Spacer(minLength: 0)
-                    RoundButton(text: "?", help: "Shortcuts (?)", isOn: model.shortcuts, palette: palette) { model.shortcuts.toggle() }
+                    RoundButton(symbol: "questionmark", help: "Shortcuts (?)", isOn: model.shortcuts, size: HUDButton.smallHeight, palette: palette) { model.shortcuts.toggle() }
                 }
                 .padding(.top, 14)
                 .transition(.opacity)

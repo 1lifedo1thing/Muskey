@@ -216,6 +216,8 @@ final class HUDModel: ObservableObject {
     /// How far a slowed song has come back to 100 %, 0 to 1, while the output catches up with the player.
     @Published var tempoReturn: Double?
     var onOpenFile: () -> Void = {}
+    /// A click on the key listens to the song again.
+    var onRedetect: () -> Void = {}
     var onSeekFraction: (Double) -> Void = { _ in }
     /// The pointer is over the record and its time bar, where ← → and 0 move the song.
     @Published var overRecord = false
@@ -388,6 +390,10 @@ struct HUDView: View {
 
     private var cardStemsOpen: Bool { model.card && model.saving == nil && !focus && showsStrip && model.stemsAvailable && model.stemsOpen && !model.shortcuts }
 
+    /// The ✕ closes the HUD while it stays up: with the key row, a listen, its result, or nothing playing. A failed
+    /// listen closes by itself.
+    private var closable: Bool { model.picking || [.listening, .done, .idle].contains(model.phase) }
+
     /// The large lyrics take the place of either layout.
     private var focus: Bool { model.saving == nil && !model.shortcuts && model.lyricsFocus && model.lyricsShown && showsStrip }
 
@@ -435,9 +441,9 @@ struct HUDView: View {
         .overlay(alignment: .topLeading) {
             // In karaoke, the close button, the timing of the lyrics, the key, the lyrics' source and the karaoke button
             // sit in one row.
-            if model.picking || karaokeTiming != nil {
+            if closable || karaokeTiming != nil {
                 HStack(spacing: 10) {
-                    if model.picking {
+                    if closable {
                         // Over the shortcuts, the ✕ closes them and leaves the HUD open, as Escape does.
                         CloseButton(size: focus ? 16 : 14, action: { if model.shortcuts { model.shortcuts = false } else { model.onClose() } })
                             .transition(.opacity)
@@ -603,7 +609,7 @@ struct HUDView: View {
                         .opacity(model.hintsOpacity)
                     Spacer(minLength: 0)
                     PitchControls(model: model, palette: palette, small: true)
-                    RoundButton(text: "?", help: "Shortcuts (?)", isOn: model.shortcuts, palette: palette) { model.shortcuts.toggle() }
+                    RoundButton(symbol: "questionmark", help: "Shortcuts (?)", isOn: model.shortcuts, size: HUDButton.smallHeight, palette: palette) { model.shortcuts.toggle() }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.leading, 20)
@@ -1007,8 +1013,10 @@ final class HUDPanel: NSPanel {
         pushed = .zero
         heading = nil
         if let visible = screen?.visibleFrame {
-            // The glass is centred in the panel, at the same height as when the panel was 240 points tall.
-            setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.minY + visible.height * 0.14 + 120 - frame.height / 2))
+            // Where it was dragged to last, on the screen with the pointer, and kept on that screen below.
+            let home = Self.home(on: visible, size: frame.size)
+            let dragged = Self.dragged
+            setFrameOrigin(NSPoint(x: home.x + dragged.dx, y: home.y + dragged.dy))
             if model.screenHeight != visible.height { model.screenHeight = visible.height }
         }
         keepOnScreen(animated: false)
@@ -1081,6 +1089,26 @@ final class HUDPanel: NSPanel {
         heading = nil
         keepOnScreen(animated: true)
         pushed = .zero
+        // Karaoke opens in the middle of the screen each time, so only a drag of the other layouts is kept.
+        let target = heading ?? frame
+        guard !model.lyricsFocus, let glass = glassOnScreen(in: target), let visible = screen(holding: glass)?.visibleFrame else { return }
+        let home = Self.home(on: visible, size: frame.size)
+        Self.dragged = CGVector(dx: target.minX - home.x, dy: target.minY - home.y)
+    }
+
+    /// The glass centred in the panel, at the same height as when the panel was 240 points tall: the place of a HUD
+    /// that was never dragged.
+    private static func home(on visible: NSRect, size: NSSize) -> NSPoint {
+        NSPoint(x: visible.midX - size.width / 2, y: visible.minY + visible.height * 0.14 + 120 - size.height / 2)
+    }
+
+    /// How far the HUD was dragged from its home, which it opens at the next time, on any screen.
+    private static var dragged: CGVector {
+        get {
+            let values = UserDefaults.standard.array(forKey: "hudDragged") as? [Double] ?? []
+            return values.count == 2 ? CGVector(dx: values[0], dy: values[1]) : .zero
+        }
+        set { UserDefaults.standard.set([Double(newValue.dx), Double(newValue.dy)], forKey: "hudDragged") }
     }
 
     /// How far `glass` has to move to sit inside `visible`, `margin` points from its edges, in screen points with y
@@ -1637,6 +1665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// gave before.
     private func knownKey(for song: [String?]) -> (key: DetectedKey, online: Bool)? {
         if prefs.rememberKeys, let key = keyCache.key(for: song) { return (key, false) }
+        if let id = KeyCache.id(song), let heard = heardKeys[id] { return (heard.key, false) }
         if prefs.onlineKeys, let key = keyLookup.key(for: song) { return (key, true) }
         return nil
     }
@@ -1644,6 +1673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The tempo known for a song without a listen: the one that a full listen found, or else Noiseblend's.
     private func knownTempo(for song: [String?]) -> SongTempo? {
         if prefs.rememberKeys, let bpm = keyCache.bpm(for: song) { return SongTempo(song: song, bpm: bpm) }
+        if let id = KeyCache.id(song), let bpm = heardKeys[id]?.bpm { return SongTempo(song: song, bpm: bpm) }
         if prefs.onlineKeys, let bpm = keyLookup.bpm(for: song) { return SongTempo(song: song, bpm: bpm, online: true) }
         return nil
     }
@@ -1736,6 +1766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             autoTries[song] = nil
             let tempo = heardTempo(bpm, in: song)
             if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, bpm: tempo, for: song)) }
+            if let id = KeyCache.id(song) { heardKeys[id] = (key, tempo) }
             keyLookup.heard(key, for: song)
             // A pitch change that runs on into this song starts from its key.
             if pitch.running, keptKey == nil { shiftBase = key }
@@ -1827,6 +1858,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var remembered: DetectedKey?
     /// The song that this listen asked Noiseblend about, so that it asks once.
     private var lookedUp: [String?]?
+    /// The keys and tempos that listens found since Muskey started, by song, also with Remember song keys off. A song
+    /// that a listen found the key of shows that key at once when the HUD opens on it again.
+    private var heardKeys: [String: (key: DetectedKey, bpm: Double?)] = [:]
+    /// A click on the key listens to the song again, as if no key were known for it. The key that it finds replaces
+    /// the remembered one.
+    private var redetecting = false
+    /// The HUD was opened by a person (the hotkey, the menu, a click, an opened song), or showed already when the song
+    /// changed, so it stays up after the result until it is closed. A HUD that a song change opened with Lock Key on
+    /// closes a few seconds after the result.
+    private var stayOpen = false
     private let keyLookup = KeyLookup()
     private var keyMonitor: Any?
     /// Gets keyboard focus back when the key picker closes, if a click on the HUD made Muskey the active app.
@@ -1935,6 +1976,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.change(to: shift, relative: relative)
         }
         model.onClose = { [weak self] in self?.dismiss() }
+        model.onRedetect = { [weak self] in self?.redetect() }
         model.onStop = { [weak self] in self?.stopPitch() }
         model.onKeep = { [weak self] in self?.toggleKeep() }
         model.onLayout = { [weak self] in self?.toggleLayout() }
@@ -2023,6 +2065,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onStemsClose = { [weak self] in self?.closeStems() }
         model.onOpenLocation = { [weak self] in self?.openLocation() }
         slow.onReturn = { [weak self] progress in self?.model.tempoReturn = progress }
+        slow.onEnd = { [weak self] in self?.stopPitchIfUnwanted() }
         model.onPlayPause = { [weak self] in self?.playPause() }
         model.onSkip = { [weak self] in self?.skip($0) }
         model.onLink = { [weak self] url in self?.log("opening \(url.host() ?? url.absoluteString) in the browser") }
@@ -2603,6 +2646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func start() {
         session += 1
+        stayOpen = true
         state = .listening
         follow = nil
         followByPerson = false
@@ -2634,7 +2678,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.shown = true
         if !model.picking {
             model.key = nil
-            panel.setInteraction(clickable: false, keyboard: false)
+            // The glass takes the mouse during the listen too, so it can be dragged away.
+            panel.setInteraction(clickable: true, keyboard: false)
         }
         panel.present()
         startedAt = Date()
@@ -2659,15 +2704,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startOnKnownKey()
     }
 
-    /// A song whose key a full listen found before, or Noiseblend gave, starts on that key: the HUD shows it with its
-    /// row right away, and Lock Key moves the song once it has played in its own key for a moment. The listen still
-    /// runs, and only its final estimate can change the key. Runs again on each Now Playing update until the first
-    /// estimate, since the helper that reads the song starts with the HUD, and once more when Noiseblend answers.
+    /// A song whose key a full listen found before shows that key at once, with no listen, unless Lock Key has to move
+    /// it, which waits for the listen. A song with only Noiseblend's key starts on that key: the HUD shows it with its
+    /// row right away, the listen still runs, and only its final estimate can change the key. Runs again on each Now
+    /// Playing update until the first estimate, since the helper that reads the song starts with the HUD, and once
+    /// more when Noiseblend answers. A click on the key listens again without either.
     private func startOnKnownKey() {
         guard state == .listening, !estimated, remembered == nil, let track = nowPlaying.track, track.playing else { return }
         // A paused player that Now Playing still names may not be what the Mac plays.
         listenSong = listenSong ?? track.song
-        guard track.song == listenSong else { return }
+        guard track.song == listenSong, !redetecting else { return }
         guard let known = knownKey(for: track.song) else {
             if lookedUp != track.song {
                 lookedUp = track.song
@@ -2676,6 +2722,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let key = known.key
+        // A key remembered without its tempo, as before Muskey kept tempos, gets one more listen, which finds it.
+        if !known.online, follow == nil, knownTempo(for: track.song) != nil { return finishOnKnownKey(key) }
         remembered = key
         log("starting on \(known.online ? "Noiseblend's" : "the remembered") \(key.name)")
         model.key = key
@@ -2695,6 +2743,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if !model.picking { panel.setInteraction(clickable: true, keyboard: false) }
         updateHoverKeys()
+    }
+
+    /// The key of a song that a listen found before, shown as a listen's result, with no listen.
+    private func finishOnKnownKey(_ key: DetectedKey) {
+        stopCapture()
+        analyzer = nil
+        state = .showing
+        remembered = key
+        model.key = key
+        model.phase = .done
+        noteKey(key, final: true)
+        if model.picking || model.shift != 0 {
+            shiftBase = key
+            if model.picking, keptKey != nil { keptKey = model.heard }
+            refreshStatus()
+        }
+        log("\(key.name), known from an earlier listen")
+        showTempo()
+        if !model.picking { panel.setInteraction(clickable: true, keyboard: false) }
+        updateHoverKeys()
+        if !model.picking, !stayOpen { dismiss(after: showResultFor) }
+    }
+
+    /// A click on the key: the song is listened to again as if no key were known for it, and the key that the listen
+    /// finds replaces the remembered one.
+    private func redetect() {
+        guard model.saving == nil, model.phase == .done || model.phase == .listening else { return }
+        log("re-detecting the key")
+        stopCapture()
+        analyzer = nil
+        redetecting = true
+        start()
     }
 
     private func update(_ result: EKResult, peak: Float) {
@@ -2776,19 +2856,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let remembered, remembered != key { log("the full listen found \(key.name), not the \(remembered.name) that it started on") }
             let tempo = heardTempo(bpm, in: listenSong ?? nowPlaying.track?.song)
             if let song = listenSong, let track = nowPlaying.track, track.playing, track.song == song {
-                if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, bpm: tempo, for: song)) }
+                if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, bpm: tempo, for: song, replace: redetecting)) }
+                if let id = KeyCache.id(song) { heardKeys[id] = (key, tempo) }
                 keyLookup.heard(key, for: song)
             }
+            redetecting = false
             updateHoverKeys()
             guard !model.picking else { return }
             panel.setInteraction(clickable: true, keyboard: false)
-            dismiss(after: showResultFor)
+            if !stayOpen { dismiss(after: showResultFor) }
         }
     }
 
     private func fail(_ phase: HUDModel.Phase, _ reason: String) {
         stopCapture()
         analyzer = nil
+        redetecting = false
         state = .showing
         // The picker opened on an estimate, so it keeps that key rather than turning into an error.
         if model.picking {
@@ -2885,8 +2968,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.resetAll()
                 return nil
             }
-            // ⌘O and ⌘L open a file or a link while nothing plays.
-            if let self, self.model.phase == .idle, event.window === self.panel, flags.contains(.command),
+            // ⌘O and ⌘L open a file or a link.
+            if let self, event.window === self.panel, flags.contains(.command),
                [kVK_ANSI_O, kVK_ANSI_L].contains(Int(event.keyCode)) {
                 Int(event.keyCode) == kVK_ANSI_O ? self.openFile() : self.openLocation()
                 return nil
@@ -2929,9 +3012,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if code == kVK_Escape { dismiss() }
             return true
         }
-        // ? shows every key and gesture in place of the HUD, and closes them again. While they show, Escape closes
-        // them too, and the other keys do nothing, since what they change is hidden under them.
-        if code == kVK_ANSI_Slash, shift {
+        // ? shows every key and gesture in place of the HUD, and closes them again, on whichever key types ? in the
+        // keyboard layout. While they show, Escape closes them too, and the other keys do nothing, since what they
+        // change is hidden under them.
+        if let question = LayoutKey.questionMark, code == question.code, shift == question.shift, option == question.option {
             model.shortcuts.toggle()
             return true
         }
@@ -3914,7 +3998,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Without a kept key, the pitch change runs on at the same shift, and the keys relabel once the new key is known.
     private func songChanged(_ track: NowPlaying.Track) {
         let target = keptKey
-        guard target != nil || (model.shown && model.picking) else { return }
+        // A HUD that shows gets the new song's key, so it never shows the last song's key over the new song.
+        guard target != nil || (model.shown && model.saving == nil && model.phase != .idle) else { return }
+        // The song that the HUD already listens to or shows, as when a player reports the song that it just started.
+        if target == nil, state != .idle, listenSong == track.song { return }
+        redetecting = false
+        if !model.shown { stayOpen = false }
         log(target.map { "song changed, moving it to \($0.name)" } ?? "song changed, listening for its key")
         switch AudioCapturePermission.status {
         case .granted: break
@@ -3923,7 +4012,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Each song change while the dialog is up asks again, so only the song that still plays gets a listen.
             return AudioCapturePermission.request { [self] granted in
                 guard granted else { return log("system audio recording was not allowed") }
-                if keptKey != nil || (model.shown && model.picking), nowPlaying.track?.song == track.song, state != .listening { songChanged(track) }
+                if keptKey != nil || model.shown, nowPlaying.track?.song == track.song, state != .listening { songChanged(track) }
             }
         }
         stopCapture()
@@ -4287,10 +4376,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForSeek = false
     private var hoverKeysForRestart = false
     private var hoverKeysForSave = false
-    private var hoverKeysForIdle = false
     private var hoverKeysForRecord = false
     /// A save leaves the HUD only Escape, and the shortcuts only Escape and ?, which close them.
     private var hoverKeysLock = HoverKeysLock.none
+    /// The key that types ? in the keyboard layout that was selected when the keys were registered.
+    private var hoverKeysQuestion: LayoutKey?
     private enum HoverKeysLock { case none, saving, shortcuts }
     private var overRecordChange: AnyCancellable?
     private var lockChange: AnyCancellable?
@@ -4309,8 +4399,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard wanted == hoverKeys.isEmpty
             || (wanted && (hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
-                || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable || hoverKeysForIdle != (model.phase == .idle)
-                || hoverKeysForRecord != model.overRecord || hoverKeysLock != lock))
+                || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
+                || hoverKeysForRecord != model.overRecord || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -4322,19 +4412,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForSeek = model.seekable
         hoverKeysForRestart = model.restartable
         hoverKeysForSave = model.savable
-        hoverKeysForIdle = model.phase == .idle
         hoverKeysForRecord = model.overRecord
         hoverKeysLock = lock
+        hoverKeysQuestion = LayoutKey.questionMark
+        let question = hoverKeysQuestion.map { [($0.code, $0.modifiers)] } ?? []
         if lock != .none {
-            let keys = lock == .saving ? [(kVK_Escape, 0)] : [(kVK_Escape, 0), (kVK_ANSI_Slash, shiftKey)]
+            let keys = lock == .saving ? [(kVK_Escape, 0)] : [(kVK_Escape, 0)] + question
             hoverKeys = keys.compactMap { code, modifiers in
-                try? HotKey(keyCode: code, modifiers: modifiers) { [weak self] in self?.handleKey(code, shift: modifiers & shiftKey != 0, option: false) }
+                try? HotKey(keyCode: code, modifiers: modifiers) { [weak self] in
+                    self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
+                }
             }
             return
         }
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         // ? shows the shortcuts.
-        var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + [(kVK_ANSI_Slash, shiftKey)]
+        var keys: [(Int, Int)] = [kVK_Escape, kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
         if model.stemsAvailable {
             // V mutes the vocals or plays them again, in every layout.
             keys += Self.stemKeys.flatMap { code in [(code, 0), (code, optionKey)] } + [(kVK_ANSI_0, 0), (kVK_ANSI_V, 0)]
@@ -4371,10 +4464,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let reset = try? HotKey(keyCode: kVK_Delete, modifiers: cmdKey, action: { [weak self] in self?.resetAll() }) {
             hoverKeys.append(reset)
         }
-        if model.phase == .idle {
-            if let open = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey, action: { [weak self] in self?.openFile() }) { hoverKeys.append(open) }
-            if let link = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey, action: { [weak self] in self?.openLocation() }) { hoverKeys.append(link) }
-        }
+        if let open = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey, action: { [weak self] in self?.openFile() }) { hoverKeys.append(open) }
+        if let link = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey, action: { [weak self] in self?.openLocation() }) { hoverKeys.append(link) }
     }
 
     /// Starts, changes or stops the pitch change. While the picker is open, going back to the original key keeps
@@ -4413,7 +4504,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The pitch change runs for a shift, for the stems, for the lyrics delay, which play through the same output, and
     /// for a song that Muskey Player plays faster or slower, which it keeps in its key.
-    private var pitchWanted: Bool { model.shift != 0 || model.stemsEngaged || lyricsDelayed || pitch.correction != 0 }
+    /// Stops the pitch change once nothing needs it and no key row shows, as after a slowed song caught up.
+    private func stopPitchIfUnwanted() {
+        if !pitchWanted, !model.picking, follow == nil, pitch.running { pitch.stopSmoothly { [self] in logShift() } }
+    }
+
+    /// The slowing of another player's song needs the pitch change until the output has caught up with the player.
+    private var pitchWanted: Bool { model.shift != 0 || model.stemsEngaged || lyricsDelayed || pitch.correction != 0 || slow.active }
 
     /// The speed of the song as the tap hears it: Muskey Player's speed while its song is the one that plays. A song
     /// from another player plays at its own speed, and only the output slows it down.
@@ -4675,6 +4772,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopCapture()
         analyzer = nil
         follow = nil
+        stayOpen = false
+        redetecting = false
         model.pending = nil
         if model.picking {
             if NSApp.isActive, let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
