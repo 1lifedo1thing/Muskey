@@ -58,6 +58,11 @@ final class SlowStream {
     private var lastPlayer: NowPlaying.Track?
     /// The written frames of the backlog when the player paused, for moving it back once it plays again.
     private var pausedWritten: (frame: UInt64, song: Double)?
+    /// When that pause was reported, and whether it came right after a move that Muskey sent.
+    private var pausedWhen = Date.distantPast
+    private var pausedNearMove = false
+    /// The song that was paused: a play report of another song is a song change, not the end of the pause.
+    private var pausedSong: [String?] = []
     /// A pause that ended while a move was under way: the move after it waits for that one to be done.
     private var pendingResume: (frame: UInt64, song: Double)?
 
@@ -79,12 +84,20 @@ final class SlowStream {
         defer { lastPlayer = report }
         guard active, let current, let state = pitch.slowState else { return }
         let last = lastPlayer
-        if let last, last.playing, !report.playing, Date().timeIntervalSince(moveSent) > 1.5, let at = last.position(at: Date()) {
+        if let last, last.playing, !report.playing, let at = last.position(at: Date()) {
             pausedWritten = (state.written, at)
+            pausedSong = last.song
+            pausedWhen = Date()
+            pausedNearMove = Date().timeIntervalSince(moveSent) < 1.5
         }
-        if let last, !last.playing, report.playing, report.song == last.song, let paused = pausedWritten {
+        // Some players (Safari) report a pause and a play within a fraction of a second around a move, which isn't a
+        // pause that the person made.
+        let bounce = pausedNearMove && Date().timeIntervalSince(pausedWhen) < 0.6
+        if let last, !last.playing, report.playing, report.song == last.song, report.song == pausedSong, let paused = pausedWritten {
             pausedWritten = nil
-            if drain != nil || awaitingSplice != nil {
+            if bounce {
+                log("slow: the pause around the move was the player's own")
+            } else if drain != nil || awaitingSplice != nil {
                 pendingResume = paused
             } else {
                 resumed(paused, report: report, state: state)
@@ -127,6 +140,7 @@ final class SlowStream {
         cancelDrain()
         next = nil
         pendingResume = nil
+        pausedWritten = nil
         pitch.slowFlush()
         current = Heard(track: track, song: seconds, clock: state.clock)
         refresh()
@@ -221,6 +235,8 @@ final class SlowStream {
         var searchFrom: UInt64
         var reference: Range<UInt64>
         var target: Double
+        /// Seconds that the player plays after the move before it is past the old audio.
+        var toReference: Double
         var sent: Date
         var searching = false
         var why: String
@@ -247,6 +263,8 @@ final class SlowStream {
     /// When Muskey last sent a move. Some players (Safari) report a pause and a play around a move, which isn't a pause
     /// that the person made.
     private var moveSent = Date.distantPast
+    /// Muskey sent a move less than 1.5 seconds ago.
+    var movedRecently: Bool { active && Date().timeIntervalSince(moveSent) < 1.5 }
 
     private func ownMove(near seconds: Double) -> Bool {
         expected.contains { $0.until > Date() && abs($0.seconds - seconds) < 2.5 }
@@ -321,12 +339,24 @@ final class SlowStream {
         // moment, the output steps over to it: everything in between was waiting to be heard, so it goes. While
         // slowed, the moment is 6 seconds ahead, which leaves time for a player that takes a few seconds to play
         // again after a move, such as one that streams; while catching up, 3.5 seconds, so less is left to catch up.
-        let heardAt = current.song + (state.clock - current.clock) / rate
         let ahead = readSpeed >= 1 ? 3.5 : 6
         let reference = state.reading + UInt64((ahead + 0.5) * rate) ..< state.reading + UInt64((ahead + 1.5) * rate)
-        guard reference.upperBound + UInt64(rate) < state.written, at - (heardAt + ahead) > 1, duration - at > 4 else { return }
-        startDrain(Drain(seam: state.written, searchFrom: state.written, reference: reference, target: heardAt + ahead, sent: Date(),
-                         why: speed == 1 ? "catching up" : String(format: "%.0f s behind", backlog)), report: report)
+        guard reference.upperBound + UInt64(rate) < state.written, duration - at > 4 else { return }
+        // Two estimates of the old audio's moment in the song: from the time heard, which can be off by a moment after a
+        // song change, and from the player's position (the newest audio in the backlog is where the player is), which
+        // is off when a player reports its position loosely (Safari). The player moves to half a second before the
+        // earlier one and plays past the later one, so the old audio is played again either way.
+        let heardAt = current.song + (state.clock - current.clock) / rate
+        let fromHeard = heardAt + ahead + 0.5, fromPlayer = at - Double(state.written - reference.lowerBound) / rate
+        let early = min(fromHeard, fromPlayer), late = max(fromHeard, fromPlayer)
+        // The player has until the output reaches the old audio to play past it, less a second or two for the move.
+        let spare = (ahead + 0.5) / max(readSpeed, 0.1) - 2 - 1.5
+        let target = max(early, late - max(spare, 0)) - 0.5
+        guard at - target > 1 else { return }
+        startDrain(Drain(seam: state.written, searchFrom: state.written, reference: reference, target: target,
+                         toReference: late + 1 - target, sent: Date(),
+                         why: String(format: "%@, heard %.1f s, player %.1f s", speed == 1 ? "catching up" : String(format: "%.0f s behind", backlog),
+                                     fromHeard, fromPlayer)), report: report)
     }
 
     /// The player played on after a pause, from a moment later than where it stopped, as most players do: it moves
@@ -339,7 +369,7 @@ final class SlowStream {
         guard state.reading + UInt64(0.5 * rate) < reference.lowerBound else { return }
         // The player moves to 3.2 seconds before the pause, 1.4 seconds before the old audio: a player that reported the
         // pause late, or that plays a moment of silence after a move, still plays all of it again.
-        startDrain(Drain(seam: seam, searchFrom: state.written, reference: reference, target: pause.song - 3.2, sent: Date(),
+        startDrain(Drain(seam: seam, searchFrom: state.written, reference: reference, target: pause.song - 3.2, toReference: 2.4, sent: Date(),
                          why: "played after a pause"), report: report)
     }
 
@@ -397,7 +427,7 @@ final class SlowStream {
         guard !current.searching, Date().timeIntervalSince(lastSearch) > 0.4 else { return }
         // The player gets to the old audio's moment this long after the move, and then some, for a player that takes a
         // moment to play again.
-        let needed = (playerSecondsToReference(current) ?? 2) + 0.5
+        let needed = current.toReference + 0.5
         guard Double(state.written - current.searchFrom) / rate >= needed else { return }
         drain?.searching = true
         lastSearch = Date()
@@ -412,16 +442,17 @@ final class SlowStream {
         let windows = windows(of: current.reference).filter { $0.lowerBound >= state.reading + UInt64(0.25 * rate) }
         let rate = self.rate
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // The same audio played again matches at 0.99 and more. A window with a dropout in it matches a little less
+            // and can line up a few dozen milliseconds off, so a weaker match is taken only when no window is clean.
             var best: Float = 0
             var found: (window: Range<UInt64>, offset: Int, score: Float)?
             for window in windows {
                 let part = Array(old.samples[Int(window.lowerBound - old.start) ..< Int(window.upperBound - old.start)])
                 let search = Splice.search(part, in: region.samples, rate: rate)
                 best = max(best, search.best)
-                if let match = search.match {
-                    found = (window, match.offset, match.score)
-                    break
-                }
+                guard let match = search.match, match.score > found?.score ?? 0 else { continue }
+                found = (window, match.offset, match.score)
+                if match.score > 0.99 { break }
             }
             DispatchQueue.main.async {
                 guard let self, self.searchID == id, let drain = self.drain else { return }
@@ -455,14 +486,6 @@ final class SlowStream {
         log(String(format: "slow: saved %@ (%.2f s): old audio at %.2f s for %.2f s, the move at %.2f s", file.path,
                    Double(span.samples.count) / rate, Double(drain.reference.lowerBound - span.start) / rate,
                    Double(drain.reference.upperBound - drain.reference.lowerBound) / rate, Double(drain.searchFrom - span.start) / rate))
-    }
-
-    /// Seconds that the player plays after the move before it gets past the old audio's moment.
-    private func playerSecondsToReference(_ drain: Drain) -> Double? {
-        guard let state = pitch.slowState, let current else { return nil }
-        let heardAt = current.song + (state.clock - current.clock) / rate
-        let reference = heardAt + Double(drain.reference.upperBound - min(drain.reference.upperBound, state.reading)) / rate
-        return reference - drain.target
     }
 }
 

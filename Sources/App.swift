@@ -1229,6 +1229,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             playGuess = nil
             playGuessCheck?.cancel()
         }
+        // A slowed song holds at a pause, but some players (Safari) report a pause and a play within a fraction of a
+        // second around a move that Muskey sent. A pause right after a move holds the output only once it lasts.
+        if !track.playing, !pitch.paused, slow.movedRecently {
+            if pauseDeferredUntil == nil {
+                pauseDeferredUntil = Date().addingTimeInterval(0.6)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in self?.syncPaused() }
+            }
+            if let until = pauseDeferredUntil, Date() < until { return }
+        }
+        pauseDeferredUntil = nil
         if pitch.paused == track.playing, Self.logKeys || pitch.stemsEngaged { log(track.playing ? "song plays" : "song paused") }
         if !track.playing {
             pausedAt = pausedAt ?? (track.song, track.position(at: Date()))
@@ -1246,6 +1256,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The song and its position when the player paused it.
     private var pausedAt: ([String?], Double?)?
+    /// A pause reported right after a move, which holds the output only from this moment on.
+    private var pauseDeferredUntil: Date?
 
     /// Space over the HUD plays or pauses the song, as the play key does. The record, the tonearm and the stems
     /// change right away, before the player reports the change, and a glyph on the record confirms it.
