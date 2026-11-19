@@ -31,8 +31,8 @@ final class SlowStream {
     var refresh: () -> Void = {}
     /// The speed that the backlog is read at changed, so the correction changes with it.
     var onReadSpeed: () -> Void = {}
-    /// Slowing stopped by itself: the player didn't take a move back, or the backlog ran out.
-    var onStopped: (String) -> Void = { _ in }
+    /// Slowing had to stop because the player didn't take the moves back. Gets the speed that was asked for.
+    var onFailed: (Double) -> Void = { _ in }
     var log: (String) -> Void = { _ in }
 
     init(pitch: PitchChanger) {
@@ -166,13 +166,16 @@ final class SlowStream {
         refresh()
     }
 
-    /// Stops slowing at once: the output plays the tap as it is again, which jumps ahead to the player.
-    func stop(_ reason: String) {
+    /// Stops slowing at once: the output plays the tap as it is again, which jumps ahead to the player. `failed` tells
+    /// the app, which shows the speed that was asked for as a failure.
+    func stop(_ reason: String, failed: Bool = false) {
         guard active else { return }
         log("slow: stopped, \(reason)")
+        let wanted = speed
         cancelDrain()
         speed = 1
         finish()
+        if failed { onFailed(wanted) }
     }
 
     private func finish() {
@@ -342,7 +345,7 @@ final class SlowStream {
             searchID += 1
             failedDrains += 1
             log("slow: the audio after the move wasn't found before the output reached it")
-            if failedDrains >= 2 { stop("the player didn't play the song again after moving it back") }
+            if failedDrains >= 2 { stop("the player didn't play the song again after moving it back", failed: true) }
             return
         }
         guard !current.searching, Date().timeIntervalSince(lastSearch) > 0.4 else { return }

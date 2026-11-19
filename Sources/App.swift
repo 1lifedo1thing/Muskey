@@ -209,6 +209,9 @@ final class HUDModel: ObservableObject {
     /// The fastest speed of the song that plays: 150 % in Muskey Player, and 100 % for another player's song, which can
     /// only be slowed down.
     @Published var fastestSpeed = 1.5
+    /// Muskey had to stop slowing another player's song, which was asked for at this speed. The speed shows in a red
+    /// pill with Retry until the slowing works again, the pill is dismissed or another player plays.
+    @Published var slowFailed: Double?
     /// A seek would be instant: the stems aren't separated live, the lyrics don't play behind, and the player took
     /// the last seek. The seek keys and their hints exist only then.
     @Published var seekable = false
@@ -316,6 +319,7 @@ final class HUDModel: ObservableObject {
     /// The Separate instruments and vocals button.
     var onSeparate: () -> Void = {}
     var onStemsRetry: () -> Void = {}
+    var onSlowRetry: () -> Void = {}
     /// Files or links dropped on the HUD, which Muskey plays.
     var onOpen: ([URL]) -> Void = { _ in }
     /// A click on the record: play or pause.
@@ -1047,6 +1051,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var slowedPlayer: String?
     /// The speed that a slowed song had before it was recorded for a save, which it gets back after it.
     private var speedBeforeRecording: Double?
+    /// The player whose song Muskey had to stop slowing, while the red tempo pill shows it.
+    private var slowFailedPlayer: String?
     private let statusItem = StatusItem()
     /// The key the running pitch change starts from, kept for the menu bar item after the HUD shows another listen.
     private var shiftBase: DetectedKey?
@@ -1824,6 +1830,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         slow.refresh = { [weak self] in self?.nowPlaying.refresh() }
         slow.onReadSpeed = { [weak self] in self?.syncSpeed() }
         slow.log = { [weak self] in self?.log($0) }
+        slow.onFailed = { [weak self] wanted in
+            guard let self else { return }
+            slowFailedPlayer = slowedPlayer
+            model.slowFailed = wanted
+        }
+        model.onSlowRetry = { [weak self] in self?.retrySlowing() }
         nowPlaying.onSongChange = { [weak self] in
             // Another song during karaoke's countdown plays as it comes.
             if self?.karaokeRestart != nil { self?.endKaraokeRestart() }
@@ -3945,6 +3957,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The speed that the listens running now hear the song at.
     private var heardSpeed = 1.0
 
+    /// Retry on the red tempo pill: the player gets its moves tried again from the first way, and the song is slowed
+    /// to the speed that was asked for.
+    private func retrySlowing() {
+        guard let wanted = model.slowFailed else { return }
+        model.slowFailed = nil
+        if let id = slowFailedPlayer {
+            unseekable.remove(id)
+            seekPaths[id] = nil
+        }
+        log(String(format: "slow: retry at %.0f%%", wanted * 100))
+        syncSeekable()
+        syncSpeed()
+        playSpeed(wanted)
+    }
+
     /// The keys of the tempo, for a song in Muskey Player.
     private static let speedKeys = [kVK_ANSI_LeftBracket: -1, kVK_ANSI_RightBracket: 1, kVK_ANSI_Equal: 0]
 
@@ -3958,6 +3985,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func playSpeed(_ target: Double) {
         guard model.speedAdjustable, target != currentSpeed else { return }
+        model.slowFailed = nil
         if playsInFilePlayer {
             filePlayer.setSpeed(target)
         } else if let player = nowPlaying.player {
@@ -3975,6 +4003,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if slow.active, nowPlaying.player?.bundleID != slowedPlayer || songRecording != nil {
             slow.stop(songRecording != nil ? "the song is recorded for a save" : "another player plays")
         }
+        // The red tempo pill belongs to the player that couldn't be slowed.
+        if model.slowFailed != nil, let id = nowPlaying.player?.bundleID, id != slowFailedPlayer { model.slowFailed = nil }
         let adjustable = playsInFilePlayer || slowable || slow.active
         if model.speedAdjustable != adjustable {
             model.speedAdjustable = adjustable

@@ -119,18 +119,23 @@ struct ShiftPills: View {
             .animation(.snappy(duration: 0.25), value: model.shownTempo)
             .animation(.snappy(duration: 0.2), value: model.speed)
             .animation(.snappy(duration: 0.2), value: model.speedAdjustable)
+            .animation(.snappy(duration: 0.2), value: model.slowFailed)
         }
     }
 
     @ViewBuilder private var tempoPills: some View {
-        if model.speedAdjustable || model.shownTempo != nil {
+        if model.speedAdjustable || model.shownTempo != nil || model.slowFailed != nil {
             // The tempo and the speed are one thing to scroll over, so the speed that appears beside the tempo, which
             // moves it, is scrolled as well.
             ScrollLifted(region: .tempo, scroll: model.scroll, depth: 2.5) { inner, _ in
                 HStack(spacing: 6) {
                     TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
                               slower: model.speed > 0.5, faster: model.speed < model.fastestSpeed, palette: palette, lift: inner, step: model.onSpeed)
-                    if model.speedAdjustable, model.speed != 1 {
+                    if let failed = model.slowFailed {
+                        FailedSpeedPill(speed: failed, dismiss: { model.slowFailed = nil }, retry: model.onSlowRetry)
+                            .offset(y: inner)
+                            .transition(.opacity)
+                    } else if model.speedAdjustable, model.speed != 1 {
                         SpeedPill(speed: model.speed, palette: palette) { model.onSpeed(0) }
                             .offset(y: inner)
                             .transition(.opacity)
@@ -257,6 +262,38 @@ struct SpeedPill: View {
         .buttonStyle(.plain)
         .focusable(false)
         .help("Original tempo (=)")
+    }
+}
+
+/// The speed of a song from another player that Muskey had to stop slowing: the speed pill turns red, with an ✕ that
+/// dismisses it and Retry beside it, as the stems' label does when they couldn't be separated.
+struct FailedSpeedPill: View {
+    let speed: Double
+    let dismiss: () -> Void
+    let retry: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let percent = Int(((speed - 1) * 100).rounded())
+        HStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Text("\(percent < 0 ? "−" : "+")\(abs(percent))% tempo")
+                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .help("Dismiss")
+            }
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(StripColors.text(.red, colorScheme))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
+            .fixedSize()
+            Button("Retry", action: retry)
+                .controlSize(.mini)
+                .focusable(false)
+        }
     }
 }
 
