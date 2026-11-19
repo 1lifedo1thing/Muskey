@@ -331,6 +331,8 @@ final class HUDModel: ObservableObject {
     var onLyricsEdit: () -> Void = {}
     /// A stem chip or its key: mute it or play it again, or with Option play only that stem.
     var onStem: (Stem, Bool) -> Void = { _, _ in }
+    /// The V key and karaoke's Vocals pill: the vocals muted, or playing again.
+    var onVocals: () -> Void = {}
     var onStemsReset: () -> Void = {}
     /// The Separate instruments and vocals button.
     var onSeparate: () -> Void = {}
@@ -744,28 +746,46 @@ struct HUDView: View {
     }
 
     /// The key in the top row, which turns into the key row while the pointer is over it.
+    /// The key at the top of karaoke, which opens the key row while the pointer is over it. With the instruments
+    /// model, the Vocals pill sits under the key, and the key row opens under the pill instead of over it: only the
+    /// key opens the row, and the pill stays where it is, uncovered.
     private func karaokeKey(_ palette: Palette) -> some View {
-        ZStack(alignment: .top) {
-            if model.karaokeKeys, let key = model.key {
-                KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative,
-                          palette: palette, select: model.onShift)
-                    // A new song still waits for its key.
-                    .opacity(model.pending == nil ? 1 : 0.4)
-                    .allowsHitTesting(model.pending == nil)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(KaraokePopup())
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-            } else {
-                TitleLine(model: model, palette: palette, symbolSize: 13, keySize: 15, relativeSize: 11, listeningSize: 15)
-                    .frame(height: Self.focusRowHeight)
-                    .padding(.horizontal, 14)
-                    .contentShape(Rectangle())
-                    .opacity(0.75)
+        let pill = model.stemsAvailable && showsStrip
+        return VStack(spacing: 6) {
+            ZStack(alignment: .top) {
+                if model.karaokeKeys, !pill, let key = model.key {
+                    karaokeKeyRow(key, palette)
+                } else {
+                    TitleLine(model: model, palette: palette, symbolSize: 13, keySize: 15, relativeSize: 11, listeningSize: 15)
+                        .frame(height: Self.focusRowHeight)
+                        .padding(.horizontal, 14)
+                        .contentShape(Rectangle())
+                        .opacity(0.75)
+                        .transition(.opacity)
+                }
+            }
+            .onHover { karaokeHover($0, \.karaokeKeys, $keysCollapse) }
+            if pill {
+                KaraokeVocalsPill(muted: model.stemsMuted.contains(.vocals), hudHovered: model.hovering, palette: palette, action: model.onVocals)
                     .transition(.opacity)
+                if model.karaokeKeys, let key = model.key {
+                    karaokeKeyRow(key, palette)
+                        .onHover { karaokeHover($0, \.karaokeKeys, $keysCollapse) }
+                }
             }
         }
-        .onHover { karaokeHover($0, \.karaokeKeys, $keysCollapse) }
+    }
+
+    private func karaokeKeyRow(_ key: DetectedKey, _ palette: Palette) -> some View {
+        KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative,
+                  palette: palette, select: model.onShift)
+            // A new song still waits for its key.
+            .opacity(model.pending == nil ? 1 : 0.4)
+            .allowsHitTesting(model.pending == nil)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(KaraokePopup())
+            .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
     }
 
     /// The instruments and vocals over the record's cover while the pointer is over it, or the button that separates
@@ -1609,6 +1629,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     private var karaokeRestart: KaraokeRestart?
+    /// Karaoke's start over steps back to the start of the song with a fade, whatever Settings > Instruments and vocals
+    /// > Rewind effect has for the other steps back: a backspin all the way to the start felt like too much. Set until
+    /// that one step back is heard.
+    private var fadeToStart = false {
+        didSet { pitch.fadeSteps = prefs.rewindEffect == .fade || fadeToStart }
+    }
     private var karaokeRestartTimeout: DispatchWorkItem?
 
     /// Karaoke starts the song over (Settings > Lyrics > Karaoke > Start song from beginning). While the stems play, the output dips
@@ -1647,6 +1673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func beginKaraokeRestart(to target: Double = 0) {
         guard let track = nowPlaying.track else { return }
         log(target == 0 ? "karaoke: the song starts over" : String(format: "seek: the stems start over at %.1f s", target))
+        if target == 0, !fadeToStart { fadeToStart = true }
         let asked = Date()
         karaokeRestart = .seeking(asked, target)
         pitch.awaitingSeek = true
@@ -1689,6 +1716,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func endKaraokeRestart() {
+        if fadeToStart { fadeToStart = false }
         karaokeRestartTimeout?.cancel()
         karaokeRestartTimeout = nil
         karaokeRestart = nil
@@ -2028,7 +2056,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.store(in: &prefChanges)
         prefs.$launchAtLogin.sink { [weak self] in self?.updateLoginItem($0) }.store(in: &prefChanges)
         prefs.$relativeKeys.sink { [weak self] in self?.model.relativeKeys = $0 }.store(in: &prefChanges)
-        prefs.$rewindEffect.sink { [weak self] in self?.pitch.fadeSteps = $0 == .fade }.store(in: &prefChanges)
+        prefs.$rewindEffect.sink { [weak self] effect in
+            guard let self else { return }
+            pitch.fadeSteps = effect == .fade || fadeToStart
+        }.store(in: &prefChanges)
         // A changed timeout counts from the change.
         prefs.$pauseStop.combineLatest(prefs.$pauseStopSeconds).sink { [weak self] _ in
             DispatchQueue.main.async {
@@ -2083,6 +2114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onLyricsRetry = { [weak self] in self?.retryLyrics() }
         model.onLyricsEdit = { [weak self] in self?.editLyrics() }
         model.onStem = { [weak self] stem, solo in self?.toggleStem(stem, solo: solo) }
+        model.onVocals = { [weak self] in self?.toggleVocals() }
         model.onStemsReset = { [weak self] in self?.playAllStems() }
         model.onStemsRetry = { [weak self] in self?.retryStems() }
         model.onSeparate = { [weak self] in self?.separate() }
@@ -4077,8 +4109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard spins != spinsSeen else { return }
         // A new shifter counts from 0 again.
         if spins > spinsSeen {
-            log("the output stepped back in the song")
+            log("the output stepped back in the song" + (fadeToStart ? ", with a fade to the start" : ""))
             if model.shown { model.rewinds += 1 }
+            if fadeToStart { fadeToStart = false }
         }
         spinsSeen = spins
     }

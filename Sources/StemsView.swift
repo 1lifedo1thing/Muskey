@@ -283,6 +283,73 @@ private struct StemHalos: View {
     }
 }
 
+/// Karaoke's Vocals pill under the key, which shows whether the vocals play and mutes or plays them with a click, as V
+/// does. Karaoke often mutes the vocals by itself, so the pill shows fully for 3 seconds when karaoke opens and after
+/// each change, then dims to stay out of the way of the lyrics, until the pointer is over the HUD.
+struct KaraokeVocalsPill: View {
+    let muted: Bool
+    let hudHovered: Bool
+    let palette: Palette
+    let action: () -> Void
+    @Environment(\.colorScheme) private var scheme
+    @State private var fresh = true
+    @State private var hovering = false
+    @State private var dim: Task<Void, Never>?
+
+    var body: some View {
+        let shown = fresh || hudHovered
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "music.mic").font(.system(size: 11, weight: .bold))
+                Text(muted ? "Vocals muted" : "Vocals").font(.system(size: 12, weight: .semibold, design: .rounded))
+                Keycap(text: "V", palette: palette, small: true)
+            }
+            .foregroundStyle(muted ? palette.muted.opacity(hovering ? 0.95 : 0.75) : Stem.vocals.ink(scheme))
+            .padding(.leading, 10)
+            .padding(.trailing, 5)
+            .frame(height: 26)
+            .background { background }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help(muted ? "Play the vocals (V)" : "Mute the vocals (V)")
+        // Dims slowly, out of the corner of the eye, and comes back at once under the pointer.
+        .opacity(shown ? 1 : 0.2)
+        .animation(shown ? .easeOut(duration: 0.15) : .easeInOut(duration: 0.8), value: shown)
+        .onAppear(perform: showFully)
+        .onChange(of: muted) { showFully() }
+        .onDisappear { dim?.cancel() }
+    }
+
+    @ViewBuilder private var background: some View {
+        if muted {
+            // The muted look of the instruments: stripes, a faint red tint and a faint red ring.
+            let red = { (opacity: Double) in Color.oklch(scheme == .dark ? 0.68 : 0.6, 0.2, 25, opacity: opacity) }
+            ZStack {
+                Capsule().fill(palette.ink.opacity(hovering ? 0.1 : 0.07))
+                MutedStripes().stroke(palette.muted.opacity(0.22), lineWidth: 1.5).clipShape(Capsule())
+                Capsule().fill(red(0.05))
+                Capsule().strokeBorder(red(0.2), lineWidth: 2)
+            }
+        } else {
+            Capsule().fill(Stem.vocals.fill(scheme, level: hovering ? 0.35 : 0.15))
+        }
+    }
+
+    private func showFully() {
+        fresh = true
+        dim?.cancel()
+        dim = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            fresh = false
+        }
+    }
+}
+
 /// Diagonal lines 6 points apart over the whole rect, for the circle of a muted stem.
 private struct MutedStripes: Shape {
     func path(in rect: CGRect) -> Path {
