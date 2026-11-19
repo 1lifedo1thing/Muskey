@@ -19,11 +19,18 @@ final class LyricsStore {
     }
 
     private static let limit = 1000
-    private let url: URL
+    private let file: StoreFile<[String: Entry]>
     private var entries: [String: Entry]?
 
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Muskey/lyrics.json")) {
-        self.url = url
+        file = StoreFile(label: "muskey.lyrics", read: {
+            (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([String: Entry].self, from: $0) } ?? [:]
+        }, write: { entries in
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(entries).write(to: url, options: .atomic)
+            } catch {}
+        })
     }
 
     func text(for id: String) -> String? { load()[id]?.text }
@@ -67,15 +74,12 @@ final class LyricsStore {
             for (key, _) in old { entries[key] = nil }
         }
         self.entries = entries
-        do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(entries).write(to: url, options: .atomic)
-        } catch {}
+        file.save(entries)
     }
 
     private func load() -> [String: Entry] {
         if let entries { return entries }
-        let loaded = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([String: Entry].self, from: $0) } ?? [:]
+        let loaded = file.load()
         entries = loaded
         return loaded
     }

@@ -47,6 +47,7 @@ final class KeyLookup: @unchecked Sendable {
     private static let maxBytes = 100_000
 
     private let url: URL
+    private let file: StoreFile<[String: Entry]>
     private var entries: [String: Entry]?
     private var waiting: [String: [(DetectedKey?) -> Void]] = [:]
     /// No request goes out before this date, once Noiseblend asked for a pause.
@@ -63,6 +64,7 @@ final class KeyLookup: @unchecked Sendable {
 
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Muskey/online-keys.json")) {
         self.url = url
+        file = StoreFile(label: "muskey.online-keys", read: { Self.read(url) }, write: { Self.write($0, to: url) })
     }
 
     /// The key that Noiseblend gave for the song before, if it knew one.
@@ -121,7 +123,7 @@ final class KeyLookup: @unchecked Sendable {
         var entries = load()
         entries[id] = entry
         self.entries = entries
-        save(entries)
+        file.save(entries)
         log?("online key: \(key.name) overruled by a listen that found \(heard.name)")
     }
 
@@ -130,12 +132,12 @@ final class KeyLookup: @unchecked Sendable {
         guard entries[id] != nil else { return }
         entries[id] = nil
         self.entries = entries
-        save(entries)
+        file.save(entries)
     }
 
     func clear() {
         entries = [:]
-        try? FileManager.default.removeItem(at: url)
+        file.perform { [url] in try? FileManager.default.removeItem(at: url) }
     }
 
     private func request(title: String, artist: String, album: String?, duration: Double?) async -> Answer {
@@ -199,19 +201,25 @@ final class KeyLookup: @unchecked Sendable {
             for (old, _) in entries.sorted(by: { $0.value.date < $1.value.date }).prefix(entries.count - Self.limit) { entries[old] = nil }
         }
         self.entries = entries
-        save(entries)
+        file.save(entries)
     }
 
     private func load() -> [String: Entry] {
         if let entries { return entries }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let loaded = (try? Data(contentsOf: url)).flatMap { try? decoder.decode([String: Entry].self, from: $0) } ?? [:]
+        let loaded = file.load()
         entries = loaded
         return loaded
     }
 
-    private func save(_ entries: [String: Entry]) {
+    /// Runs on the file's queue.
+    private static func read(_ url: URL) -> [String: Entry] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? Data(contentsOf: url)).flatMap { try? decoder.decode([String: Entry].self, from: $0) } ?? [:]
+    }
+
+    /// Runs on the file's queue.
+    private static func write(_ entries: [String: Entry], to url: URL) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(entries) else { return }

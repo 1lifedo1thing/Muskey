@@ -40,6 +40,7 @@ final class KeyCache: ObservableObject {
     /// remembers.
     var onForget: ((String?) -> Void)?
     private let url: URL
+    private let file: StoreFile<[String: Entry]>
     private var entries: [String: Entry]? {
         didSet { songList = nil }
     }
@@ -47,6 +48,7 @@ final class KeyCache: ObservableObject {
 
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Muskey/keys.json")) {
         self.url = url
+        file = StoreFile(label: "muskey.keys", read: { Self.read(url) }, write: { Self.write($0, to: url) })
     }
 
     /// A song without a title can't be told apart from another one.
@@ -96,7 +98,7 @@ final class KeyCache: ObservableObject {
         }
         objectWillChange.send()
         self.entries = entries
-        save(entries)
+        file.save(entries)
         return result
     }
 
@@ -122,41 +124,108 @@ final class KeyCache: ObservableObject {
         objectWillChange.send()
         entries[id] = nil
         self.entries = entries
-        save(entries)
+        file.save(entries)
         onForget?(id)
     }
 
     func clear() {
         objectWillChange.send()
         entries = [:]
-        try? FileManager.default.removeItem(at: url)
+        file.perform { [url] in try? FileManager.default.removeItem(at: url) }
         onForget?(nil)
     }
 
     private func load() -> [String: Entry] {
         if let entries { return entries }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        var loaded: [String: Entry] = [:]
-        if let data = try? Data(contentsOf: url) {
-            if let decoded = try? decoder.decode([String: Entry].self, from: data) {
-                loaded = decoded.filter { (0 ..< 12).contains($0.value.pitchClass) && $0.value.strength.isFinite }
-            } else {
-                // Kept aside instead of being overwritten by the next listen, so the keys can still be recovered.
-                let aside = url.deletingPathExtension().appendingPathExtension("unreadable.json")
-                try? FileManager.default.removeItem(at: aside)
-                try? FileManager.default.moveItem(at: url, to: aside)
-            }
-        }
+        let loaded = file.load()
         entries = loaded
         return loaded
     }
 
-    private func save(_ entries: [String: Entry]) {
+    /// Runs on the file's queue.
+    private static func read(_ url: URL) -> [String: Entry] {
+        guard let data = try? Data(contentsOf: url) else { return [:] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        if let decoded = try? decoder.decode([String: Entry].self, from: data) {
+            return decoded.filter { (0 ..< 12).contains($0.value.pitchClass) && $0.value.strength.isFinite }
+        }
+        // Kept aside instead of being overwritten by the next listen, so the keys can still be recovered.
+        let aside = url.deletingPathExtension().appendingPathExtension("unreadable.json")
+        try? FileManager.default.removeItem(at: aside)
+        try? FileManager.default.moveItem(at: url, to: aside)
+        return [:]
+    }
+
+    /// Runs on the file's queue.
+    private static func write(_ entries: [String: Entry], to url: URL) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(entries) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
+    }
+}
+
+/// The JSON file of a store that keeps its entries in memory on the main thread. The file is read on a serial queue as
+/// soon as the store is made, and each save is encoded and written on that queue in order, so the main thread waits
+/// for the disk only when it needs the entries before that first read is done. Saves still queued when the app exits
+/// are written first.
+final class StoreFile<Entries>: @unchecked Sendable {
+    private let queue: DispatchQueue
+    private let read: () -> Entries
+    private let write: (Entries) -> Void
+    /// The entries of the first read, until `load()` takes them. Only touched on `queue`.
+    private var preloaded: Entries?
+    /// Counts the saves, so a save with a newer one queued behind it is skipped: the newer one writes it all.
+    private let lock = NSLock()
+    private var saves = 0
+
+    init(label: String, read: @escaping () -> Entries, write: @escaping (Entries) -> Void) {
+        queue = DispatchQueue(label: label, qos: .utility)
+        self.read = read
+        self.write = write
+        queue.async { [self] in preloaded = read() }
+        StoreFiles.add(queue)
+    }
+
+    /// The entries in the file. Waits for the first read when it isn't done yet.
+    func load() -> Entries {
+        queue.sync {
+            defer { preloaded = nil }
+            return preloaded ?? read()
+        }
+    }
+
+    func save(_ entries: Entries) {
+        let number = lock.withLock {
+            saves += 1
+            return saves
+        }
+        queue.async { [self] in
+            guard lock.withLock({ saves }) == number else { return }
+            write(entries)
+        }
+    }
+
+    /// Runs `change` after the saves queued before it, such as deleting the file.
+    func perform(_ change: @escaping () -> Void) {
+        queue.async(execute: change)
+    }
+}
+
+/// The queues of every store file, which the app waits for when it exits.
+enum StoreFiles {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var queues: [DispatchQueue] = []
+    private static let flushOnExit: Void = { atexit { StoreFiles.flush() } }()
+
+    static func add(_ queue: DispatchQueue) {
+        _ = flushOnExit
+        lock.withLock { queues.append(queue) }
+    }
+
+    private static func flush() {
+        for queue in lock.withLock({ queues }) { queue.sync {} }
     }
 }
