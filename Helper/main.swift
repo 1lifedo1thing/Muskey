@@ -5,7 +5,7 @@ import Foundation
 // signs this helper as com.apple.controlcenter.Muskey.
 //
 //   watch   a line at start and after every change, until stdin closes or the parent process exits. A line
-//           `playpause` on stdin plays or pauses the song, `pause` pauses it, `next` and `previous` skip to another
+//           `playpause` on stdin plays or pauses the song, `play` plays it, `pause` pauses it, `next` and `previous` skip to another
 //           song, `seek <seconds>` moves it to that time, and `seekclient <pid> <seconds>` sends the move to the
 //           player running as that process.
 //   get     one line, then exit
@@ -62,6 +62,11 @@ enum MediaRemote {
     /// The play or pause command that the media keys send to the player of the song (kMRTogglePlayPause).
     @discardableResult static func togglePlayPause() -> Bool {
         function("MRMediaRemoteSendCommand", as: SendCommand.self)?(2, nil) ?? false
+    }
+
+    /// The play command (kMRPlay), which leaves a playing song playing.
+    @discardableResult static func play() -> Bool {
+        function("MRMediaRemoteSendCommand", as: SendCommand.self)?(0, nil) ?? false
     }
 
     /// The pause command (kMRPause), which leaves a paused song paused.
@@ -204,6 +209,7 @@ case "watch":
             pending = String(pending[pending.index(after: end)...])
             if line == "playpause" { MediaRemote.togglePlayPause() }
             if line == "pause" { MediaRemote.pause() }
+            if line == "play" { MediaRemote.play() }
             if line == "next" { MediaRemote.skip(1) }
             if line == "previous" { MediaRemote.skip(-1) }
             if line.hasPrefix("seek "), let seconds = Double(line.dropFirst(5)) { MediaRemote.seek(to: seconds) }

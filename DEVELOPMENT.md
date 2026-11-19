@@ -123,6 +123,14 @@ A song in Muskey Player is rendered from its file, faster than it plays:
 3. The limiter of the live output holds the peaks under −1 dBFS.
 4. M4A is AAC at 256 kbit/s, WAV is 16-bit, and MP3 is 320 kbit/s from [LAME](https://lame.sourceforge.io), with the LAME tag that tells players how much padding the encoder added.
 
+A song from another player is recorded first, as it plays from its start to its end:
+
+1. When Muskey doesn't know yet which move the player takes (see Now Playing), it moves the playing song to its start and checks it, since a paused player reports no time to check against.
+2. The player pauses, a process tap starts recording, the song moves to its start, and the player plays it.
+3. The tap hears the processes of the player and of its helpers, which Core Audio lists by bundle ID, so other sounds stay out of the recording. When Core Audio lists none, the tap hears every app but Muskey, and the save panel says that other sounds are recorded too.
+4. The recording starts at the first sound and ends at the song's length. A pause, a seek or another song stops the save, with Retry in the pill.
+5. The recording is kept in memory, 15 minutes at most, and goes away once the song is rendered from it as a file in Muskey Player would be. The original song is never written to a file.
+
 Muskey writes the song to a temporary file, which replaces the chosen one once it is whole. The pill at the top right of the screen shows the progress, then the saved song with **Show in Finder**, or a red pill with **Retry**.
 
 ## Limitations
@@ -198,6 +206,7 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--menu-after SECONDS` | How long after launch `--menu` picks its item (3 seconds by default) |
 | `--render-song PATH` | Render a song as Save Song does, write it to `--render-out PATH` (M4A, MP3 or WAV by its extension), print how long each part took, and quit |
 | `--render-semitones N`, `--render-speed S`, `--render-mute vocals,drums` | The changes of `--render-song`: the key, the speed, and the stems that are muted |
+| `--record-everything` | Record every app but Muskey when a song from another player is saved, as for a player that Core Audio doesn't list |
 
 ### Tests
 

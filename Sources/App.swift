@@ -1139,7 +1139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // While the stems or the lyrics delay play, a pause has to be heard at once, so the helper keeps telling.
         // A song that Muskey Player plays faster or slower keeps its pitch correction only while it is the one that plays.
         nowPlaying.watching = keptKey != nil || shown || songKey != nil || prefs.alwaysListen || model.stemsEngaged || lyricsDelayed
-            || filePlayer.speed != 1
+            || filePlayer.speed != 1 || songRecording != nil
     }
 
     /// The stems play seconds behind the song, so they hold where they are while the player pauses it. A track
@@ -1817,6 +1817,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.syncSpeed()
             self?.syncSeekable()
             self?.syncSavable()
+            self?.checkRecording()
             self?.syncPaused()
             self?.checkKaraokeRestart()
             self?.syncTrack()
@@ -2689,9 +2690,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Saving
 
-    /// Where a song is saved from: the file that Muskey Player plays.
+    /// Where a song is saved from: the file that Muskey Player plays, or another player, which plays the song from
+    /// its start to its end while Muskey records it.
     private enum SaveSource: Equatable {
         case file(path: String)
+        case player(bundleID: String, song: [String?], seconds: Double)
     }
 
     private struct SaveJob: Equatable {
@@ -2725,8 +2728,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func saveSource() -> SaveSource? {
-        guard nowPlaying.track?.bundleID == FilePlayer.bundleID, let song = filePlayer.current else { return nil }
-        return .file(path: song.path)
+        guard let track = nowPlaying.track else { return nil }
+        if track.bundleID == FilePlayer.bundleID { return filePlayer.current.map { .file(path: $0.path) } }
+        // Another player has to move the song to its start, and the song has to fit in memory.
+        guard model.restartable, let id = track.bundleID, let seconds = track.duration, seconds > 1, seconds <= SongRecorder.maxSeconds
+        else { return nil }
+        return .player(bundleID: id, song: track.song, seconds: seconds)
     }
 
     private func syncSavable() {
@@ -2742,10 +2749,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard saveJob == nil else { return log("save: a song is being saved already") }
         // The changes are taken at the press, so a change made while the panel is open doesn't go in the file.
         guard let changes = saveChanges(), let source = saveSource() else { return log("save: nothing changed, or the song can't be saved") }
-        guard case let .file(path) = source else { return }
-        let title = filePlayer.current?.title ?? nowPlaying.track?.title ?? ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let title = switch source {
+        case let .file(path): filePlayer.current?.title ?? nowPlaying.track?.title ?? ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        case .player: nowPlaying.track?.title ?? "Song"
+        }
         let name = title.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        guard let (url, format) = askWhereToSave(fileName(name, changes)) else { return log("save: cancelled") }
+        var caveat: String?
+        if case let .player(id, _, _) = source {
+            caveat = SongRecorder.hearsPlayerOnly(bundleID: id, pid: nowPlaying.track?.pid) ? SaveCaveat.recorded : SaveCaveat.recordedWithOthers
+        }
+        guard let (url, format) = askWhereToSave(fileName(name, changes), caveat: caveat) else { return log("save: cancelled") }
         startSave(SaveJob(name: name, source: source, changes: changes, url: url, format: format))
     }
 
@@ -2769,7 +2782,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return parts.isEmpty ? name : "\(name) (\(parts.joined(separator: ", ")))"
     }
 
-    private func askWhereToSave(_ name: String) -> (URL, SaveFormat)? {
+    private func askWhereToSave(_ name: String, caveat: String?) -> (URL, SaveFormat)? {
         let panel = NSSavePanel()
         panel.title = "Save Song"
         panel.canCreateDirectories = true
@@ -2777,7 +2790,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var format = prefs.saveFormat
         panel.allowedContentTypes = [format.type]
         panel.nameFieldStringValue = "\(name).\(format.rawValue)"
-        let accessory = NSHostingView(rootView: SaveAccessory(format: format) { picked in
+        let accessory = NSHostingView(rootView: SaveAccessory(format: format, caveat: caveat) { picked in
             format = picked
             panel.allowedContentTypes = [picked.type]
             panel.nameFieldStringValue = ((panel.nameFieldStringValue as NSString).deletingPathExtension as NSString).appendingPathExtension(picked.rawValue) ?? name
@@ -2795,9 +2808,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Renders the song on a thread of its own, into a temporary file that replaces the chosen one once it is whole.
-    private func startSave(_ job: SaveJob) {
+    /// A song from another player is recorded first, as it plays from its start to its end.
+    private func startSave(_ job: SaveJob, recorded: StereoAudio? = nil) {
         saveJob = job
         failedSave = nil
+        if case .player = job.source, recorded == nil { return startRecording(job) }
         saveActivity = .saving(name: job.name, progress: 0)
         let changes = job.changes
         log(String(format: "save: %@ as %@, %+d semitones, %.0f%% tempo%@", job.name, job.format.name, changes.semitones, changes.speed * 100,
@@ -2821,8 +2836,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let temporary = FileManager.default.temporaryDirectory.appending(path: "Muskey save \(UUID().uuidString).\(job.format.rawValue)")
             defer { try? FileManager.default.removeItem(at: temporary) }
             do {
-                guard case let .file(path) = job.source else { throw SaveError(message: "The song has no file") }
-                let audio = try SongRender.read(URL(fileURLWithPath: path))
+                let audio: StereoAudio
+                if let recorded {
+                    audio = recorded
+                } else if case let .file(path) = job.source {
+                    audio = try SongRender.read(URL(fileURLWithPath: path))
+                } else {
+                    throw SaveError(message: "The song has no file")
+                }
                 let rendered = try SongRender.render(audio, changes: changes, live: { live }) { report($0 * 0.95) }
                 try SongRender.write(rendered, as: job.format, to: temporary) { report(0.95 + $0 * 0.05) }
                 if FileManager.default.fileExists(atPath: job.url.path) { try FileManager.default.removeItem(at: job.url) }
@@ -2832,6 +2853,128 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { self?.saveFinished(job, error: error, seconds: Date().timeIntervalSince(started), length: 0) }
             }
         }
+    }
+
+    /// A song from another player, recorded for Save Song: the player pauses, moves the song to its start and plays
+    /// it, and the recording ends at the song's length. A pause, a seek or another song ends it with a failure, which
+    /// Retry starts over.
+    private final class SongRecording {
+        /// Learning the move that the player takes, while the song plays, then the pause, the move sent while paused
+        /// (which a paused player reports no position for), and the song playing from its start.
+        enum Phase { case learning, pausing, moving, playing }
+        let job: SaveJob
+        let recorder: SongRecorder
+        var phase = Phase.pausing
+        var since = Date()
+        var timer: Timer?
+
+        init(job: SaveJob, recorder: SongRecorder) {
+            self.job = job
+            self.recorder = recorder
+        }
+    }
+
+    private var songRecording: SongRecording?
+
+    private func startRecording(_ job: SaveJob) {
+        guard case let .player(id, _, seconds) = job.source, let track = nowPlaying.track, track.bundleID == id else {
+            return saveFinished(job, error: SaveError(message: "The song isn't playing anymore"), seconds: 0, length: 0)
+        }
+        let recorder = SongRecorder(bundleID: id, pid: track.pid)
+        let recording = SongRecording(job: job, recorder: recorder)
+        songRecording = recording
+        updateWatching(shown: model.shown)
+        saveActivity = .recording(name: job.name, left: Self.clock(seconds))
+        log("save: recording \(job.name) from \(recorder.playerOnly ? id + " alone" : "every app but Muskey")")
+        recording.timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.checkRecording() }
+        guard Self.forcedSeekPath == nil, seekPaths[id] == nil else {
+            if track.playing { nowPlaying.play(false) }
+            return checkRecording()
+        }
+        // A paused player gives no position to check a move against, so the move that this player takes is learned
+        // while the song plays, from its start.
+        recording.phase = .learning
+        if !track.playing { nowPlaying.play(true) }
+        movePlayer(track, to: 0) { [weak self] moved in
+            guard let self, songRecording === recording else { return }
+            guard moved else { return endRecording(error: SaveError(message: "The player didn't move the song to its start")) }
+            recording.phase = .pausing
+            recording.since = Date()
+            nowPlaying.play(false)
+        }
+    }
+
+    /// Sends a move through the path that moved the song in this player before, without checking it.
+    private func sendMove(_ track: NowPlaying.Track, to target: Double) {
+        guard let id = track.bundleID, id != FilePlayer.bundleID else {
+            return track.bundleID == FilePlayer.bundleID ? filePlayer.seek(target) : nowPlaying.seek(to: target)
+        }
+        switch Self.forcedSeekPath ?? seekPaths[id] ?? .elapsed {
+        case .elapsed: nowPlaying.seek(to: target)
+        case .command: if let pid = track.pid { nowPlaying.seek(to: target, pid: pid) } else { nowPlaying.seek(to: target) }
+        case .script: PlayerScript.seek(id, to: target) { _ in }
+        }
+    }
+
+    /// Steps the recording on, from the reports of the player and a timer.
+    private func checkRecording() {
+        guard let recording = songRecording, case let .player(_, song, seconds) = recording.job.source else { return }
+        let track = nowPlaying.track
+        let waited = Date().timeIntervalSince(recording.since)
+        switch recording.phase {
+        case .learning:
+            break
+        case .pausing:
+            // The player stopped, or didn't answer within 3 seconds: the recording starts, then the song moves.
+            guard track?.playing == false || waited > 3, let track else { return }
+            do {
+                try recording.recorder.start()
+            } catch {
+                return endRecording(error: SaveError(message: "The song can't be recorded: \(error)"))
+            }
+            recording.phase = .moving
+            recording.since = Date()
+            sendMove(track, to: 0)
+        case .moving:
+            // The player had a moment to take the move. A song that stayed where it was ends the recording below, once
+            // it plays.
+            guard waited > 0.6 else { return }
+            recording.phase = .playing
+            recording.since = Date()
+            nowPlaying.play(true)
+        case .playing:
+            let rate = recording.recorder.rate, frames = recording.recorder.frames, target = Int(seconds * rate)
+            if frames >= target { return endRecording(error: nil) }
+            // Another song: a recording that is all but done keeps what it has.
+            if let track, track.song != song {
+                return frames >= target - Int(2 * rate) ? endRecording(error: nil)
+                    : endRecording(error: SaveError(message: "Another song started"))
+            }
+            if waited > 10, !recording.recorder.heard { return endRecording(error: SaveError(message: "Nothing was heard from the player")) }
+            if waited > 2, track?.playing == false { return endRecording(error: SaveError(message: "The song was paused")) }
+            // A seek moves the player away from the recording, which counts the song from its first sound.
+            if recording.recorder.heard, let position = track?.position(at: Date()), abs(position - Double(frames) / rate) > 4 {
+                return endRecording(error: SaveError(message: String(format: "The song moved to %.0f s", position)))
+            }
+            saveActivity = .recording(name: recording.job.name, left: Self.clock(Double(target - frames) / rate))
+        }
+    }
+
+    private func endRecording(error: Error?) {
+        guard let recording = songRecording, case let .player(_, _, seconds) = recording.job.source else { return }
+        recording.timer?.invalidate()
+        songRecording = nil
+        updateWatching(shown: model.shown)
+        let audio = recording.recorder.stop(frames: Int(seconds * recording.recorder.rate))
+        if let error { return saveFinished(recording.job, error: error, seconds: 0, length: 0) }
+        log(String(format: "save: recorded %.1f s of %@ at %.0f Hz", audio.seconds, recording.job.name, audio.rate))
+        startSave(recording.job, recorded: audio)
+    }
+
+    /// `2:15` for the time left.
+    private static func clock(_ seconds: Double) -> String {
+        let whole = max(0, Int(seconds.rounded(.up)))
+        return String(format: "%d:%02d left", whole / 60, whole % 60)
     }
 
     private func saveFinished(_ job: SaveJob, error: Error?, seconds: Double, length: Double) {
@@ -2905,11 +3048,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         seekCheck?.cancel()
         seekCheck = nil
         // Checks where the song is a while after the move was sent, and tries the next path when it stayed.
-        let check = { [weak self] (sent: Date) in
+        func check(_ sent: Date, tries: Int = 0) {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
-                guard let now = nowPlaying.track, now.song == track.song, let position = now.position(at: Date()) else {
-                    log("seek: another song plays, the move is over")
+                guard let now = nowPlaying.track, now.song == track.song else {
+                    log(nowPlaying.track == nil ? "seek: nothing plays, the move is over"
+                        : "seek: another song plays (\(nowPlaying.track?.label ?? "")), the move is over")
+                    return done?(false) ?? ()
+                }
+                guard let position = now.position(at: Date()) else {
+                    // Music leaves the time out of its report right after a move, until the next report.
+                    if tries < 3 { return check(sent, tries: tries + 1) }
+                    log("seek: the player gives no position (elapsed \(now.elapsed.map { String($0) } ?? "none"), rate \(now.rate.map { String($0) } ?? "none")), the move is over")
                     return done?(false) ?? ()
                 }
                 let rate = now.playing ? now.rate ?? 1 : 0
@@ -2932,8 +3082,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 syncSeekable()
                 done?(false)
             }
-            self?.seekCheck = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+            seekCheck = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + (tries == 0 ? 2.5 : 1.5), execute: work)
         }
         if Self.ignoredSeekPaths.contains(path), path != .script {
             log("seek: nothing sent through the \(path.name), for the test")

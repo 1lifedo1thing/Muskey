@@ -108,6 +108,12 @@ final class NowPlaying {
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data("playpause\n".utf8))
     }
 
+    /// Plays or pauses the song whatever it does now, through the helper while it runs.
+    func play(_ on: Bool) {
+        guard let stdinPipe else { return log("\(on ? "play" : "pause"): the now playing helper isn't running") }
+        try? stdinPipe.fileHandleForWriting.write(contentsOf: Data((on ? "play\n" : "pause\n").utf8))
+    }
+
     /// Skips to the next or the previous song, the way the media keys do, through the helper.
     func skip(_ direction: Int) {
         let command = direction > 0 ? "next" : "previous"

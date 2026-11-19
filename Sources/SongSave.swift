@@ -41,18 +41,35 @@ enum SaveFormat: String, CaseIterable {
     }
 }
 
-/// The Format row under the save panel.
+/// What saving a song from another player takes, under the save panel's Format row.
+enum SaveCaveat {
+    static let recorded = "Muskey plays the song from its start to its end and records it. Pausing, seeking or another song stops the save."
+    static let recordedWithOthers = recorded + " Other sounds playing at the same time are recorded too."
+}
+
+/// The Format row under the save panel, and what saving takes for a song from another player.
 struct SaveAccessory: View {
     @State var format: SaveFormat
+    let caveat: String?
     let picked: (SaveFormat) -> Void
 
     var body: some View {
-        LabeledContent("Format") {
-            Picker("Format", selection: $format) {
-                ForEach(SaveFormat.available, id: \.self) { Text($0.name).tag($0) }
+        VStack(spacing: 10) {
+            LabeledContent("Format") {
+                Picker("Format", selection: $format) {
+                    ForEach(SaveFormat.available, id: \.self) { Text($0.name).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
             }
-            .labelsHidden()
-            .fixedSize()
+            if let caveat {
+                Text(caveat)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 360)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
