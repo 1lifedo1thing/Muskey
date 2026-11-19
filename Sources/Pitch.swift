@@ -190,6 +190,18 @@ final class PitchChanger {
     private var procID: AudioDeviceIOProcID?
     private var shifter: OpaquePointer?
     private var outputListener: AudioObjectPropertyListenerBlock?
+
+    /// The only process that the pitch change hears and mutes, or nil for every app but Muskey. While Muskey Player
+    /// plays the song, only Muskey Player is heard, so that other sounds play as they are: the stems from the cache play
+    /// in place of what the tap hears, and would leave every other sound out. A change rebuilds the tap.
+    private(set) var hearsOneProcess = false
+    var heardProcess: pid_t? {
+        didSet {
+            guard heardProcess != oldValue, running else { return }
+            stemsLog("pitch change: \(heardProcess == nil ? "hearing every app" : "hearing only Muskey Player")")
+            rebuild()
+        }
+    }
     private static var defaultOutputAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
         mScope: kAudioObjectPropertyScopeGlobal,
@@ -268,7 +280,11 @@ final class PitchChanger {
     private func build() throws {
         // A global tap that included Muskey would hear its own output and feed it back.
         guard let me = AudioProcess.own else { throw TapError(step: "Finding Muskey's audio process", status: -1) }
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [me])
+        // A process that hasn't played anything yet has no process object, and the tap hears every app until it has.
+        let one = heardProcess.flatMap(AudioProcess.object)
+        hearsOneProcess = one != nil
+        let description = one.map { CATapDescription(stereoMixdownOfProcesses: [$0]) }
+            ?? CATapDescription(stereoGlobalTapButExcludeProcesses: [me])
         description.uuid = UUID()
         description.name = "Muskey pitch change"
         description.isPrivate = !Self.visible

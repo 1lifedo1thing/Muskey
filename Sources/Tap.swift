@@ -115,13 +115,16 @@ final class SystemAudioTap: AudioTapping {
 
 enum AudioProcess {
     /// Muskey's Core Audio process object, which a global tap leaves out to avoid hearing its own output.
-    static var own: AudioObjectID? {
+    static var own: AudioObjectID? { object(for: getpid()) }
+
+    /// The Core Audio process object of a running process, once it has played audio.
+    static func object(for pid: pid_t) -> AudioObjectID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var pid = getpid()
+        var pid = pid
         var object = AudioObjectID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioObjectID>.size)
         let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, UInt32(MemoryLayout<pid_t>.size), &pid, &size, &object)

@@ -1224,6 +1224,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         syncSpeed()
         stopPitch()
+        // The separation of the whole song into the cache stops too, and starts again the next time the stems are used.
+        stemsCache.cancel()
         refreshStatus()
     }
 
@@ -1924,6 +1926,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         filePlayer.onMove = { [weak self] in self?.playerMoved(to: $0) }
         stemsCache.log = { [weak self] in self?.log($0) }
+        StemModel.log = { [weak self] message in DispatchQueue.main.async { self?.log(message) } }
         stemsCache.live = { [separating = pitch.separatingLive] in separating.value }
         stemsCache.onDone = { [weak self] path, ok in
             guard let self else { return }
@@ -4115,6 +4118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The speed of the song that plays: Muskey Player's, or the one that another player's song is slowed down to.
     private var currentSpeed: Double { playsInFilePlayer ? filePlayer.speed : slow.speed }
     private var playsInFilePlayer: Bool { filePlayer.hasSong && nowPlaying.player?.bundleID == FilePlayer.bundleID }
+    /// The pitch change hears only Muskey Player while it plays the song, so other sounds play as they are.
+    private var heardProcess: pid_t? { playsInFilePlayer ? filePlayer.pid : nil }
     /// A song from another player can be slowed down while the player moves its songs, which keeps the output in step
     /// with it, and while it isn't recorded for a save.
     private var slowable: Bool {
@@ -4172,6 +4177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the correction applies only while Muskey Player is the player that macOS shows as playing.
     private func syncSpeed() {
         defer { syncStemsCache() }
+        if pitch.heardProcess != heardProcess { pitch.heardProcess = heardProcess }
         // Another player taking over, or a save that records the song, ends the slowing: the output jumps to the player.
         if slow.active, nowPlaying.player?.bundleID != slowedPlayer || songRecording != nil {
             slow.stop(songRecording != nil ? "the song is recorded for a save" : "another player plays")
@@ -4255,8 +4261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .granted:
             do {
                 let started = CACurrentMediaTime()
+                pitch.heardProcess = heardProcess
                 try pitch.start()
-                log(String(format: "pitch change started (%.0f ms to build)", (CACurrentMediaTime() - started) * 1000))
+                log(String(format: "pitch change started (%.0f ms to build%@)", (CACurrentMediaTime() - started) * 1000,
+                           pitch.hearsOneProcess ? ", hearing only Muskey Player" : ""))
             } catch {
                 pitchFailed("\(error)")
             }

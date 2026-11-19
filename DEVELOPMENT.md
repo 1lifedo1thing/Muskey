@@ -14,6 +14,8 @@ Muskey finds the key with [Essentia](https://essentia.upf.edu)'s KeyExtractor an
 
 A second process tap mutes every app except Muskey. Muskey sends that audio through [Rubber Band](https://breakfastquay.com/rubberband/)'s R3 engine and a limiter, then plays the result on the default output.
 
+While Muskey Player plays the song, the tap hears and mutes only Muskey Player, so other sounds play as they are. Muskey builds the tap again when the song moves between Muskey Player and another player, which starts the stems over.
+
 The tap is private to Muskey. When Muskey quits or crashes, the Mac plays its audio unchanged again.
 
 ### Now Playing
@@ -161,7 +163,6 @@ Muskey writes the song to a temporary file, which replaces the chosen one once i
 
 - A pitch change moves every note by the same amount, so a major song stays major. Muskey reaches a key in the other mode through its relative, which has the same notes: from A major, C minor plays as E♭ major.
 - While a song from another player is slowed down, every other sound that the Mac plays is slowed down and delayed with it, since the pitch change hears every app.
-- While the stems of a song in Muskey Player come from the cache, other sounds that the Mac plays aren't heard, since the output plays the stems in place of everything that the tap hears.
 - A screen recording that includes system audio records both the original song and the shifted one. To record only the shifted song, use a recorder that captures per-app audio, and leave out the app that plays the song.
 
 ## Flags for testing

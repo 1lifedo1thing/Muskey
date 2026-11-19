@@ -866,7 +866,7 @@ final class StemsCacheBuilder {
                 ok = true
                 log(String(format: "stems cache: the whole song separated in %.1f s", Date().timeIntervalSince(began)))
             } catch is CancellationError {
-                log("stems cache: stopped for another song")
+                log("stems cache: stopped")
             } catch {
                 log("stems cache: separating the whole song failed: \(error)")
             }

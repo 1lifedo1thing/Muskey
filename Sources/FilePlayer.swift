@@ -93,6 +93,8 @@ final class FilePlayer {
     private var process: Process?
     private var input: Pipe?
     private var buffer = Data()
+    /// Muskey Player's process, while it runs.
+    var pid: pid_t? { process.flatMap { $0.isRunning ? $0.processIdentifier : nil } }
     /// The songs opened together, and the one that plays.
     private var items: [URL] = []
     private var index = 0

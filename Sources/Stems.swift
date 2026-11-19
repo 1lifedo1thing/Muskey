@@ -149,6 +149,8 @@ final class StemModel: @unchecked Sendable {
     let kind: Kind
     private let model: MLModel
     private let spectrogram = Spectrogram()
+    /// Where a window that had to be separated again is told of.
+    nonisolated(unsafe) static var log: (String) -> Void = { _ in }
 
     private static let cacheLock = NSLock()
     private static var cached: [Kind: StemModel] = [:]
@@ -225,9 +227,19 @@ final class StemModel: @unchecked Sendable {
                 }
             }
         }
-        let output = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["spec": MLFeatureValue(multiArray: input)]))
+        let features = try MLDictionaryFeatureProvider(dictionary: ["spec": MLFeatureValue(multiArray: input)])
+        var masks: MLMultiArray?
+        // Masks that are all zero or not numbers, which a virtual GPU gives back now and then, would write silence over
+        // the window: it is separated once more, and a window that fails again fails the separation.
+        for attempt in 0 ..< 2 {
+            let output = try model.prediction(from: features)
+            masks = output.featureValue(for: "masks")?.multiArrayValue
+            if let masks, Self.usable(masks) { break }
+            Self.log("stems: the model gave back \(masks == nil ? "no masks" : "empty masks") for a window\(attempt == 0 ? ", separating it again" : "")")
+            masks = nil
+        }
         Self.cacheLock.withLock { _ = Self.ran.insert(kind) }
-        guard let masks = output.featureValue(for: "masks")?.multiArrayValue else { throw StemError.noOutput }
+        guard let masks else { throw StemError.noOutput }
 
         let strides = masks.strides.map(\.intValue)
         var stems: [[[Float]]] = []
@@ -253,6 +265,17 @@ final class StemModel: @unchecked Sendable {
             }
         }
         return stems
+    }
+}
+
+extension StemModel {
+    /// Masks with a value that isn't zero, and no value that isn't a number.
+    static func usable(_ masks: MLMultiArray) -> Bool {
+        masks.withUnsafeBufferPointer(ofType: Float.self) { m -> Bool in
+            guard !m.isEmpty else { return false }
+            let squares = vDSP.sumOfSquares(m)
+            return squares.isFinite && squares > 0
+        }
     }
 }
 
