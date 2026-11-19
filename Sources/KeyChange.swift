@@ -347,7 +347,7 @@ struct KeyPicker: View {
             colors: colors,
             palette: palette
         ) {
-            Self.click(offset: offset, second: second, inColumn: offset == selectedOffset, shift: shift, select: select)
+            Self.click(offset: offset, second: second, flipped: flipped, inColumn: offset == selectedOffset, shift: shift, select: select)
         }
     }
 
@@ -367,8 +367,10 @@ struct KeyPicker: View {
     /// A click on the key at `offset`, in the mode that it shows while Option is held or not. The column of the
     /// selected key keeps the shift, which can be an octave away from the column's offset after ↑ or ↓, so a click
     /// there changes only the mode.
-    static func click(offset: Int, second: Bool, inColumn: Bool, shift: Int, select: (Int, Bool) -> Void) {
-        select(inColumn ? shift : offset, second != NSEvent.modifierFlags.contains(.option))
+    /// `flipped`: the chips show the other mode, from a key picked in it or from Option held, so a click picks a key
+    /// in the mode that the chip shows.
+    static func click(offset: Int, second: Bool, flipped: Bool, inColumn: Bool, shift: Int, select: (Int, Bool) -> Void) {
+        select(inColumn ? shift : offset, second != flipped)
     }
 }
 
@@ -439,7 +441,7 @@ struct FifthsRing: View {
             colors: colors,
             palette: palette
         ) {
-            KeyPicker.click(offset: offset, second: second, inColumn: offset == selectedOffset, shift: shift, select: select)
+            KeyPicker.click(offset: offset, second: second, flipped: flipped, inColumn: offset == selectedOffset, shift: shift, select: select)
         }
     }
 }

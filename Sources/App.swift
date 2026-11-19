@@ -322,6 +322,8 @@ final class HUDModel: ObservableObject {
     var onStemsReset: () -> Void = {}
     /// The Separate instruments and vocals button.
     var onSeparate: () -> Void = {}
+    /// The ✕ on the stems: every stem plays again, and the Separate button takes their place.
+    var onStemsClose: () -> Void = {}
     var onStemsRetry: () -> Void = {}
     var onSlowRetry: () -> Void = {}
     /// Files or links dropped on the HUD, which Muskey plays.
@@ -536,7 +538,7 @@ struct HUDView: View {
                         VStack(spacing: 10) {
                             LyricsPanel(state: model.lyrics, line: model.lyricLine, palette: palette, width: 470, height: lyricsHeight,
                                         downloading: model.lyricsDownloading, writing: model.lyricsWriting && !model.lyricsSkipped, waiting: model.lyricsWaiting, retry: model.onLyricsRetry,
-                                        add: model.onLyricsEdit, edit: model.onLyricsEdit)
+                                        add: model.onLyricsEdit, edit: model.onLyricsEdit, showsFooter: false)
                             stems(palette)
                         }
                         .transition(.opacity)
@@ -546,6 +548,15 @@ struct HUDView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
+                // The timing and the service of the lyrics, at the top right of this side, in the row of the close
+                // button.
+                .overlay(alignment: .topTrailing) {
+                    if model.lyricsShown, showsStrip, case let .found(lyrics) = model.lyrics {
+                        LyricsBadges(lyrics: lyrics, downloading: model.lyricsDownloading, writing: model.lyricsWriting && !model.lyricsSkipped, palette: palette)
+                            .offset(y: -13)
+                            .transition(.opacity)
+                    }
+                }
                 if let track = deckTrack {
                     Rectangle()
                         .fill(palette.ink.opacity(0.1))
@@ -564,7 +575,7 @@ struct HUDView: View {
 
             if showsStrip, let key = model.key {
                 HStack(spacing: 16) {
-                    KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, otherMode: key.minor ? "major" : "minor", palette: palette)
+                    KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
                         .opacity(model.hintsOpacity)
                     Spacer(minLength: 0)
                     PitchControls(model: model, palette: palette, small: true)
@@ -673,7 +684,8 @@ struct HUDView: View {
             .padding(.bottom, KaraokeRecord<EmptyView>.height(side: recordSide) + 2)
     }
 
-    private var otherMode: String { model.key.map { $0.minor ? "major" : "minor" } ?? "" }
+    /// The mode that Option picks keys in: the one that the key row hides.
+    private var otherMode: String { model.key.map { $0.minor != model.relative ? "major" : "minor" } ?? "" }
 
     /// The hints along the bottom edge of the record, no wider than the record: the keys of the lyrics, or the keys
     /// that change the key while the key row shows.
@@ -786,10 +798,12 @@ struct HUDView: View {
     /// The lyrics in the wide layout keep the glass at the same height with the stems or the button under them.
     private var lyricsHeight: CGFloat {
         guard model.stemsAvailable else { return 250 }
-        return model.stemsOpen ? 250 - Self.stemsRowHeight : 250 - Self.separateButtonHeight
+        // The stems are smaller while the pointer is away from the HUD, and the lyrics take the room that they leave.
+        return model.stemsOpen ? 250 - (model.keysActive ? Self.stemsRowHeight : Self.compactStemsRowHeight) : 250 - Self.separateButtonHeight
     }
 
     private static let stemsRowHeight: CGFloat = 106
+    private static let compactStemsRowHeight: CGFloat = 72
     private static let separateButtonHeight: CGFloat = 34
 
     /// The width of the key row, which the stems under it match.
@@ -1933,6 +1947,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onSave = { [weak self] in self?.saveSong() }
         model.onOpen = { [weak self] urls in self?.open(urls) }
         model.onOpenFile = { [weak self] in self?.openFile() }
+        model.onStemsClose = { [weak self] in self?.closeStems() }
         model.onOpenLocation = { [weak self] in self?.openLocation() }
         slow.onReturn = { [weak self] progress in self?.model.tempoReturn = progress }
         model.onPlayPause = { [weak self] in self?.playPause() }
@@ -3390,10 +3405,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case kVK_DownArrow, kVK_UpArrow: break
         default:
             guard let letter = Self.letters[code], let key = model.key else { return false }
-            let minor = option ? !key.minor : key.minor
+            // A letter picks a key in the mode that the row shows, which is the other mode after a key was picked
+            // in it, and Option picks one in the mode that it hides.
+            let other = option != model.relative
+            let minor = other ? !key.minor : key.minor
             // A letter with no sharp or flat key in that mode does nothing with Shift, but still counts as used.
             guard let pitchClass = DetectedKey.pitchClass(letter: letter, accidental: shift, minor: minor) else { return true }
-            change(to: key.shift(to: DetectedKey(pitchClass: pitchClass, minor: minor)), relative: option)
+            change(to: key.shift(to: DetectedKey(pitchClass: pitchClass, minor: minor)), relative: other)
         }
         return true
     }
@@ -4370,6 +4388,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Stop Pitch Change in the HUD and in the menu: back to the original key, no key kept for the next songs,
     /// and the HUD closes.
+    /// The ✕ on the stems: every stem plays again and the stems close into the Separate button. The stems of the whole
+    /// song stay in the cache, so separating the song again is instant.
+    private func closeStems() {
+        log("stems closed")
+        model.stemsFailed = false
+        model.stemVolumes = [:]
+        pitch.stemVolumes = [:]
+        model.stemsMuted = []
+        pitch.mutedStems = []
+        engageStems(false)
+        refreshStatus()
+    }
+
     /// ⌘⌫: the song as it was, at once: its key, its tempo and every stem, with Lock Key released. The HUD stays up.
     private func resetAll() {
         log("⌘⌫: the key, the tempo and the stems back to the original")

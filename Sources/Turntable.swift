@@ -325,16 +325,15 @@ private struct CoverButton: View {
     @Environment(\.renderingPreview) private var renderingPreview
 
     var body: some View {
-        let lit = glyph?.hot == true
+        // No ring of its own: the glyph and the blur of the cover show that it is a button.
         Button(action: action) {
-            Circle().strokeBorder(.white.opacity(lit ? 0.22 : 0), lineWidth: 1)
+            Color.clear
                 .frame(width: size, height: size)
-            .contentShape(Circle())
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .focusable(false)
         .onHover(perform: hover)
-        .animation(.easeOut(duration: 0.12), value: lit)
         .help(playing ? "Pause" : "Play")
         .accessibilityLabel(playing ? "Pause" : "Play")
     }

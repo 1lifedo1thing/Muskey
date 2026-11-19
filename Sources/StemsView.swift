@@ -70,21 +70,36 @@ struct StemsRow: View {
     /// The keys work only while the pointer is over the HUD, so their numbers and the hints show only then, and the
     /// circles are smaller otherwise.
     private var expanded: Bool { model.keysActive }
-    /// The header holds only what changes: the progress of the separation, Play all, or a failure.
-    private var header: Bool { model.stemsFailed || model.stemsProgress != nil || model.stemsAdjusted }
+    /// The header holds only what changes: Play all, or a failure.
+    private var header: Bool { model.stemsFailed || model.stemsAdjusted }
+    /// The stems aren't separated yet: the progress takes the place of the Separate button, centred, and no circle
+    /// shows until the stems play.
+    private var separating: StemsProgress? { model.stemsFailed ? nil : model.stemsProgress }
 
     var body: some View {
+        if let progress = separating {
+            ProgressPill(progress: progress, palette: palette)
+                .frame(maxWidth: .infinity)
+                .transition(.opacity)
+        } else {
+            tray.transition(.opacity)
+        }
+    }
+
+    private var tray: some View {
         VStack(alignment: .leading, spacing: compact ? 4 : 6) {
             if header { headerRow }
             StemHalos(model: model, meters: model.stemMeters, palette: palette, compact: compact, card: card, expanded: expanded)
         }
         .padding(.horizontal, 12)
-        .padding(.top, header ? 8 : 4)
+        // The halos reach a few points past the circles, so they keep that much room under the top edge.
+        .padding(.top, header ? 8 : 10)
         // Room for the top half of the hints pill, which sits on the bottom edge.
-        .padding(.bottom, expanded ? 14 : 6)
+        .padding(.bottom, expanded ? 14 : 8)
         .background {
             // The tray is cut around the pill, so its edge doesn't run behind the hints.
-            RoundedRectangle(cornerRadius: 13).fill(palette.ink.opacity(0.06))
+            // Only while the pointer is over the HUD, which is when the stems take keys.
+            RoundedRectangle(cornerRadius: 13).fill(palette.ink.opacity(expanded ? 0.06 : 0))
                 .mask {
                     Rectangle()
                         .overlay(alignment: .bottom) {
@@ -97,6 +112,23 @@ struct StemsRow: View {
                         }
                         .compositingGroup()
                 }
+        }
+        .overlay(alignment: .topTrailing) {
+            if expanded {
+                Button(action: model.onStemsClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 7.5, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .frame(width: 15, height: 15)
+                        .background(Circle().fill(Color(red: 0.93, green: 0.33, blue: 0.3)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help("Close the stems")
+                .offset(x: 5, y: -5)
+                .transition(.opacity)
+            }
         }
         .overlay(alignment: .bottom) {
             if expanded {
@@ -114,7 +146,6 @@ struct StemsRow: View {
         .animation(.easeOut(duration: 0.15), value: model.keysActive)
         .animation(.snappy(duration: 0.2), value: header)
         .animation(.snappy(duration: 0.2), value: model.stemsMuted)
-        .animation(.snappy(duration: 0.2), value: model.stemsProgress == nil)
         .animation(.snappy(duration: 0.2), value: model.stemsFailed)
     }
 
@@ -136,10 +167,6 @@ struct StemsRow: View {
                     .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
                     Button("Retry", action: model.onStemsRetry)
                         .controlSize(.mini)
-                }
-                if let progress = model.stemsProgress, !model.stemsFailed {
-                    ProgressPill(progress: progress, palette: palette)
-                        .transition(.opacity)
                 }
                 Spacer(minLength: 0)
                 if model.stemsAdjusted {
@@ -178,10 +205,10 @@ private struct ProgressPill: View {
                 Text("Separating")
             }
         }
-        .font(.system(size: 10, weight: .semibold, design: .rounded))
+        .font(.system(size: 11, weight: .semibold, design: .rounded))
         .foregroundStyle(palette.muted)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
         .background(Capsule().fill(palette.ink.opacity(0.07)))
     }
 }
@@ -199,7 +226,8 @@ private struct StemHalos: View {
         let shown = Stem.shown
         // Seven stems on the narrower card get smaller circles, so the rings of neighbours don't touch.
         let crowded = card && shown.count > 6
-        HStack(spacing: crowded ? 2 : 6) {
+        // Spread over the tray while the pointer is over the HUD, and drawn together in the middle otherwise.
+        HStack(spacing: expanded ? (crowded ? 2 : 6) : 12) {
             ForEach(Array(shown.enumerated()), id: \.element) { index, stem in
                 ScrollLifted(region: .stem(stem), scroll: model.scroll, scale: 1.1, depth: 3.5) { inner, adjusting in
                     StemHalo(stem: stem, key: index + 1, on: !model.stemsMuted.contains(stem),
@@ -207,9 +235,10 @@ private struct StemHalos: View {
                              volume: model.stemVolumes[stem] ?? 1, adjusting: adjusting, lift: inner,
                              palette: palette, compact: compact, crowded: crowded, expanded: expanded, solo: model.flipped) { solo in model.onStem(stem, solo) }
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: expanded ? .infinity : nil)
             }
         }
+        .frame(maxWidth: .infinity)
     }
 }
 

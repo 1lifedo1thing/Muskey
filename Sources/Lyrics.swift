@@ -302,6 +302,23 @@ struct KaraokeCountdown: Equatable {
 
 /// The lyrics in place of the key, scrolling with the song so the line sung now stays a third of the way down.
 /// Scrolling by hand stops that for a few seconds after the scroll ends.
+/// The timing of lyrics that don't come with times, and the service that the lyrics came from, with a link to it.
+struct LyricsBadges: View {
+    let lyrics: Lyrics
+    var downloading = false
+    var writing = false
+    let palette: Palette
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if lyrics.timing == .estimated || lyrics.timing == .written {
+                LyricsTimingStatus(timing: lyrics.timing, downloading: downloading, writing: writing, palette: palette)
+            }
+            if let source = lyrics.source { LyricsCredit(source: source, palette: palette) }
+        }
+    }
+}
+
 struct LyricsPanel: View {
     let state: LyricsState
     /// The line sung now, which the app updates a few times a second while the panel shows.
@@ -322,6 +339,8 @@ struct LyricsPanel: View {
     var retry: () -> Void = {}
     var add: () -> Void = {}
     var edit: () -> Void = {}
+    /// The timing and the service under the lines. The wide layout shows them in its top row instead.
+    var showsFooter = true
 
     @State private var scrolling = false
     /// The last scroll by hand, with a trackpad, a mouse wheel or the scroll bar.
@@ -402,7 +421,7 @@ struct LyricsPanel: View {
             .frame(width: width, height: height, alignment: .top)
             .clipped()
             .mask(fade)
-            .overlay(alignment: .bottom) { if !large { footer(lyrics) } }
+            .overlay(alignment: .bottom) { if !large, showsFooter { footer(lyrics) } }
         } else {
             // Another song starts at its top, without the offset or the pause of the last one. New times for the same
             // lines, as the song is heard, keep the scroll.
@@ -423,12 +442,7 @@ struct LyricsPanel: View {
     /// The timing of lyrics that don't come with times, and the service that the lyrics came from, with a link to it.
     /// Karaoke shows both in its top row instead.
     private func footer(_ lyrics: Lyrics) -> some View {
-        HStack(spacing: 8) {
-            if lyrics.timing == .estimated || lyrics.timing == .written {
-                LyricsTimingStatus(timing: lyrics.timing, downloading: downloading, writing: writing, palette: palette)
-            }
-            if let source = lyrics.source { LyricsCredit(source: source, palette: palette) }
-        }
+        LyricsBadges(lyrics: lyrics, downloading: downloading, writing: writing, palette: palette)
     }
 
     /// How long Whisper collects the song before the song steps back, which the ring of the countdown empties over.
@@ -492,7 +506,7 @@ struct LyricsPanel: View {
                 follow(proxy, animated: true)
             }
             .mask(fade)
-            .overlay(alignment: .bottom) { if !large { footer(lyrics) } }
+            .overlay(alignment: .bottom) { if !large, showsFooter { footer(lyrics) } }
         }
     }
 

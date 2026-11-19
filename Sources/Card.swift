@@ -401,7 +401,7 @@ struct HUDCard: View {
             ZStack {
                 // The shortcuts take the place of the record and the keys, until the ? button is pressed again.
                 if model.shortcuts, showsKeys, let key = model.key {
-                    KeyHints(style: .list, tempo: model.speedAdjustable, save: model.savable, otherMode: key.minor ? "major" : "minor", palette: palette)
+                    KeyHints(style: .list, tempo: model.speedAdjustable, save: model.savable, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
                         .frame(width: ring, height: ring)
                         .background(RoundedRectangle(cornerRadius: 22).fill(palette.ink.opacity(0.06)))
                         .transition(.opacity)
