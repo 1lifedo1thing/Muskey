@@ -28,7 +28,10 @@ final class HotKey {
                               nil, MemoryLayout<EventHotKeyID>.size, nil, &pressedID)
             let hotKey = Unmanaged<HotKey>.fromOpaque(context).takeUnretainedValue()
             guard pressedID.id == hotKey.id else { return OSStatus(eventNotHandledErr) }
-            hotKey.action()
+            // The action runs after the handler returns: an action that registers the hotkeys again would otherwise
+            // free this one while its handler runs, and the keys pressed after it were lost.
+            let action = hotKey.action
+            DispatchQueue.main.async(execute: action)
             return noErr
         }, 1, &pressed, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)
         guard status == noErr else { throw RegistrationError(status: status) }
