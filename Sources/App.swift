@@ -4584,11 +4584,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoListenIfNeeded()
     }
 
+    /// The log file is written on a queue of its own, in the order of the lines, so a busy disk never holds up the
+    /// main thread. The lines still queued when the app exits are written first.
+    nonisolated private static let logQueue: DispatchQueue = {
+        atexit { AppDelegate.flushLog() }
+        return DispatchQueue(label: "muskey.log", qos: .utility)
+    }()
+
+    nonisolated private static func flushLog() { logQueue.sync {} }
+
     private func log(_ line: String) {
         // With `--log-keys`, each line also gets the host time in seconds, to line up a recording with the keys.
         let host = Self.logKeys ? String(format: "  @%.3f", CACurrentMediaTime()) : ""
         let stamped = "\(ISO8601DateFormatter().string(from: Date()))  \(line)\(host)\n"
         print(stamped, terminator: "")
+        Self.logQueue.async { Self.append(stamped) }
+    }
+
+    nonisolated private static func append(_ stamped: String) {
         let url = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/Muskey.log")
         guard let data = stamped.data(using: .utf8) else { return }
         // The log starts over past 5 MB, with the previous one kept as Muskey.old.log.
