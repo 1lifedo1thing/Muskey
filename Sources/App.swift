@@ -990,6 +990,11 @@ final class HUDPanel: NSPanel {
     /// Where the pointer and the panel were when the mouse button went down on the glass.
     private var pressStart: (mouse: NSPoint, origin: NSPoint)?
     private var draggingPanel = false
+    /// For the log: what the press landed on, when it went down, and whether a drag event came after it.
+    private var pressHit = ""
+    private var pressedAt = Date.distantPast
+    private var pressDragged = false
+    var log: (String) -> Void = { _ in }
 
     /// A drag that starts anywhere on the glass moves the panel once the pointer has moved a few points, also from
     /// a button, the key or the record. SwiftUI's window drag gesture never moved this non-activating panel.
@@ -1001,7 +1006,14 @@ final class HUDPanel: NSPanel {
             // Text fields and scroll bars keep their drags.
             let hit = contentView?.hitTest(event.locationInWindow)
             pressStart = hit is NSControl || hit is NSText ? nil : (NSEvent.mouseLocation, frame.origin)
+            pressHit = hit.map { String(describing: type(of: $0)).components(separatedBy: "<").first ?? "" } ?? "nothing"
+            pressedAt = Date()
+            pressDragged = false
         case .leftMouseDragged:
+            if !pressDragged {
+                pressDragged = true
+                log("HUD drag: pressed on \(pressHit), " + (pressStart == nil ? "which keeps the drag" : Self.controlTracksDrag ? "the seek bar keeps the drag" : "the panel follows the drag"))
+            }
             guard let start = pressStart, !Self.controlTracksDrag else { break }
             let mouse = NSEvent.mouseLocation
             let dx = mouse.x - start.mouse.x, dy = mouse.y - start.mouse.y
@@ -1016,6 +1028,11 @@ final class HUDPanel: NSPanel {
             return
         case .leftMouseUp:
             pressStart = nil
+            // A press held this long is usually a drag, so a press without a single drag event means that the
+            // system never sent the drag to the panel.
+            if !pressDragged, Date().timeIntervalSince(pressedAt) > 0.4 {
+                log(String(format: "HUD drag: pressed on %@ for %.1f s, with no drag events", pressHit, Date().timeIntervalSince(pressedAt)))
+            }
             guard draggingPanel else { break }
             draggingPanel = false
             // The button or the record under the pointer would take this release as a click. SwiftUI gets it far
@@ -1202,7 +1219,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum State { case idle, listening, showing }
 
     private let model = HUDModel()
-    private lazy var panel = HUDPanel(model: model)
+    private lazy var panel: HUDPanel = {
+        let panel = HUDPanel(model: model)
+        panel.log = { [weak self] in self?.log($0) }
+        return panel
+    }()
     private var hotKey: HotKey?
     private var state = State.idle
     // Bumped whenever a listen starts or ends, so late callbacks from a cancelled one are dropped.
