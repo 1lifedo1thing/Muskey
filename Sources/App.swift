@@ -4378,6 +4378,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var droppedLogged = 0
+    /// The second of the song that was heard at the last update of the line, which tells a seek back from a new time.
+    private var lyricsHeardLast = 0.0
 
     private func updateLyricLine() {
         guard case let .found(lyrics) = model.lyrics, let position = model.track?.position(at: Date()) else {
@@ -4393,7 +4395,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.lyricsWaiting != waiting { model.lyricsWaiting = waiting }
         checkSpins()
         // A line lights up a moment before it is sung, the way people read ahead.
-        let line = times.lastIndex { $0 <= heard + 0.25 }
+        var line = times.lastIndex { $0 <= heard + 0.25 }
+        // The lines after the last heard word are placed ahead, and the words that the transcriber hears a few
+        // seconds later can move the start of the line that lit up a little later. The highlight then stepped back a
+        // line and forward again moments later, so a line that lit up stays lit through a correction of up to 3
+        // seconds. A seek back, or a larger correction, still goes back.
+        if let shown = model.lyricLine, let new = line, new == shown - 1, shown < times.count,
+           heard >= lyricsHeardLast - 0.5, times[shown] - (heard + 0.25) < 3 {
+            line = shown
+        }
+        lyricsHeardLast = heard
         if model.lyricLine != line { model.lyricLine = line }
         logTimingError(times, position: position)
     }
@@ -4469,7 +4480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return (track, path == "failed" ? .failed : lyrics.map { .found($0) } ?? .notFound)
     }()
 
-    /// Holding Option over the keys, or while the picker is open, flips them to the other mode. Without Accessibility
+    /// Holding Option with the pointer over the HUD flips the keys to the other mode. Without Accessibility
     /// the app gets no modifier changes from other apps, so it reads the modifiers 30 times a second while the HUD
     /// is up.
     private func watchOption(_ shown: Bool) {
@@ -4479,7 +4490,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         optionWatch = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             guard let self else { return }
             let flags = NSEvent.modifierFlags
-            let flipped = flags.contains(.option) && !flags.contains(.command) && model.key != nil && (model.hovering || model.picking)
+            // Only with the pointer over the HUD: Option held while typing in another app flipped the keys out of sight.
+            let flipped = flags.contains(.option) && !flags.contains(.command) && model.key != nil && model.hovering
             if model.flipped != flipped { model.flipped = flipped }
         }
     }
