@@ -292,6 +292,29 @@ private struct HUDPane: View {
                 }
                 .padding(.vertical, 4)
             }
+            Section("Behaviour") {
+                // The period and the switch sit on one row, as in General > Playback.
+                LabeledContent {
+                    HStack(spacing: 6) {
+                        TextField("Auto-hide", value: $prefs.autoHideSeconds, format: .number.grouping(.never))
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 44)
+                            .disabled(!prefs.autoHide)
+                        Text("seconds")
+                            .foregroundStyle(prefs.autoHide ? .primary : .secondary)
+                        Toggle("Auto-hide", isOn: $prefs.autoHide)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+                } label: {
+                    Text("Auto-hide")
+                    Text("Close the HUD \(prefs.autoHideSeconds) seconds after showing the key")
+                }
+                .onChange(of: prefs.autoHideSeconds) { _, seconds in
+                    if !(1 ... 3600).contains(seconds) { prefs.autoHideSeconds = min(max(seconds, 1), 3600) }
+                }
+            }
         }
         .formStyle(.grouped)
     }

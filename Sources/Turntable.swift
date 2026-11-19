@@ -986,9 +986,12 @@ struct SongTimeBar: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
                         guard actions.seekable else { return }
+                        // The drag seeks, instead of moving the HUD.
+                        HUDPanel.controlTracksDrag = true
                         dragged = min(1, max(0, drag.location.x / width))
                     }
                     .onEnded { drag in
+                        HUDPanel.controlTracksDrag = false
                         guard actions.seekable else { return }
                         actions.seek(min(1, max(0, drag.location.x / width)))
                         // The bar holds the place until the player reports the move.
@@ -996,8 +999,10 @@ struct SongTimeBar: View {
                     },
                 isEnabled: actions.seekable
             )
+            // Dimmed while a seek would have to separate the stems again, so the bar doesn't look broken.
+            .opacity(actions.seekable ? 1 : 0.45)
             .animation(.easeOut(duration: 0.12), value: grows)
-            .help(actions.seekable ? "Move the song (← →, 0 for the start)" : "")
+            .help(actions.seekable ? "Move the song (← →, 0 for the start)" : "Seeking is off while instruments and vocals are separated as the song plays")
     }
 }
 

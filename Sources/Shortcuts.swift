@@ -60,6 +60,7 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("N"), .key("P")], name: "next or previous song"),
             Row(caps: [.key("←"), .key("→")], name: "5 seconds back/forward", condition: "when hovering the record"),
             Row(caps: [.key("0")], name: "from the beginning", condition: "when hovering the record"),
+            Row(caps: [.key("1–9")], name: "seek to 10%-90%", condition: "when hovering the record"),
         ])
         let lyrics = KeyGroup(name: "Lyrics and karaoke", symbol: "quote.bubble", hue: 8, rows: [
             Row(caps: [.key("L")], name: "lyrics"),

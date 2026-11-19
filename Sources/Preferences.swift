@@ -176,6 +176,14 @@ final class Preferences: ObservableObject {
     @Published var pauseStopSeconds: Int {
         didSet { defaults.set(pauseStopSeconds, forKey: "pauseStopSeconds") }
     }
+    /// The HUD closes `autoHideSeconds` after it shows a key (Settings > HUD > Auto-hide). Off, a HUD that a person
+    /// opened stays up until it is closed.
+    @Published var autoHide: Bool {
+        didSet { defaults.set(autoHide, forKey: "autoHide") }
+    }
+    @Published var autoHideSeconds: Int {
+        didSet { defaults.set(autoHideSeconds, forKey: "autoHideSeconds") }
+    }
     /// Cached stems and downloaded songs that weren't played for this long are deleted (Settings > General > Cache).
     @Published var cacheCleanup: CacheCleanup {
         didSet { defaults.set(cacheCleanup.rawValue, forKey: "cacheCleanup") }
@@ -186,7 +194,7 @@ final class Preferences: ObservableObject {
     }
 
     private init() {
-        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10, "cacheCleanup": CacheCleanup.weekly.rawValue])
+        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always
@@ -205,6 +213,8 @@ final class Preferences: ObservableObject {
         karaokeBackdrop = defaults.bool(forKey: "karaokeBackdrop")
         pauseStop = defaults.bool(forKey: "pauseStop")
         pauseStopSeconds = min(max(defaults.integer(forKey: "pauseStopSeconds"), 1), 3600)
+        autoHide = defaults.bool(forKey: "autoHide")
+        autoHideSeconds = min(max(defaults.integer(forKey: "autoHideSeconds"), 1), 3600)
         cacheCleanup = CacheCleanup(rawValue: defaults.double(forKey: "cacheCleanup")) ?? .weekly
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }

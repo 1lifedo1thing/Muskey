@@ -21,8 +21,11 @@ struct HUDButton: View {
     @State private var hovering = false
     @Environment(\.colorScheme) private var colorScheme
 
-    /// The height of a small pill, which the round ? button beside Lock Key matches, so their edges line up.
+    /// The height of a small pill.
     static let smallHeight: CGFloat = 22
+    /// The round ? button beside Lock Key. Its outline makes a circle look taller than a pill of the same height, so
+    /// it is drawn a little smaller to appear as tall as Lock Key.
+    static let questionSize: CGFloat = 20
 
     private var on: Bool { isOn == true }
 
@@ -74,6 +77,8 @@ struct RoundButton: View {
     var isOn = false
     /// Larger in karaoke, where the buttons sit in one row with the key.
     var size: CGFloat = 20
+    /// The label opens to the right of the symbol, for a button at the left edge, so the symbol stays where it was.
+    var labelAfter = false
     let palette: Palette
     let action: () -> Void
     @State private var hovering = false
@@ -85,7 +90,7 @@ struct RoundButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                if expanded, let label {
+                if expanded, let label, !labelAfter {
                     Text(label)
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .foregroundStyle(palette.ink)
@@ -103,6 +108,17 @@ struct RoundButton: View {
                 }
                 .foregroundStyle(isOn || hovering || expanded ? palette.ink : palette.muted)
                 .frame(width: size, height: size)
+                if expanded, let label, labelAfter {
+                    HStack(spacing: 5) {
+                        Text(label)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(palette.ink)
+                            .fixedSize()
+                        if let key { Keycap(text: key, palette: palette, small: true) }
+                    }
+                    .padding(.trailing, key == nil ? 9 : 4)
+                    .transition(.opacity)
+                }
             }
             .background(Capsule().fill(fill))
             .overlay(Capsule().strokeBorder(palette.ink.opacity(isOn ? 0 : 0.22), lineWidth: 1))

@@ -393,6 +393,7 @@ struct HUDView: View {
     /// The ✕ closes the HUD while it stays up: with the key row, a listen, its result, or nothing playing. A failed
     /// listen closes by itself.
     private var closable: Bool { model.picking || [.listening, .done, .idle].contains(model.phase) }
+    private var showsSave: Bool { showsStrip && model.saving == nil && !model.shortcuts && !focus && model.savable }
 
     /// The large lyrics take the place of either layout.
     private var focus: Bool { model.saving == nil && !model.shortcuts && model.lyricsFocus && model.lyricsShown && showsStrip }
@@ -441,11 +442,17 @@ struct HUDView: View {
         .overlay(alignment: .topLeading) {
             // In karaoke, the close button, the timing of the lyrics, the key, the lyrics' source and the karaoke button
             // sit in one row.
-            if closable || karaokeTiming != nil {
+            if closable || karaokeTiming != nil || showsSave {
                 HStack(spacing: 10) {
                     if closable {
                         // Over the shortcuts, the ✕ closes them and leaves the HUD open, as Escape does.
                         CloseButton(size: focus ? 16 : 14, action: { if model.shortcuts { model.shortcuts = false } else { model.onClose() } })
+                            .transition(.opacity)
+                    }
+                    // Beside the ✕ rather than in the row at the top right, where the card's record reached under it.
+                    if showsSave {
+                        RoundButton(symbol: "square.and.arrow.down", help: "Save the song with its changes (⌘S)", label: "Save", key: "⌘S",
+                                    labelAfter: true, palette: palette, action: model.onSave)
                             .transition(.opacity)
                     }
                     if let timing = karaokeTiming {
@@ -463,11 +470,6 @@ struct HUDView: View {
         .overlay(alignment: .topTrailing) {
             if showsStrip, model.saving == nil, !model.shortcuts {
                 HStack(spacing: 6) {
-                    if !focus, model.savable {
-                        RoundButton(symbol: "square.and.arrow.down", help: "Save the song with its changes (⌘S)", label: "Save", key: "⌘S",
-                                    palette: palette, action: model.onSave)
-                            .transition(.opacity)
-                    }
                     // Karaoke keeps only its own button, which closes it.
                     if !focus {
                         RoundButton(symbol: "quote.bubble", help: model.lyricsShown ? "Show the keys (L)" : "Show the lyrics (L)", label: "Lyrics", key: "L",
@@ -525,8 +527,7 @@ struct HUDView: View {
             return .systemAction
         })
         .animation(.smooth(duration: 0.35), value: model.songArriving == nil)
-        // The glass moves the panel when dragged anywhere that isn't a control.
-        .gesture(WindowDragGesture())
+        // A drag anywhere on the glass moves the panel (HUDPanel.sendEvent).
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.glassFrame = $0 }
         .onHover { model.hovering = $0 }
         .animation(.snappy, value: model.phase)
@@ -608,8 +609,11 @@ struct HUDView: View {
                     KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
                         .opacity(model.hintsOpacity)
                     Spacer(minLength: 0)
-                    PitchControls(model: model, palette: palette, small: true)
-                    RoundButton(symbol: "questionmark", help: "Shortcuts (?)", isOn: model.shortcuts, size: HUDButton.smallHeight, palette: palette) { model.shortcuts.toggle() }
+                    // The ? button sits as close to Lock Key as Stop Pitch Change does.
+                    HStack(spacing: 6) {
+                        PitchControls(model: model, palette: palette, small: true)
+                        RoundButton(symbol: "questionmark", help: "Shortcuts (?)", isOn: model.shortcuts, size: HUDButton.questionSize, palette: palette) { model.shortcuts.toggle() }
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.leading, 20)
@@ -974,8 +978,57 @@ final class HUDPanel: NSPanel {
     private var pointerMonitors: [Any] = []
 
     func updatePassThrough() {
-        let ignore = !(wantsClicks && overGlass(NSEvent.mouseLocation))
+        // While the button is held after a press on the glass, the panel keeps the mouse, since a fast drag can take
+        // the pointer past the edge of the glass before the panel catches up with it.
+        let ignore = pressStart == nil && !(wantsClicks && overGlass(NSEvent.mouseLocation))
         if ignoresMouseEvents != ignore { ignoresMouseEvents = ignore }
+    }
+
+    /// A control that a drag along it moves, like the bar with the song's time, sets this while its drag runs, so
+    /// that the drag doesn't move the panel instead.
+    static var controlTracksDrag = false
+    /// Where the pointer and the panel were when the mouse button went down on the glass.
+    private var pressStart: (mouse: NSPoint, origin: NSPoint)?
+    private var draggingPanel = false
+
+    /// A drag that starts anywhere on the glass moves the panel once the pointer has moved a few points, also from
+    /// a button, the key or the record. SwiftUI's window drag gesture never moved this non-activating panel.
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            Self.controlTracksDrag = false
+            draggingPanel = false
+            // Text fields and scroll bars keep their drags.
+            let hit = contentView?.hitTest(event.locationInWindow)
+            pressStart = hit is NSControl || hit is NSText ? nil : (NSEvent.mouseLocation, frame.origin)
+        case .leftMouseDragged:
+            guard let start = pressStart, !Self.controlTracksDrag else { break }
+            let mouse = NSEvent.mouseLocation
+            let dx = mouse.x - start.mouse.x, dy = mouse.y - start.mouse.y
+            if !draggingPanel {
+                guard hypot(dx, dy) >= 4 else { break }
+                draggingPanel = true
+                // The drag sets the new place, so a move that kept the glass on the screen is forgotten.
+                pushed = .zero
+                heading = nil
+            }
+            setFrameOrigin(NSPoint(x: start.origin.x + dx, y: start.origin.y + dy))
+            return
+        case .leftMouseUp:
+            pressStart = nil
+            guard draggingPanel else { break }
+            draggingPanel = false
+            // The button or the record under the pointer would take this release as a click. SwiftUI gets it far
+            // outside the panel instead, which ends the press without one.
+            let outside = NSEvent.mouseEvent(with: .leftMouseUp, location: NSPoint(x: -10000, y: -10000), modifierFlags: event.modifierFlags,
+                                             timestamp: event.timestamp, windowNumber: windowNumber, context: nil,
+                                             eventNumber: event.eventNumber, clickCount: event.clickCount, pressure: 0)
+            if let outside { super.sendEvent(outside) }
+            updatePassThrough()
+            return
+        default: break
+        }
+        super.sendEvent(event)
     }
 
     private func overGlass(_ point: NSPoint) -> Bool {
@@ -1269,6 +1322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Checked every 0.15 seconds while the button is down, for up to 90 seconds.
             if NSEvent.pressedMouseButtons & 1 != 0, tries < 600 { return panelMoved(tries: tries + 1) }
             panel.settleAfterDrag()
+            log("the HUD was dragged to a new place")
         }
         dragSettle = settle
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: settle)
@@ -1865,8 +1919,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the remembered one.
     private var redetecting = false
     /// The HUD was opened by a person (the hotkey, the menu, a click, an opened song), or showed already when the song
-    /// changed, so it stays up after the result until it is closed. A HUD that a song change opened with Lock Key on
-    /// closes a few seconds after the result.
+    /// changed, so it stays up after the result until it is closed, unless Auto-hide is on. A HUD that a song change
+    /// opened with Lock Key on closes after the period of Auto-hide either way.
     private var stayOpen = false
     private let keyLookup = KeyLookup()
     private var keyMonitor: Any?
@@ -1885,7 +1939,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // accuracy, so a listen has a fixed length.
     private var seconds: Double { Self.stringOption("--seconds").flatMap(Double.init) ?? Double(prefs.listenSeconds) }
     private let silenceAfter = KeyAnalyzer.firstEstimateAfter + 0.5
-    private let showResultFor = option("--show", 6)
+    /// How long a result stays up before the HUD closes, or nil when it stays up until it is closed. With Auto-hide
+    /// off, only a HUD that a song change opened with Lock Key on closes by itself. `--show SECONDS` sets the period
+    /// for tests.
+    private var resultHideDelay: TimeInterval? {
+        guard prefs.autoHide || !stayOpen else { return nil }
+        return Self.stringOption("--show").flatMap(Double.init) ?? Double(prefs.autoHideSeconds)
+    }
 
     private static func stringOption(_ name: String) -> String? { TestFlags.value(name) }
 
@@ -2763,7 +2823,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showTempo()
         if !model.picking { panel.setInteraction(clickable: true, keyboard: false) }
         updateHoverKeys()
-        if !model.picking, !stayOpen { dismiss(after: showResultFor) }
+        if !model.picking, let delay = resultHideDelay { dismiss(after: delay) }
     }
 
     /// A click on the key: the song is listened to again as if no key were known for it, and the key that the listen
@@ -2864,7 +2924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateHoverKeys()
             guard !model.picking else { return }
             panel.setInteraction(clickable: true, keyboard: false)
-            if !stayOpen { dismiss(after: showResultFor) }
+            if let delay = resultHideDelay { dismiss(after: delay) }
         }
     }
 
@@ -3064,7 +3124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// Keys 0 to 9, for karaoke's seeks.
+    /// Keys 0 to 9, for the seeks over the record and in karaoke.
     private static let digitKeys = [kVK_ANSI_0, kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
 
     /// N and P play the next and the previous song in every layout. With the lyrics, ← and → seek 5 seconds back or
@@ -3073,13 +3133,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// exist only while they are instant (`model.seekable`): a seek while the stems are separated live would start
     /// their countdown again.
     private func handleSongKey(_ code: Int, option: Bool) -> Bool {
-        // Over the record and its time bar, ← → move the song 5 seconds and 0 starts it over, in every layout.
+        // Over the record and its time bar, ← → move the song 5 seconds, 0 starts it over and 1 to 9 move it to a
+        // tenth of its length, in every layout. The numbers mute no stem there, even while a seek can't be instant.
         if model.overRecord, !option {
             switch code {
             case kVK_LeftArrow where model.seekable: seek(by: -5); return true
             case kVK_RightArrow where model.seekable: seek(by: 5); return true
             case kVK_ANSI_0 where model.restartable: startOver(); return true
-            default: break
+            default:
+                if let digit = Self.digitKeys.firstIndex(of: code), digit > 0 {
+                    if model.seekable { seek(toFraction: Double(digit) / 10) } else { log("seek: the stems are separated as the song plays") }
+                    return true
+                }
             }
         }
         switch code {
@@ -4445,8 +4510,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keys += Self.letters.keys.flatMap { code in modifiers.map { (code, $0) } }
             keys += [kVK_Delete, kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow].map { ($0, 0) }
         }
-        // Over the record, the arrows move the song and 0 starts it over.
+        // Over the record, the arrows and the numbers move the song, and 0 starts it over.
         if model.overRecord, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
+        if model.overRecord { keys += Self.digitKeys.dropFirst().map { ($0, 0) } }
         if model.overRecord, model.restartable { keys.append((kVK_ANSI_0, 0)) }
         // A key that two lists add is registered once.
         keys = keys.reduce(into: []) { unique, key in if !unique.contains(where: { $0 == key }) { unique.append(key) } }
@@ -4916,6 +4982,8 @@ extension EnvironmentValues {
             // A new song that is heard in 4 of its 6 seconds of waiting.
             if variant.hasSuffix("-arriving") { model.songArriving = Date().addingTimeInterval(-2) ... Date().addingTimeInterval(4) }
             model.flipped = variant == "-option" || variant == "-stems-option"
+            // A song in another key can be saved, so its renders show the Save button.
+            model.savable = shift != 0 && suffix == "-song"
             if variant.hasPrefix("-lyrics") {
                 model.lyricsShown = true
                 let text = sampleLyrics.map { "[00:\(String(format: "%05.2f", $0.0))] \($0.1)" }.joined(separator: "\n")

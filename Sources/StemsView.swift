@@ -331,7 +331,8 @@ private struct StemHalo: View {
                         // Option is a key held for a moment, so the swap runs at three times the usual speed.
                         .contentTransition(.symbolEffect(.replace, options: .speed(3)))
                     if !on, !solo {
-                        Capsule().fill(palette.muted.opacity(0.45)).frame(width: 2, height: side - 2).rotationEffect(.degrees(-45))
+                        // Red, so a muted stem stands out from a quiet one at a glance.
+                        Capsule().fill(Color.oklch(scheme == .dark ? 0.68 : 0.6, 0.2, 25)).frame(width: 2, height: side - 2).rotationEffect(.degrees(-45))
                     }
                 }
                 .frame(width: side, height: side)

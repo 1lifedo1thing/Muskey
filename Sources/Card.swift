@@ -516,12 +516,12 @@ struct HUDCard: View {
             if showsKeys {
                 HStack(spacing: 8) {
                     // As wide as the ? button, so Lock Key and Stop Pitch Change sit in the middle.
-                    Color.clear.frame(width: HUDButton.smallHeight, height: 1)
+                    Color.clear.frame(width: HUDButton.questionSize, height: 1)
                     Spacer(minLength: 0)
                     PitchControls(model: model, palette: palette, small: true)
                         .modifier(FocusDim(on: true))
                     Spacer(minLength: 0)
-                    RoundButton(symbol: "questionmark", help: "Shortcuts (?)", isOn: model.shortcuts, size: HUDButton.smallHeight, palette: palette) { model.shortcuts.toggle() }
+                    RoundButton(symbol: "questionmark", help: "Shortcuts (?)", isOn: model.shortcuts, size: HUDButton.questionSize, palette: palette) { model.shortcuts.toggle() }
                 }
                 .padding(.top, 14)
                 .transition(.opacity)
