@@ -66,6 +66,13 @@ struct StemsRow: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var pillSize = CGSize.zero
+    @State private var trayWidth: CGFloat = 0
+
+    /// The card's tray is narrower than the hints, which shrink to fit it rather than run past the edges of the card.
+    private var pillScale: CGFloat {
+        guard pillSize.width > 0, trayWidth > 0 else { return 1 }
+        return min(1, (trayWidth - 12) / pillSize.width)
+    }
 
     /// The keys work only while the pointer is over the HUD, so their numbers and the hints show only then, and the
     /// circles are smaller otherwise.
@@ -96,6 +103,7 @@ struct StemsRow: View {
         .padding(.top, header ? 8 : 10)
         // Room for the top half of the hints pill, which sits on the bottom edge.
         .padding(.bottom, expanded ? 14 : 8)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { trayWidth = $0 }
         .background {
             // The tray is cut around the pill, so its edge doesn't run behind the hints.
             // Only while the pointer is over the HUD, which is when the stems take keys.
@@ -105,7 +113,7 @@ struct StemsRow: View {
                         .overlay(alignment: .bottom) {
                             if expanded {
                                 Capsule()
-                                    .frame(width: pillSize.width + 4, height: pillSize.height + 4)
+                                    .frame(width: pillSize.width * pillScale + 4, height: pillSize.height * pillScale + 4)
                                     .offset(y: Self.pillHeight / 2 + 2)
                                     .blendMode(.destinationOut)
                             }
@@ -139,6 +147,7 @@ struct StemsRow: View {
                     .background(Capsule().fill(palette.ink.opacity(0.025)))
                     .overlay(Capsule().strokeBorder(palette.ink.opacity(0.09), lineWidth: 0.5))
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { pillSize = $0 }
+                    .scaleEffect(pillScale)
                     .offset(y: Self.pillHeight / 2)
                     .transition(.opacity)
             }
