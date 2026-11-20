@@ -79,22 +79,23 @@ enum LoopSnap {
     }
 
     /// The end for a press at `t`, with the length from `start` rounded to whole beats, or to whole bars within a
-    /// beat of one, at `bpm` when the song's tempo is known. Without a tempo, the end is snapped like the start.
-    static func snapEnd(_ t: Double, start: Double, grid: Grid, bpm: Double?) -> Double {
+    /// beat of one. The tempo is the beat grid's when the grids around both ends agree on it, since they measured this
+    /// part of the song, and otherwise the song's tempo from a listen. A rounded end that would land more than about
+    /// half a beat from the press is dropped for the plain snap, so a wrong tempo can't move the end far.
+    static func snapEnd(_ t: Double, start: Double, grid: Grid, bpm: Double?, startBPM: Double? = nil) -> Double {
         let end = snap(t, grid: grid)
-        // The song's tempo, from a whole listen, is steadier than the few seconds around the end, which can count the
-        // beat at another level.
-        guard let bpm = bpm ?? grid.bpm, bpm > 30, bpm < 300 else { return end }
-        let beat = 60 / bpm
+        let tempo: Double? = if let a = startBPM, let b = grid.bpm, abs(a / b - 1) < 0.04 { (a + b) / 2 } else { bpm ?? startBPM ?? grid.bpm }
+        guard let tempo, tempo > 30, tempo < 300 else { return end }
+        let beat = 60 / tempo
         var beats = max(1, ((end - start) / beat).rounded())
         let bars = (beats / 4).rounded() * 4
         if bars >= 4, abs(beats - bars) <= 1 { beats = bars }
-        let target = start + beats * beat
+        var target = start + beats * beat
         // The grid's own beat next to the count is more exact than the count, since tempos drift a little.
         if let closest = grid.beats.min(by: { abs($0 - target) < abs($1 - target) }), abs(closest - target) < beat / 4 {
-            return exact(closest, grid: grid)
+            target = exact(closest, grid: grid)
         }
-        return target
+        return abs(target - t) <= max(before, beat * 0.6) ? target : end
     }
 
     /// An attack within 40 ms of `beat` gives its exact moment, since the beat tracker's ticks can sit a little off.

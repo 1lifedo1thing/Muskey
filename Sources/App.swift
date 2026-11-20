@@ -4249,6 +4249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Now Playing reports some of these seconds later, so the stems from the cache learn of the move from the player,
     /// and wait for the new place when nobody asked them.
     private func playerMoved(to seconds: Double) {
+        if Self.logKeys { log(String(format: "Muskey Player moved to %.2f s", seconds)) }
         guard playsInFilePlayer, let feed = pitch.stemsFeed else { return }
         feed.moved(to: seconds)
         // A move during the pause is known from here, before Now Playing reports it.
@@ -4334,7 +4335,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func snap(_ end: LoopEnd, at time: Double) {
         let path = playsInFilePlayer ? filePlayer.current?.path : nil
         let recorder = waveformRecorder
-        let bpm = model.shownTempo?.bpm ?? (end == .end ? loopGridBPM : nil)
+        let bpm = model.shownTempo?.bpm
+        let startBPM = loopGridBPM
         let song = loopSong
         loopSnap?.cancel()
         loopSnap = Task { [weak self] in
@@ -4354,7 +4356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let grid = await Task.detached(priority: .userInitiated) { LoopSnap.grid(excerpt.samples, start: excerpt.start) }.value
             guard let self, !Task.isCancelled, loopSong == song, var loop = model.loop else { return }
             if end == .start { loopGridBPM = grid.bpm }
-            let snapped = end == .start ? LoopSnap.snap(time, grid: grid) : LoopSnap.snapEnd(time, start: loop.start, grid: grid, bpm: bpm)
+            let snapped = end == .start ? LoopSnap.snap(time, grid: grid) : LoopSnap.snapEnd(time, start: loop.start, grid: grid, bpm: bpm, startBPM: startBPM)
             switch end {
             case .start: loop.start = loop.end.map { min(snapped, $0 - 0.25) } ?? snapped
             case .end: loop.end = max(snapped, loop.start + 0.25)
