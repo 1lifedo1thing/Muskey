@@ -124,7 +124,7 @@ Muskey Player tells Muskey of every move of its song, including the ones from Co
 
 ### Notes
 
-Muskey turns one stem of a song into notes with the transcriber of [Dettato](https://kobi.music/research/dettato) (Apache-2.0). Its network is converted to Core ML and cut at its three GRUs into four models, because Core ML runs those GRUs about five times slower than Accelerate does. The GRUs run with Accelerate between the four models. The spectrogram before the network and the peak picking after it are ported from Dettato's Python.
+Muskey turns one stem of a song into notes with the transcriber of [Dettato](https://kobi.music/research/dettato) (Apache-2.0). Its network is converted to Core ML and cut at its three GRUs into four models, because Core ML runs those GRUs much slower than Accelerate does. The GRUs run with Accelerate between the four models. The spectrogram before the network and the peak picking after it are ported from Dettato's Python.
 
 The network hears 8 seconds at 16 kHz at a time, and a window starts every 2 seconds. Each 20 ms frame of the song gets the mean of the windows over it, weighted by a Hann taper. Notes are then picked from the onset, frame and offset maps of two voices on each of the 88 keys.
 

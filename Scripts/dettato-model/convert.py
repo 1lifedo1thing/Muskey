@@ -1,7 +1,7 @@
 # Converts the transcriber network of Dettato (kobimusic/dettato, Apache-2.0) for the app, checks it against PyTorch on a
 # window of a real song, and zips it for hosting. Run it through `make dettato-model AUDIO=song.wav` (16 kHz mono).
 #
-# Core ML runs the network's bidirectional GRUs about five times slower than Accelerate does, so the network is cut at its
+# Core ML runs the network's bidirectional GRUs much slower than Accelerate does, so the network is cut at its
 # three GRUs into four Core ML models, and the GRUs' weights go into gru.bin for the app to run between them:
 #   Part1: spectrogram (1, 9, 800, 288) -> next (1, 368, 200, 88), sequence (88, 200, 368) for the first GRU
 #   Part2, Part3: x (the next of the part before), the GRU's output (88, 200, 384) -> next, the sequence for the next GRU

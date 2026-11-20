@@ -18,7 +18,7 @@ struct TranscriptionError: LocalizedError {
 }
 
 /// Dettato's transcriber (kobimusic/dettato, Apache-2.0) on the Mac. `Scripts/dettato-model/convert.py` cuts its network
-/// at its three GRUs into four Core ML models, since Core ML runs those GRUs five times slower than Accelerate does, and
+/// at its three GRUs into four Core ML models, since Core ML runs those GRUs much slower than Accelerate does, and
 /// the GRUs run here between them. The spectrogram before the network and the peak picking after it are written here the
 /// way Dettato's Python does them.
 ///
