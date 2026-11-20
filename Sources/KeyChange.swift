@@ -743,6 +743,9 @@ struct KeyHints: View {
     var karaokeKeys = false
     /// Chords show over the lyrics, and the arrows transpose instead of seeking.
     var chords = false
+    /// The pointer is over the waveform, and only its keys are listed: ⌥W with the stems of the whole song.
+    var waveform = false
+    var lanes = false
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -757,13 +760,16 @@ struct KeyHints: View {
 
     private var listed: [Hint] {
         switch style {
+        case _ where waveform:
+            [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: "lanes")] : [])
+                + [Hint(keys: ["⌘", "+", "−"], name: "zoom"), Hint(keys: ["scroll"], name: "move song")]
         case .band where karaokeKeys, .footer where karaokeKeys:
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["esc"], name: "close")]
         case .band where lyrics, .footer:
             // Karaoke's footer, no wider than its record, leaves out L, which leaves karaoke for the keys, while the
             // seek hints need the room.
-            (style == .footer && seek ? [] : [Hint(keys: ["L"], name: "keys")]) + [Hint(keys: ["↩"], name: focus ? "lyrics" : "karaoke")]
+            (style == .footer && seek ? [] : [Hint(keys: ["L"], name: "close lyrics")]) + [Hint(keys: ["↩"], name: focus ? "close karaoke" : "karaoke")]
                 + (vocals ? [Hint(keys: ["V"], name: "vocals")] : [])
                 + [Hint(keys: ["space"], name: "play or pause")]
                 + (focus && seek ? [Hint(keys: ["0–9"], name: "seek")] : focus && restart ? [Hint(keys: ["0"], name: "start over")] : [])
@@ -804,6 +810,28 @@ struct KeyHints: View {
             .foregroundStyle(palette.muted)
             // A row laid out at exactly its ideal width can come up a fraction short, which shortens a name to "…".
             .fixedSize()
+    }
+}
+
+/// The keys of the waveform in place of `content` while the pointer is over the waveform, so that they cover nothing.
+struct WaveformKeysSwap<Content: View>: View {
+    @ObservedObject var wave: WaveState
+    let alignment: Alignment
+    /// The smaller keycaps of karaoke's footer, for the narrower card.
+    var small = false
+    let palette: Palette
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        let on = wave.hovered && wave.waveform != nil
+        ZStack(alignment: alignment) {
+            content.opacity(on ? 0 : 1)
+            if on {
+                KeyHints(style: small ? .footer : .band, waveform: true, lanes: wave.waveform?.stems != nil, otherMode: "", palette: palette)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: on)
     }
 }
 

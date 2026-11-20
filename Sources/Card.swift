@@ -476,14 +476,19 @@ struct HUDCard: View {
 
             if let track {
                 VStack(spacing: 2) {
-                    Text(track.title ?? "")
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(palette.ink)
-                    let byline = [track.artist, track.album].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
-                    if !byline.isEmpty {
-                        Text(byline)
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(palette.muted)
+                    // The keys of the waveform take the place of the song's lines while the pointer is over it.
+                    WaveformKeysSwap(wave: model.wave, alignment: .center, small: true, palette: palette) {
+                        VStack(spacing: 2) {
+                            Text(track.title ?? "")
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundStyle(palette.ink)
+                            let byline = [track.artist, track.album].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+                            if !byline.isEmpty {
+                                Text(byline)
+                                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                                    .foregroundStyle(palette.muted)
+                            }
+                        }
                     }
                     // The waveform takes the time bar's place on the card, and seeks the same way.
                     if showsKeys, model.waveformShown, track.duration != nil {
@@ -561,7 +566,8 @@ private struct CardWaveform: View {
         if wave.waveform != nil {
             WaveformHost(wave: wave, track: track, style: .ribbon, width: width, height: 30, ticking: ticking, bpm: bpm, muted: muted,
                          loop: loop, setLoop: setLoop, typing: typing, palette: palette)
-                .padding(.top, 8)
+                // The tabs of the region loop stand above the waveform, clear of the song's lines.
+                .padding(.top, loop == nil ? 8 : 18)
         } else {
             SongTimeBar(track: track, ticking: ticking, palette: palette, width: 110)
                 .padding(.top, 3)

@@ -856,6 +856,8 @@ final class StemsCacheBuilder {
     var progress: (Double) -> Void = { _ in }
     /// The song being separated.
     private(set) var path: String?
+    /// The part of that song separated so far, from 0 to 1.
+    private(set) var fraction = 0.0
     private var job: Job?
 
     private final class Job: @unchecked Sendable {
@@ -869,10 +871,17 @@ final class StemsCacheBuilder {
         guard self.path != path, let url = StemsCache.url(for: path) else { return }
         cancel()
         self.path = path
+        fraction = 0
         let job = Job()
         self.job = job
         let live = live, log = log
-        let progress: (Double) -> Void = { [weak self] fraction in DispatchQueue.main.async { self?.progress(fraction) } }
+        let progress: (Double) -> Void = { [weak self] fraction in
+            DispatchQueue.main.async {
+                guard let self, self.path == path else { return }
+                self.fraction = fraction
+                self.progress(fraction)
+            }
+        }
         log("stems cache: separating the whole song")
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let began = Date()

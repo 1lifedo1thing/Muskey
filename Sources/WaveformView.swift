@@ -38,6 +38,8 @@ struct WaveformView: View {
     var setLoop: (LoopEnd, Double) -> Void = { _, _ in }
     /// A time of the region loop is typed in, which turns off the keys over the HUD until the field closes.
     var typing: (Bool) -> Void = { _ in }
+    /// The pointer moves over the waveform or leaves it, which shows its keys in place of the hints row.
+    var hovered: (Bool) -> Void = { _ in }
     let palette: Palette
 
     @Environment(\.recordActions) private var actions
@@ -49,7 +51,6 @@ struct WaveformView: View {
     /// The song's place when a drag on the close-up began, which the drag moves like a tape under the playhead.
     @State private var tapeStart: Double?
     @State private var token = UUID()
-    @State private var hovering = false
 
     static let barStep: CGFloat = 3.4
     static let barWidth: CGFloat = 2
@@ -71,62 +72,34 @@ struct WaveformView: View {
                 if zoomed {
                     VStack(spacing: 4) {
                         closeUp(seconds: seconds, count: count, height: height - 12)
-                            .overlay(alignment: .topLeading) { flags(from: seconds - span / 2, span: span, height: height - 12, now: seconds) }
                         strip(overview, fraction: fraction, height: 8)
                             .overlay { window(fraction: fraction) }
                     }
                 } else if !laneBars.isEmpty {
                     lanesView(laneBars, fraction: fraction, seconds: seconds)
-                        .overlay(alignment: .topLeading) { flags(from: 0, span: duration, height: height, now: seconds) }
                 } else {
                     bars(overview, fraction: fraction, seconds: seconds, height: height)
-                        .overlay(alignment: .topLeading) { flags(from: 0, span: duration, height: height, now: seconds) }
                 }
             }
         }
         .frame(width: width, height: height)
         .contentShape(Rectangle())
-        // The keys of the waveform, over its top edge while the pointer is over it. They make way for the tabs of the
-        // region loop once there is one.
-        .overlay(alignment: .top) {
-            if hovering, loop == nil, style == .ribbon {
-                hints
-                    .offset(y: -22)
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-            }
-        }
-        .onHover { inside in withAnimation(.easeOut(duration: 0.12)) { hovering = inside } }
+        .onHover { hovered($0) }
         // A scroll over the waveform moves the song as one over the time bar does, and a press on it seeks instead of
         // dragging the HUD.
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { actions.scroll?.place(.waveform, at: $0, by: token) }
-        .onDisappear { actions.scroll?.remove(by: token) }
+        .onDisappear {
+            actions.scroll?.remove(by: token)
+            hovered(false)
+        }
         .gesture(drag, isEnabled: actions.seekable)
         .opacity(actions.seekable || !ticking ? 1 : 0.8)
         .help(actions.seekable ? "Move the song (drag, scroll, ⌘ scroll to zoom)" : "Seeking is off while instruments and vocals are separated as the song plays")
+        // The ends of the region loop sit over the waveform's edges, outside the shape that takes its clicks and its
+        // drag, so that their tabs, arrows and times get the pointer.
+        .overlay(alignment: .topLeading) { loopFlags }
         .animation(.snappy(duration: 0.25), value: zoomed)
         .animation(.snappy(duration: 0.25), value: shownLanes)
-    }
-
-    private var hints: some View {
-        HStack(spacing: 10) {
-            hint(["R"], "region loop")
-            if waveform.stems != nil { hint(["⌥", "W"], "lanes") }
-            hint(["⌘", "+", "−"], "zoom")
-        }
-        .font(.system(size: 10, weight: .medium, design: .rounded))
-        .foregroundStyle(palette.muted)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(scheme == .dark ? Color(white: 0.14).opacity(0.94) : Color(white: 0.98).opacity(0.96)))
-        .overlay(Capsule().strokeBorder(palette.ink.opacity(0.1), lineWidth: 0.5))
-    }
-
-    private func hint(_ keys: [String], _ name: String) -> some View {
-        HStack(spacing: 4) {
-            HStack(spacing: 2) { ForEach(keys, id: \.self) { Keycap(text: $0, palette: palette, small: true) } }
-            Text(name)
-        }
     }
 
     private var played: Color { StripColors.solid(.honey, scheme).fill }
@@ -219,10 +192,14 @@ struct WaveformView: View {
         }
     }
 
-    @ViewBuilder private func flags(from: Double, span: Double, height: CGFloat, now: Double) -> some View {
+    @ViewBuilder private var loopFlags: some View {
         if let loop {
-            LoopFlags(loop: loop, from: from, span: span, width: width, height: height, now: now, duration: duration,
-                      beat: bpm.map { 60 / $0 }, color: played, palette: palette, set: setLoop, typing: typing)
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !ticking || renderingPreview)) { context in
+                let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
+                LoopFlags(loop: loop, from: zoomed ? seconds - span / 2 : 0, span: zoomed ? span : duration, width: width,
+                          height: zoomed ? height - 12 : height, now: seconds, duration: duration, beat: bpm.map { 60 / $0 },
+                          color: played, palette: palette, set: setLoop, typing: typing)
+            }
         }
     }
 
@@ -342,7 +319,8 @@ struct WaveformHost: View {
     var body: some View {
         if let waveform = wave.waveform, let track {
             WaveformView(waveform: waveform, track: track, style: style, width: width, height: height, ticking: ticking, bpm: bpm,
-                         zoom: wave.zoom, lanes: wave.lanes, muted: muted, loop: loop, setLoop: setLoop, typing: typing, palette: palette)
+                         zoom: wave.zoom, lanes: wave.lanes, muted: muted, loop: loop, setLoop: setLoop, typing: typing,
+                         hovered: { [wave] inside in if wave.hovered != inside { wave.hovered = inside } }, palette: palette)
         } else {
             // The place stays while the waveform is read, so the key row doesn't move when it arrives.
             Color.clear.frame(width: width, height: height)
@@ -370,7 +348,16 @@ struct LoopFlags: View {
     let set: (LoopEnd, Double) -> Void
     let typing: (Bool) -> Void
 
-    @State private var hovered: LoopEnd?
+    @Environment(\.recordActions) private var actions
+    @Environment(\.colorScheme) private var scheme
+    /// The parts under the pointer (the tab, the strip along the line, the time), so that moving from one part of an
+    /// end to another keeps it open whatever order the two hover events come in.
+    @State private var hoveredParts: Set<String> = LoopFlags.hoveredInRenders.map { ["\($0)-tab"] } ?? []
+    /// An end open in `--render`, which has no pointer.
+    nonisolated(unsafe) static var hoveredInRenders: LoopEnd?
+    private var hovered: LoopEnd? {
+        hoveredParts.contains { $0.hasPrefix("\(LoopEnd.start)") } ? .start : hoveredParts.isEmpty ? nil : .end
+    }
     @State private var dragged: (end: LoopEnd, start: Double, time: Double)?
     @State private var nudged: (end: LoopEnd, at: Date)?
     @State private var editing: LoopEnd?
@@ -402,16 +389,28 @@ struct LoopFlags: View {
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
+            let active = hovered == end || dragged?.end == end
             Rectangle().fill(color)
-                .frame(width: 1.5, height: height + 4)
-                .offset(x: x - 0.75, y: -2)
+                .frame(width: active ? 2.5 : 1.5, height: height + 4)
+                .offset(x: x - (active ? 1.25 : 0.75), y: -2)
+                .shadow(color: color.opacity(active ? 0.7 : 0), radius: 3)
                 .allowsHitTesting(false)
+                .animation(.easeOut(duration: 0.12), value: active)
+            // A strip along the line that takes the pointer: a drag moves the end, and a click moves the song there.
+            Color.clear
+                .frame(width: 10, height: height + 4)
+                .contentShape(Rectangle())
+                .offset(x: x - 5, y: -2)
+                .onHover { hover(end, "line", $0) }
+                .gesture(move(end, time: time, direction: nil))
+                .pointerStyle(.columnResize)
             // The A tab ends at its line and the B tab starts at its line; the arrows sit on both sides of the line.
             handle(end, time: time)
                 .offset(x: x - (hovered == end || dragged?.end == end ? 17 : end == .start ? 13 : 21), y: -14)
+            // The time sits inside the bottom of the waveform, under the line, so it covers no other part of the HUD.
             if showsTime(end) {
                 timeLabel(end, time: time)
-                    .offset(x: x - 32, y: height + 4)
+                    .offset(x: min(max(x - 30, 0), width - 60), y: height - 15)
                     .transition(.opacity)
             }
         }
@@ -443,10 +442,12 @@ struct LoopFlags: View {
         }
         .frame(width: 34, height: 12)
         .contentShape(Rectangle())
-        .onHover { inside in
-            if inside { hovered = end } else if hovered == end, dragged == nil { hovered = nil }
-        }
+        .onHover { hover(end, "tab", $0) }
         .animation(.easeOut(duration: 0.12), value: open)
+    }
+
+    private func hover(_ end: LoopEnd, _ part: String, _ inside: Bool) {
+        if inside { hoveredParts.insert("\(end)-\(part)") } else { hoveredParts.remove("\(end)-\(part)") }
     }
 
     /// A press nudges the end, and a drag moves it with the pointer.
@@ -457,28 +458,35 @@ struct LoopFlags: View {
             .frame(width: 14, height: 12)
             .background(RoundedRectangle(cornerRadius: 3.5).fill(color))
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        HUDPanel.controlTracksDrag = true
-                        guard abs(value.translation.width) > 2 || dragged != nil else { return }
-                        let start = dragged?.start ?? time
-                        dragged = (end, start, clamp(end, start + Double(value.translation.width / width) * span))
-                    }
-                    .onEnded { _ in
-                        HUDPanel.controlTracksDrag = false
-                        if let dragged {
-                            set(end, dragged.time)
-                            self.dragged = nil
-                            nudged = (end, Date())
-                        } else {
-                            let step = NSEvent.modifierFlags.contains(.option) ? (beat ?? 0.5) : Self.nudge
-                            set(end, clamp(end, time + direction * step))
-                            nudged = (end, Date())
-                        }
-                    }
-            )
+            .gesture(move(end, time: time, direction: direction))
+            .pointerStyle(.columnResize)
             .help("Nudge \(end == .start ? "A" : "B") by 10 ms, or a beat with ⌥ (drag to move it)")
+    }
+
+    /// A drag moves the end with the pointer. A click without a drag nudges it on an arrow (`direction`), or moves the
+    /// song to the end on the strip along its line.
+    private func move(_ end: LoopEnd, time: Double, direction: Double?) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                HUDPanel.controlTracksDrag = true
+                guard abs(value.translation.width) > 2 || dragged != nil else { return }
+                let start = dragged?.start ?? time
+                dragged = (end, start, clamp(end, start + Double(value.translation.width / width) * span))
+            }
+            .onEnded { _ in
+                HUDPanel.controlTracksDrag = false
+                if let dragged {
+                    set(end, dragged.time)
+                    self.dragged = nil
+                    nudged = (end, Date())
+                } else if let direction {
+                    let step = NSEvent.modifierFlags.contains(.option) ? (beat ?? 0.5) : Self.nudge
+                    set(end, clamp(end, time + direction * step))
+                    nudged = (end, Date())
+                } else if actions.seekable {
+                    actions.seek(min(1, max(0, time / max(duration, 0.001))))
+                }
+            }
     }
 
     /// The ends stay in the song, and at least a quarter of a second apart.
@@ -513,12 +521,11 @@ struct LoopFlags: View {
         }
         .font(.system(size: 10, weight: .bold, design: .rounded))
         .monospacedDigit()
-        .foregroundStyle(color)
-        .frame(width: 64, height: 16)
-        .background(Capsule().fill(palette.ink.opacity(editing == end ? 0.14 : 0.08)))
-        .onHover { inside in
-            if inside { hovered = end }
-        }
+        .foregroundStyle(palette.ink)
+        .frame(width: 60, height: 15)
+        .background(Capsule().fill(scheme == .dark ? Color(white: 0.13) : Color(white: 0.97)))
+        .overlay(Capsule().strokeBorder(color.opacity(editing == end ? 0.9 : 0.45), lineWidth: 1))
+        .onHover { hover(end, "time", $0) }
         .help("Type a time for \(end == .start ? "A" : "B")")
     }
 

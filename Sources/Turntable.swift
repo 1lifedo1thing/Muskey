@@ -252,7 +252,7 @@ struct RecordControls: ViewModifier {
             .contentShape(Circle())
             .onTapGesture { actions.playPause() }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Record")
+            .accessibilityLabel("Play or pause")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { actions.playPause() }
             .onHover(perform: hover)

@@ -141,7 +141,7 @@ struct QueueView: View {
                     .foregroundStyle(palette.muted)
                     .monospacedDigit()
                 Spacer(minLength: 0)
-                RoundButton(symbol: "arrow.uturn.backward", help: "Show the record (Q)", label: "Record", key: "Q", palette: palette, action: close)
+                RoundButton(symbol: "arrow.uturn.backward", help: "Close the queue (Q)", label: "Close queue", key: "Q", palette: palette, action: close)
             }
             .padding(.horizontal, 4)
             .padding(.leading, headerInset)
