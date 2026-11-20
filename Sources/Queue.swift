@@ -127,6 +127,9 @@ struct QueueView: View {
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.renderingPreview) private var renderingPreview
+    @Environment(\.cornerLabelsShown) private var labelsShown
+    @State private var closeHovered = false
+    private var closeOpen: Bool { closeHovered || labelsShown }
 
     private var total: Double { songs.compactMap(\.duration).reduce(0, +) }
 
@@ -140,8 +143,17 @@ struct QueueView: View {
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(palette.muted)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
+                    // The pill of Close queue opens over the count, which steps aside while it shows.
+                    .opacity(closeOpen ? 0 : 1)
+                    .animation(.easeOut(duration: 0.15), value: closeOpen)
                 Spacer(minLength: 0)
+                Color.clear.frame(width: 20, height: 20)
+            }
+            .overlay(alignment: .trailing) {
                 RoundButton(symbol: "arrow.uturn.backward", help: "Close the queue (Q)", label: "Close queue", key: "Q", palette: palette, action: close)
+                    .onHover { closeHovered = $0 }
             }
             .padding(.horizontal, 4)
             .padding(.leading, headerInset)
