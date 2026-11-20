@@ -37,7 +37,6 @@ enum NotesFormat: String, CaseIterable, Identifiable {
 }
 
 /// One notes window: the song, the stem, how far the transcription got, and the notes placed on the song's beats.
-@MainActor
 final class NotesModel: ObservableObject {
     enum Phase: Equatable {
         case separating(Double)
@@ -1022,7 +1021,6 @@ private struct NotesTime: View {
 // MARK: Window
 
 /// The notes window, which takes the keyboard like Settings does: Muskey shows in the Dock while it is open.
-@MainActor
 final class NotesWindowController: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow?
     private(set) var model: NotesModel?
@@ -1220,9 +1218,13 @@ struct NotesStemPicker: View {
             .opacity(picking.available ? 1 : 0.4)
             .allowsHitTesting(picking.available)
             HStack {
-                if picking.available {
+                if picking.available, picking.missing != nil || picking.downloading != nil || picking.failed {
+                    // The download button needs the whole row.
+                    button.frame(maxWidth: .infinity)
+                } else if picking.available {
                     Text(picking.duration.map { "Whole song · \(NotesTime.time($0))" } ?? "Whole song")
                         .foregroundStyle(palette.muted)
+                        .lineLimit(1)
                     Spacer(minLength: 8)
                     button
                 } else {
@@ -1281,6 +1283,7 @@ struct NotesStemPicker: View {
                 }
             }
             .font(.system(size: 12, weight: .heavy, design: .rounded))
+            .fixedSize()
             .foregroundStyle(Color(red: 0.18, green: 0.11, blue: 0.02))
             .padding(.leading, 12)
             .padding(.trailing, picking.missing == nil && picking.downloading == nil && !picking.failed ? 6 : 12)

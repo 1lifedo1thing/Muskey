@@ -100,6 +100,12 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("⇧"), .key("⌘"), .key("V")], name: "add copied songs"),
             Row(caps: [.gesture("swipe on song", symbol: "arrow.left.and.right")], name: "remove or play next"),
         ])
+        let notes = KeyGroup(name: "Notes", symbol: "music.quarternote.3", hue: 300, rows: [
+            Row(caps: [.key("T")], name: "transcribe notes"),
+            Row(caps: [.key("⇥")], name: "next view", condition: "in the notes window"),
+            Row(caps: [.key("←"), .key("→")], name: "transpose", condition: "in the notes window"),
+            Row(caps: [.gesture("drag on notes", symbol: "arrow.left.and.right")], name: "region loop"),
+        ])
         let pointer = KeyGroup(name: "Mouse and trackpad", symbol: "computermouse", hue: 58, rows: [
             Row(caps: [.gesture("click record", symbol: "cursorarrow.click")], name: "play or pause"),
             Row(caps: [.gesture("swipe", symbol: "arrow.left.and.right")], name: "next or previous song"),
@@ -109,7 +115,7 @@ struct ShortcutsSheet: View {
             Row(caps: [.gesture("drop file", symbol: "arrow.down.doc")], name: "play file or link"),
             Row(caps: [.gesture("pinch on waveform", symbol: "arrow.up.left.and.arrow.down.right")], name: "zoom"),
         ])
-        return [[key, tempo, hud], [playback, lyrics, instruments, queue], [song, waveform, pointer]]
+        return [[key, tempo, hud, notes], [playback, lyrics, instruments, queue], [song, waveform, pointer]]
     }
 
     var body: some View {

@@ -544,15 +544,19 @@ private struct StemsPane: View {
     @ObservedObject var prefs: Preferences
     @ObservedObject private var stemDownload = ModelDownload.stems
     @ObservedObject private var windsDownload = ModelDownload.winds
+    @ObservedObject private var notesDownload = ModelDownload.dettato
 
     var body: some View {
         Form {
             Section("Models") {
                 ModelRow(title: "Common instruments model", download: stemDownload)
                 // The winds are taken out of the Other stem of the common instruments model, so it needs that model
-                // first.
+                // first, and so do the notes, which are transcribed from one stem.
                 if stemDownload.installed || windsDownload.installed {
                     ModelRow(title: "Exotic instruments model", download: windsDownload)
+                }
+                if stemDownload.installed || notesDownload.installed {
+                    ModelRow(title: "Transcription model", download: notesDownload)
                 }
             }
             // The song steps back seconds when the separated instruments take over, in karaoke and when the lyrics
@@ -568,6 +572,7 @@ private struct StemsPane: View {
         .onAppear {
             stemDownload.refresh()
             windsDownload.refresh()
+            notesDownload.refresh()
         }
     }
 }

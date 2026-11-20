@@ -852,7 +852,7 @@ final class StemsCacheBuilder {
     var live: () -> Bool = { false }
     /// The song at the path has its stems in the cache, or they couldn't be separated.
     var onDone: (String, Bool) -> Void = { _, _ in }
-    /// The part of the song separated so far, from 0 to 1: any thread.
+    /// The part of the song separated so far, from 0 to 1, on the main thread.
     var progress: (Double) -> Void = { _ in }
     /// The song being separated.
     private(set) var path: String?
@@ -871,7 +871,8 @@ final class StemsCacheBuilder {
         self.path = path
         let job = Job()
         self.job = job
-        let live = live, log = log, progress = progress
+        let live = live, log = log
+        let progress: (Double) -> Void = { [weak self] fraction in DispatchQueue.main.async { self?.progress(fraction) } }
         log("stems cache: separating the whole song")
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let began = Date()

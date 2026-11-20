@@ -389,6 +389,10 @@ final class HUDModel: ObservableObject {
     @Published var capo = 0
     var onLoopSet: (LoopEnd, Double) -> Void = { _, _ in }
     var onLoopTyping: (Bool) -> Void = { _ in }
+    /// T over the HUD: the stems that can be transcribed into notes, in place of the key column.
+    @Published var notesPicking: NotesPicking?
+    var onNotesSelect: (Stem) -> Void = { _ in }
+    var onNotesStart: () -> Void = {}
 }
 
 /// The waveform of the song that plays: whole for a file, and drawn while it plays for a song from another player.
@@ -498,6 +502,12 @@ struct HUDView: View {
                                hotkey: Preferences.shared.hotkey.symbols, palette: palette) { model.shortcuts = false }
             } else if focus {
                 lyricsFocus(palette)
+            } else if model.card, let picking = model.notesPicking {
+                // T shows the stems to transcribe in place of the card.
+                NotesStemPicker(picking: picking, palette: palette, select: model.onNotesSelect, start: model.onNotesStart)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 44)
+                    .padding(.bottom, 18)
             } else if model.card {
                 // Q turns the card over to the queue.
                 FlipCard(flipped: model.queueShown) {
@@ -646,7 +656,11 @@ struct HUDView: View {
                 // Takes any width that the hint bar adds, so the record keeps the same gap on both sides: the side
                 // padding of the glass on its right, and the same from the divider on its left.
                 Group {
-                    if model.lyricsShown, showsStrip {
+                    if let picking = model.notesPicking {
+                        // T shows the stems to transcribe in place of the key column.
+                        NotesStemPicker(picking: picking, palette: palette, select: model.onNotesSelect, start: model.onNotesStart)
+                            .frame(maxHeight: .infinity)
+                    } else if model.lyricsShown, showsStrip {
                         // The stems stay under the lyrics, which get shorter by as much, so the vocals can be muted
                         // while the lyrics show.
                         VStack(spacing: 10) {
@@ -697,8 +711,9 @@ struct HUDView: View {
 
             if showsStrip, let key = model.key {
                 HStack(spacing: 16) {
+                    // The stem picker of T has its own keys under it, and the keys of the key row don't work while it shows.
                     KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, chords: !model.chords.isEmpty, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
-                        .opacity(model.hintsOpacity)
+                        .opacity(model.notesPicking == nil ? model.hintsOpacity : 0)
                     Spacer(minLength: 0)
                     // The ? button sits as close to Lock Key as Stop Pitch Change does.
                     HStack(spacing: 6) {
@@ -2522,6 +2537,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.onSlowRetry = { [weak self] in self?.retrySlowing() }
         model.onLoopSet = { [weak self] in self?.setLoopEnd($0, $1) }
+        model.onNotesSelect = { [weak self] in self?.selectNotesStem($0) }
+        model.onNotesStart = { [weak self] in self?.startNotes() }
         model.onLoopTyping = { [weak self] in self?.loopTyping($0) }
         nowPlaying.onSongChange = { [weak self] in
             // Another song during karaoke's countdown plays as it comes.
@@ -2570,7 +2587,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shownChange = model.$shown.removeDuplicates().sink { [weak self] shown in
             if shown { self?.shownAt = Date() }
             // The HUD opens on the record again, not on the queue that it closed on.
-            if !shown { DispatchQueue.main.async { self?.model.queueShown = false } }
+            if !shown {
+                DispatchQueue.main.async {
+                    self?.model.queueShown = false
+                    self?.closeNotesPicker()
+                }
+            }
             // The sink runs before `shown` changes.
             DispatchQueue.main.async { self?.syncPauseStop() }
             self?.updateWatching(shown: shown)
@@ -2685,6 +2707,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launched = true
         // `--open PATH_OR_LINK` plays a file or a link, as a drop on the HUD does.
         if let text = Self.stringOption("--open"), let url = FilePlayer.url(from: text) { open([url]) }
+        // `--notes-file FIXTURE` opens the notes window on the notes that `--notes-headless` wrote, without a song.
+        if let path = Self.stringOption("--notes-file"), let notes = NotesModel.fixture(path) {
+            wireNotes(notes)
+            notesWindow.show(notes)
+        }
         // `--install-yt-dlp` presses Install yt-dlp on the pill.
         if TestFlags.has("--install-yt-dlp") { filePlayer.installDownloader() }
         // `--menu "Stop Playing" [--menu-after SECONDS]` picks an item of the menu bar menu, which no automation can
@@ -2777,6 +2804,277 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard fret != model.capo else { return }
         model.capo = fret
         log(fret == 0 ? "no capo" : "capo on fret \(fret)")
+    }
+
+    // MARK: Notes
+
+    private let notesWindow = NotesWindowController()
+    private var notesTask: Task<Void, Never>?
+    private var notesWork: Task<[TranscribedNote], Error>?
+    /// The song whose stems the notes wait for. Another song doesn't stop the separation of its whole song.
+    private var notesStemsPath: String?
+    private var notesSinks: Set<AnyCancellable> = []
+    private var notesDownloads: Set<AnyCancellable> = []
+    /// The stem picked last, which the picker starts on.
+    private var lastNotesStem: Stem?
+
+    /// The stems that the picker offers: every stem but the drums, which Dettato's transcriber doesn't hear.
+    private var notesStems: [Stem] { Stem.shown.filter { $0 != .drums } }
+
+    /// The bytes of the models that transcribing needs and that aren't installed: the stems model and Dettato.
+    private var notesMissing: Int? {
+        MainActor.assumeIsolated {
+            let bytes = (ModelDownload.dettato.installed ? 0 : ModelDownload.dettato.size) + (StemModel.isInstalled(.stems) ? 0 : ModelDownload.stems.size)
+            return bytes > 0 ? bytes : nil
+        }
+    }
+
+    /// T shows the stems to transcribe in place of the key column, and hides them again.
+    private func toggleNotesPicker() {
+        if model.notesPicking != nil { return closeNotesPicker() }
+        let stems = notesStems
+        let selected = lastNotesStem.flatMap { stems.contains($0) ? $0 : nil } ?? (stems.contains(.bass) ? .bass : stems[0])
+        model.queueShown = false
+        model.notesPicking = NotesPicking(stems: stems, selected: selected, available: playsInFilePlayer, duration: model.track?.duration, missing: notesMissing)
+        log("notes: picker shown\(playsInFilePlayer ? "" : " for a song outside Muskey Player")")
+        updateHoverKeys()
+    }
+
+    private func closeNotesPicker() {
+        guard model.notesPicking != nil else { return }
+        model.notesPicking = nil
+        notesDownloads = []
+        updateHoverKeys()
+    }
+
+    private func selectNotesStem(_ stem: Stem) {
+        guard model.notesPicking?.stems.contains(stem) == true else { return }
+        model.notesPicking?.selected = stem
+    }
+
+    /// Return or the honey button: downloads the models that are missing, then transcribes the stem.
+    private func startNotes() {
+        guard let picking = model.notesPicking, picking.available, picking.downloading == nil else { return }
+        lastNotesStem = picking.selected
+        if notesMissing != nil { return downloadNotesModels() }
+        guard let path = filePlayer.current?.path, let track = model.track else { return }
+        closeNotesPicker()
+        openNotes(path: path, track: track, stem: picking.selected)
+    }
+
+    private func downloadNotesModels() {
+        MainActor.assumeIsolated { downloadNotesModelsOnMain() }
+    }
+
+    @MainActor private func downloadNotesModelsOnMain() {
+        let downloads = [ModelDownload.stems, ModelDownload.dettato].filter { !$0.installed }
+        model.notesPicking?.failed = false
+        notesDownloads = []
+        for download in downloads {
+            download.$state.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.syncNotesDownloads(downloads) }.store(in: &notesDownloads)
+            if download.state != .installing, !isDownloading(download) { download.start() }
+        }
+        log("notes: downloading \(downloads.map(\.name).joined(separator: " and "))")
+        syncNotesDownloads(downloads)
+    }
+
+    @MainActor private func isDownloading(_ download: ModelDownload) -> Bool {
+        if case .downloading = download.state { return true }
+        return false
+    }
+
+    /// The picker's button shows the share of the bytes downloaded over both models, and transcribes once both are
+    /// installed.
+    @MainActor private func syncNotesDownloads(_ downloads: [ModelDownload]) {
+        guard model.notesPicking != nil else {
+            notesDownloads = []
+            return
+        }
+        if downloads.contains(where: { $0.state == .failed }) {
+            model.notesPicking?.downloading = nil
+            model.notesPicking?.failed = true
+            notesDownloads = []
+            return
+        }
+        if downloads.allSatisfy({ $0.installed && $0.state == .idle }) {
+            notesDownloads = []
+            model.notesPicking?.downloading = nil
+            model.notesPicking?.missing = nil
+            log("notes: models installed")
+            return startNotes()
+        }
+        let total = Double(downloads.map(\.size).reduce(0, +))
+        let done = downloads.map { download -> Double in
+            switch download.state {
+            case let .downloading(fraction): Double(download.size) * fraction
+            case .installing: Double(download.size)
+            case .idle: download.installed ? Double(download.size) : 0
+            case .failed: 0
+            }
+        }.reduce(0, +)
+        model.notesPicking?.downloading = total > 0 ? min(1, done / total) : 0
+    }
+
+    /// Opens the notes window on a stem of the song in Muskey Player, with the notes from the cache or transcribed now.
+    private func openNotes(path: String, track: NowPlaying.Track, stem: Stem) {
+        notesTask?.cancel()
+        notesWork?.cancel()
+        let title = track.title?.isEmpty == false ? track.title! : URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let notes = NotesModel(path: path, title: title, artist: track.artist, stem: stem, duration: track.duration ?? 0)
+        notes.key = songKey?.key
+        if let grid = grids[path] { notes.setGrid(beats: grid.beats, bpm: grid.bpm) }
+        wireNotes(notes)
+        notesWindow.show(notes)
+        log("notes: \(stem.name.lowercased()) of \(title)")
+        if let cached = NotesStore.load(path: path, stem: stem) {
+            if grids[path] == nil { notes.setGrid(beats: cached.beats, bpm: cached.bpm) }
+            notes.finish(cached.notes)
+            log("notes: \(cached.notes.count) notes from the cache")
+            return
+        }
+        runNotes(notes)
+    }
+
+    /// The window's actions go to the song, and the pitch change, the loop and the play state come back from it.
+    private func wireNotes(_ notes: NotesModel) {
+        notes.now = { [weak self, weak notes] in
+            guard let self, let notes, playsInFilePlayer, filePlayer.current?.path == notes.path else { return nil }
+            return nowPlaying.track?.position(at: Date())
+        }
+        notes.onSeek = { [weak self] seconds in self?.seek(to: seconds, flash: "") }
+        notes.onLoop = { [weak self] start, end in self?.setNotesLoop(start, end) }
+        notes.onPlayPause = { [weak self] in self?.playPause() }
+        notes.onTranspose = { [weak self] step in
+            guard let self else { return }
+            change(to: model.shift + step)
+        }
+        notes.onRetry = { [weak self, weak notes] in
+            guard let notes else { return }
+            self?.runNotes(notes)
+        }
+        notes.onClose = { [weak self] in self?.notesWindow.close() }
+        notes.onSave = { [weak self, weak notes] format in
+            guard let self, let notes else { return }
+            notesWindow.save(format, score: notes.score, title: notes.title)
+        }
+        notes.onCopyTab = { [weak self, weak notes] in
+            guard let notes else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(notes.score.textTab, forType: .string)
+            self?.log("notes: text tab copied")
+        }
+        notes.onTurnPage = { [weak self] in self?.notesWindow.turnPage() }
+        notesWindow.onLoopKey = { [weak self] snapping in self?.pressLoop(snapping: snapping) }
+        notesWindow.log = { [weak self] in self?.log($0) }
+        notesWindow.onClosed = { [weak self] in self?.notesClosed() }
+        notesSinks = []
+        model.$shift.sink { [weak notes] in notes?.shift = $0 }.store(in: &notesSinks)
+        model.$loop.sink { [weak notes] in notes?.loop = $0 }.store(in: &notesSinks)
+        model.$playing.sink { [weak notes] in notes?.playing = $0 }.store(in: &notesSinks)
+    }
+
+    /// A drag across the notes: the region loop from one beat to another.
+    private func setNotesLoop(_ start: Double, _ end: Double) {
+        guard end > start + 0.25 else { return }
+        loopSnap?.cancel()
+        model.loop = LoopRegion(start: max(0, start), end: end, startPress: nil)
+        loopSong = nowPlaying.track?.song
+        log(String(format: "region loop from the notes: %.2f s to %.2f s", start, end))
+        applyLoop()
+    }
+
+    private func notesClosed() {
+        notesTask?.cancel()
+        notesWork?.cancel()
+        notesTask = nil
+        notesWork = nil
+        notesSinks = []
+        notesStemsPath = nil
+        stemsCache.progress = { _ in }
+        log("notes: closed")
+    }
+
+    /// Finds the beats if they aren't known yet, separates the stems if the cache doesn't have them, and transcribes
+    /// the stem off the main thread, showing the notes found so far as it goes.
+    private func runNotes(_ notes: NotesModel) {
+        notesTask?.cancel()
+        notesWork?.cancel()
+        notes.restart()
+        let path = notes.path, stem = notes.stem
+        stemsCacheFailed.remove(path)
+        notesTask = Task { @MainActor [weak self, weak notes] in
+            guard let self, let notes else { return }
+            let url = URL(fileURLWithPath: path)
+            if grids[path] == nil {
+                let duration = notes.duration > 0 ? notes.duration : await ChordDetector.duration(url)
+                let grid = await Task.detached(priority: .utility) { await ChordDetector.analyse(url, duration: duration) }.value
+                guard !Task.isCancelled else { return }
+                if let grid {
+                    grids[path] = grid
+                    fitChords()
+                }
+            }
+            if let grid = grids[path] { notes.setGrid(beats: grid.beats, bpm: grid.bpm) }
+            guard let cache = await notesStems(path, notes: notes) else {
+                if !Task.isCancelled {
+                    notes.phase = .failed
+                    log("notes: the stems couldn't be separated")
+                }
+                return
+            }
+            notes.phase = .transcribing(0)
+            let started = Date()
+            let work = Task.detached(priority: .userInitiated) { () throws -> [TranscribedNote] in
+                let audio = Dettato.resample(NotesPipeline.stemSamples(cache, stem: stem), from: StemsCache.rate)
+                return try Dettato.transcribe(audio, program: stem.program, progress: { fraction in
+                    Task { @MainActor in
+                        if case .transcribing = notes.phase { notes.phase = .transcribing(fraction) }
+                    }
+                }, partial: { found, until in
+                    Task { @MainActor in
+                        if !notes.done { notes.show(found, until: until) }
+                    }
+                })
+            }
+            notesWork = work
+            do {
+                let found = try await work.value
+                guard !Task.isCancelled else { return }
+                notes.finish(found)
+                NotesStore.save(notes.fixture, path: path, stem: stem)
+                log(String(format: "notes: %d notes of the %@ in %.1f s", found.count, stem.name.lowercased(), Date().timeIntervalSince(started)))
+            } catch is CancellationError {
+                log("notes: transcription stopped")
+            } catch {
+                notes.phase = .failed
+                log("notes: transcription failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// The stems of the whole song from the cache, separating them first with the separation that the stems of Muskey
+    /// Player use.
+    private func notesStems(_ path: String, notes: NotesModel) async -> StemsCache? {
+        if let cache = StemsCache.open(for: path) { return cache }
+        notes.phase = .separating(0)
+        notesStemsPath = path
+        stemsCache.progress = { [weak notes] fraction in
+            if case .separating = notes?.phase { notes?.phase = .separating(fraction) }
+        }
+        defer {
+            notesStemsPath = nil
+            stemsCache.progress = { _ in }
+        }
+        // A song of an hour separates in well under half an hour.
+        for _ in 0 ..< 1800 {
+            if stemsCache.path != path, !stemsCacheFailed.contains(path) { stemsCache.start(path) }
+            try? await Task.sleep(for: .seconds(1))
+            if Task.isCancelled { return nil }
+            if let cache = StemsCache.open(for: path) { return cache }
+            if stemsCacheFailed.contains(path) { return nil }
+        }
+        log("notes: the stems weren't separated after 30 minutes")
+        return nil
     }
 
     // MARK: Mini player
@@ -3822,6 +4120,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if code == kVK_Escape { model.shortcuts = false }
             return true
         }
+        // The stem picker of T takes the numbers, Return and Escape, and leaves Space to play or pause.
+        if model.notesPicking != nil {
+            switch code {
+            case kVK_Escape, kVK_ANSI_T: closeNotesPicker()
+            case kVK_Return, kVK_ANSI_KeypadEnter: startNotes()
+            case kVK_Space: playPause()
+            default:
+                if let digit = Self.digitKeys.firstIndex(of: code), digit > 0, let stems = model.notesPicking?.stems, digit <= stems.count {
+                    selectNotesStem(stems[digit - 1])
+                }
+            }
+            return true
+        }
         if model.queueShown, !model.lyricsFocus, handleQueueKey(code, shift: shift) { return true }
         // With chords over the lyrics, ← and → move the song a semitone, and ⌥← and ⌥→ move the capo, which changes
         // only the chords shown.
@@ -3834,6 +4145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Q turns the record over to the queue, in both layouts.
         if code == kVK_ANSI_Q, !shift, !option, !model.lyricsFocus {
             toggleQueue()
+            return true
+        }
+        // T shows the stems to transcribe into notes.
+        if code == kVK_ANSI_T, !shift, !option, !model.lyricsFocus {
+            toggleNotesPicker()
             return true
         }
         // M shows the mini player, or hides it.
@@ -4693,7 +5009,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             feed.report(elapsed: player.elapsed, timestamp: player.timestamp, rate: player.rate)
         }
         // Another song stops the separation of the last one.
-        if let building = stemsCache.path, building != path { stemsCache.cancel() }
+        if let building = stemsCache.path, building != path, building != notesStemsPath { stemsCache.cancel() }
         if let path, pitch.stemsFeed == nil, model.stemsEngaged, !stemsCacheFailed.contains(path) { stemsCache.start(path) }
         syncSeekable()
     }
@@ -5536,6 +5852,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForRecord = false
     private var hoverKeysForQueue = false
     private var hoverKeysForChords = false
+    private var hoverKeysForNotes = false
     private var hoverKeysForKey = false
     /// The clipboard when the keys were registered: ⌘V over the HUD is a key only while it holds files or a link.
     private var hoverKeysPasteboard = 0
@@ -5570,7 +5887,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
                 || hoverKeysForRecord != model.overRecord || hoverKeysForQueue != model.queueShown
-                || hoverKeysForChords != !model.chords.isEmpty || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
+                || hoverKeysForChords != !model.chords.isEmpty || hoverKeysForNotes != (model.notesPicking != nil) || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -5587,6 +5904,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForRecord = model.overRecord
         hoverKeysForQueue = model.queueShown
         hoverKeysForChords = !model.chords.isEmpty
+        hoverKeysForNotes = model.notesPicking != nil
         hoverKeysLock = lock
         hoverKeysQuestion = LayoutKey.questionMark
         let question = hoverKeysQuestion.map { [($0.code, $0.modifiers)] } ?? []
@@ -5599,13 +5917,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        // The stem picker of T takes only its own keys and Space.
+        if let picking = model.notesPicking {
+            let keys = [kVK_Escape, kVK_ANSI_T, kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space] + Self.digitKeys[1 ... picking.stems.count]
+            hoverKeys = keys.compactMap { code in
+                try? HotKey(keyCode: code, modifiers: 0) { [weak self] in self?.handleKey(code, shift: false, option: false) }
+            }
+            return
+        }
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         // ? shows the shortcuts.
         var keys: [(Int, Int)] = [kVK_Escape, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
         if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } + [(kVK_ANSI_W, 0), (kVK_ANSI_W, optionKey)] }
         if model.seekable || model.loop != nil { keys += [(kVK_ANSI_R, 0), (kVK_ANSI_R, optionKey)] }
         // Q shows the queue, which takes the arrows, Return and Delete while it shows, and M the mini player.
-        if !model.lyricsFocus { keys.append((kVK_ANSI_Q, 0)) }
+        if !model.lyricsFocus { keys += [(kVK_ANSI_Q, 0), (kVK_ANSI_T, 0)] }
         keys.append((kVK_ANSI_M, 0))
         if model.queueShown {
             keys += [kVK_UpArrow, kVK_DownArrow].flatMap { [($0, 0), ($0, shiftKey)] }
@@ -6160,7 +6486,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-loop", "-loop-armed", "-loop-zoom", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-queue", "-queue-drop", "-queue-drop-next"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-loop", "-loop-armed", "-loop-zoom", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-queue", "-queue-drop", "-queue-drop-next", "-notes-picker", "-notes-download", "-notes-outside"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -6281,6 +6607,13 @@ extension EnvironmentValues {
                     model.dropTargeted = true
                     model.dropZone = variant == "-queue-drop-next" ? .addNext : .add
                 }
+            }
+            // T's stem picker, with both models installed, with a model to download, and for a song outside Muskey
+            // Player.
+            if variant.hasPrefix("-notes") {
+                model.notesPicking = NotesPicking(stems: [.vocals, .bass, .guitar, .piano, .winds, .other], selected: .bass,
+                                                  available: variant != "-notes-outside", duration: 222,
+                                                  missing: variant == "-notes-download" ? 33_437_377 : nil)
             }
             if variant == "-waveform-stems" {
                 model.stemsAvailable = true

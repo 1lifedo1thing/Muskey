@@ -52,6 +52,7 @@ struct Project: Identifiable {
         Project(name: "NetEase Cloud Music", use: "Lyrics", site: url("https://music.163.com")),
         Project(name: "BS-RoFormer", use: "Instruments and vocals", site: url("https://arxiv.org/abs/2309.02612")),
         Project(name: "MVSep", use: "Winds", site: url("https://mvsep.com")),
+        Project(name: "Dettato", use: "Notes", site: url("https://kobi.music/research/dettato")),
         Project(name: "LAME", use: "MP3 files", site: url("https://lame.sourceforge.io")),
         Project(name: "mpg123", use: "MP3 files", site: url("https://www.mpg123.de")),
         Project(name: "Sparkle", use: "Updates", site: url("https://sparkle-project.org")),

@@ -97,9 +97,10 @@ enum Dettato {
     }
 
     /// The notes in `samples`, mono at 16 kHz. `progress` gets the part of the song done, from 0 to 1, after each window.
-    /// `partial` gets the notes found so far every 16 seconds of song, without the ones that may still go on.
+    /// `partial` gets the notes found so far every 16 seconds of song, without the ones that may still go on, and the
+    /// time up to which they are final.
     static func transcribe(_ samples: [Float], program: Int, progress: @escaping @Sendable (Double) -> Void = { _ in },
-                           partial: (@Sendable ([TranscribedNote]) -> Void)? = nil) throws -> [TranscribedNote]
+                           partial: (@Sendable ([TranscribedNote], Double) -> Void)? = nil) throws -> [TranscribedNote]
     {
         let network = try network()
         let front = DettatoFrontEnd()
@@ -146,7 +147,7 @@ enum Dettato {
                 let final = min(total, Int((Double(starts[index + 1]) / rate / frameSeconds).rounded()) - framePad)
                 if final > 0 {
                     let cut = Double(final) * frameSeconds - 0.5
-                    partial(notes(maps, weights, frames: final, program: program).filter { $0.end < cut })
+                    partial(notes(maps, weights, frames: final, program: program).filter { $0.end < cut }, cut)
                 }
             }
         }
