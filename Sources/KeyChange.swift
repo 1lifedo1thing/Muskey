@@ -769,15 +769,17 @@ struct KeyHints: View {
         case .band where lyrics, .footer:
             // Karaoke's footer, no wider than its record, leaves out L, which leaves karaoke for the keys, while the
             // seek hints need the room.
-            (style == .footer && (seek || chords) ? [] : [Hint(keys: ["L"], name: "close lyrics")]) + [Hint(keys: ["↩"], name: focus ? "close karaoke" : "karaoke")]
+            // The band names L after the toggle, as the keys view and the Lyrics button do; karaoke's footer says that L
+            // leaves it.
+            (style == .footer && (seek || chords) ? [] : [Hint(keys: ["L"], name: style == .footer ? "close lyrics" : "lyrics")]) + [Hint(keys: ["↩"], name: focus ? "close karaoke" : "karaoke")]
                 + (vocals ? [Hint(keys: ["V"], name: "vocals")] : [])
                 + [Hint(keys: ["space"], name: "play or pause")]
                 + (focus && seek ? [Hint(keys: ["0–9"], name: "seek")] : focus && restart ? [Hint(keys: ["0"], name: "start over")] : [])
                 + (chords ? [Hint(keys: ["←", "→"], name: "transpose")] : seek ? [Hint(keys: ["←", "→"], name: "5 s")] : [])
                 + [Hint(keys: ["N", "P"], name: "skip")]
-                // The band keeps the wide glass's width: when the arrows take a place, K gives up its own, since the
-                // Lock Key button sits in the same row.
-                + (style == .band && (chords || seek) ? [] : [Hint(keys: ["K"], name: "lock key")]) + [Hint(keys: ["esc"], name: "close")]
+                // The band keeps the wide glass's width: with chords, transpose takes the place of K, since the Lock Key
+                // button sits in the same row.
+                + (style == .band && chords ? [] : [Hint(keys: ["K"], name: "lock key")]) + [Hint(keys: ["esc"], name: "close")]
         case .band:
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["L"], name: "lyrics"),
