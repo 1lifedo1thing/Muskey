@@ -16,20 +16,21 @@
 
 ## Key Features
 
-- Detect the key of the playing song
-    > Press <kbd>Control</kbd> <kbd>Command</kbd> <kbd>M</kbd> while a song plays to see its key after a few seconds.
-
-- Change the song key on the fly
-    > Click any key or press an <kbd>A–G</kbd> letter on the keyboard to pitch the song in that key without changing the tempo.
-
-- Instruments and vocals
-    > Mute the drums, the bass or the vocals of any song while it plays. Hold <kbd>Option</kbd> and click the guitar, piano or trumpet to hear only that part and practise it.
-
-- Lyrics and karaoke
-    > Click **Lyrics** to see the words line by line as the song plays. Click **Karaoke** to view them full screen and mute the vocals so you can sing along.
-
-- Card layout
-    > Switch to the **Card style** to view the keys on the circle of fifths.
+<p align="center">
+    <img width="600" src=".github/tiles/find.webp" alt="Detect the key of the playing song: press Control Command M while a song plays to see its key after a few seconds.">
+</p>
+<p align="center">
+    <img width="600" src=".github/tiles/hear.webp" alt="Change the song key on the fly: click any key or press a letter from A to G on the keyboard to pitch the song in that key without changing tempo.">
+</p>
+<p align="center">
+    <img width="600" src=".github/tiles/stems.webp" alt="Instruments and vocals: mute the drums, the bass or the vocals of any song while it plays. Use Solo to hear only the guitar, piano or trumpet and practise your part.">
+</p>
+<p align="center">
+    <img width="600" src=".github/tiles/lyrics.webp" alt="Lyrics and karaoke: click Lyrics to see the words line by line as the song plays. Click Karaoke to view them full screen and mute the vocals so you can sing along.">
+</p>
+<p align="center">
+    <img width="600" src=".github/tiles/card.webp" alt="Card layout: switch to the Card style to view the keys on the circle of fifths.">
+</p>
 
 - Songs from files and links
     > Drop an audio or video file on Muskey, or a link to a song on YouTube or any other site that [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports, and Muskey plays it with everything above.
