@@ -1167,11 +1167,12 @@ final class HUDPanel: NSPanel {
 
     /// Moves the panel so the whole glass is on the screen that holds most of it, when the glass grows, as the large
     /// lyrics do, and back to where it was once the glass shrinks. The large lyrics are sized for that screen, and
-    /// karaoke opens in the middle of it, unless it was dragged since it opened.
-    func keepOnScreen(animated: Bool) {
+    /// karaoke opens in the middle of it, unless it was dragged since it opened. `start` is the place to keep on the
+    /// screen in place of where the panel would be without its push.
+    func keepOnScreen(animated: Bool, from start: NSRect? = nil) {
         if !model.lyricsFocus { karaokeDragged = false }
         let base = heading ?? frame
-        let home = base.offsetBy(dx: -pushed.dx, dy: -pushed.dy)
+        let home = start ?? base.offsetBy(dx: -pushed.dx, dy: -pushed.dy)
         guard let glass = glassOnScreen(in: home), let screen = screen(holding: glass) else { return }
         let visible = screen.visibleFrame
         if model.screenHeight != visible.height { model.screenHeight = visible.height }
@@ -1209,6 +1210,19 @@ final class HUDPanel: NSPanel {
         guard !model.lyricsFocus, let glass = glassOnScreen(in: target), let visible = screen(holding: glass)?.visibleFrame else { return }
         let home = Self.home(on: visible, size: frame.size)
         Self.dragged = CGVector(dx: target.minX - home.x, dy: target.minY - home.y)
+    }
+
+    /// ⌘⌥C: the HUD moves back to where it opens when it was never dragged, at the bottom centre of the screen that
+    /// holds most of the glass, and forgets the place it was dragged to. Karaoke and the large lyrics are pushed from
+    /// there as usual, so karaoke ends in the middle of the screen and the HUD comes back home when it closes.
+    func returnHome() {
+        Self.dragged = .zero
+        karaokeDragged = false
+        guard let glass = glassOnScreen(in: heading ?? frame), let visible = screen(holding: glass)?.visibleFrame else { return }
+        let home = NSRect(origin: Self.home(on: visible, size: frame.size), size: frame.size)
+        pushed = .zero
+        log("HUD back to its home")
+        keepOnScreen(animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, from: home)
     }
 
     /// The glass centred in the panel, at the same height as when the panel was 240 points tall: the place of a HUD
@@ -3202,6 +3216,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let flags = event.modifierFlags
+            // ⌘⌥C moves the HUD back home, in every state, also while a song is saved or the shortcuts show.
+            if let self, event.window === self.panel, flags.intersection(.deviceIndependentFlagsMask) == [.command, .option],
+               Int(event.keyCode) == kVK_ANSI_C {
+                self.panel.returnHome()
+                return nil
+            }
             // While a song is saved, the HUD takes none of its keys but Escape, which closes it. ⌘Q and the other
             // menu keys still work.
             if let self, self.model.saving != nil, event.window === self.panel {
@@ -4757,6 +4777,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let open = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey, action: { [weak self] in self?.openFile() }) { hoverKeys.append(open) }
         if let link = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey, action: { [weak self] in self?.openLocation() }) { hoverKeys.append(link) }
+        if let home = try? HotKey(keyCode: kVK_ANSI_C, modifiers: cmdKey | optionKey, action: { [weak self] in self?.panel.returnHome() }) {
+            hoverKeys.append(home)
+        }
     }
 
     /// Starts, changes or stops the pitch change. While the picker is open, going back to the original key keeps
