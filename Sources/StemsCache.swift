@@ -852,6 +852,8 @@ final class StemsCacheBuilder {
     var live: () -> Bool = { false }
     /// The song at the path has its stems in the cache, or they couldn't be separated.
     var onDone: (String, Bool) -> Void = { _, _ in }
+    /// The part of the song separated so far, from 0 to 1: any thread.
+    var progress: (Double) -> Void = { _ in }
     /// The song being separated.
     private(set) var path: String?
     private var job: Job?
@@ -869,13 +871,13 @@ final class StemsCacheBuilder {
         self.path = path
         let job = Job()
         self.job = job
-        let live = live, log = log
+        let live = live, log = log, progress = progress
         log("stems cache: separating the whole song")
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let began = Date()
             var ok = false
             do {
-                try Self.build(path, to: url, live: live) { !job.cancelled }
+                try Self.build(path, to: url, live: live, progress: progress) { !job.cancelled }
                 ok = true
                 log(String(format: "stems cache: the whole song separated in %.1f s", Date().timeIntervalSince(began)))
             } catch is CancellationError {
@@ -899,7 +901,7 @@ final class StemsCacheBuilder {
     }
 
     /// Reads the song a part at a time, at the model's rate, separates it, and writes its stems to the cache.
-    static func build(_ path: String, to url: URL, live: () -> Bool, going: () -> Bool) throws {
+    static func build(_ path: String, to url: URL, live: () -> Bool, progress: (Double) -> Void = { _ in }, going: () -> Bool) throws {
         let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
         let format = file.processingFormat
         let frames = Int((Double(file.length) * StemsCache.rate / format.sampleRate).rounded())
@@ -927,7 +929,10 @@ final class StemsCacheBuilder {
                 let n = min(count, pending[0].count)
                 defer { pending = pending.map { Array($0.dropFirst(n)) } }
                 return pending.map { Array($0.prefix(n)) }
-            }, live: live, progress: { _ in going() }, take: { block in
+            }, live: live, progress: { fraction in
+                progress(fraction)
+                return going()
+            }, take: { block in
                 try out.write(block, at: at)
                 at += block[0][0].count
             })

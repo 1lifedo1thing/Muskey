@@ -97,7 +97,10 @@ enum Dettato {
     }
 
     /// The notes in `samples`, mono at 16 kHz. `progress` gets the part of the song done, from 0 to 1, after each window.
-    static func transcribe(_ samples: [Float], program: Int, progress: @escaping @Sendable (Double) -> Void = { _ in }) throws -> [TranscribedNote] {
+    /// `partial` gets the notes found so far every 16 seconds of song, without the ones that may still go on.
+    static func transcribe(_ samples: [Float], program: Int, progress: @escaping @Sendable (Double) -> Void = { _ in },
+                           partial: (@Sendable ([TranscribedNote]) -> Void)? = nil) throws -> [TranscribedNote]
+    {
         let network = try network()
         let front = DettatoFrontEnd()
         let count = samples.count
@@ -138,16 +141,31 @@ enum Dettato {
             }
             for frame in from ..< to { weights[frame] += taper[frame - first] }
             progress(Double(index + 1) / Double(starts.count))
-        }
-        for head in 0 ..< 6 {
-            for frame in 0 ..< total {
-                let weight = max(weights[frame], 1e-6)
-                for key in 0 ..< keys { maps[head][frame * keys + key] /= weight }
+            // The frames before the next window's first are final: no window after this one reaches them.
+            if let partial, (index + 1) % 8 == 0, index + 1 < starts.count {
+                let final = min(total, Int((Double(starts[index + 1]) / rate / frameSeconds).rounded()) - framePad)
+                if final > 0 {
+                    let cut = Double(final) * frameSeconds - 0.5
+                    partial(notes(maps, weights, frames: final, program: program).filter { $0.end < cut })
+                }
             }
+        }
+        return notes(maps, weights, frames: total, program: program)
+    }
+
+    /// The notes of both voices in the first `frames` frames of the summed maps.
+    private static func notes(_ maps: [[Float]], _ weights: [Float], frames: Int, program: Int) -> [TranscribedNote] {
+        let averaged = maps.map { map in
+            var out = [Float](repeating: 0, count: frames * keys)
+            for frame in 0 ..< frames {
+                let weight = max(weights[frame], 1e-6)
+                for key in 0 ..< keys { out[frame * keys + key] = map[frame * keys + key] / weight }
+            }
+            return out
         }
         var notes: [TranscribedNote] = []
         for (slot, threshold) in [(0, Threshold.onset), (1, Threshold.secondVoice)] {
-            let found = decode(onset: maps[slot * 3], frame: maps[slot * 3 + 1], offset: maps[slot * 3 + 2], frames: total, onsetThreshold: threshold)
+            let found = decode(onset: averaged[slot * 3], frame: averaged[slot * 3 + 1], offset: averaged[slot * 3 + 2], frames: frames, onsetThreshold: threshold)
             notes += found.map { TranscribedNote(start: $0.start, end: $0.end, pitch: $0.pitch, program: program, drum: false) }
         }
         return notes.sorted { ($0.start, $0.end, $0.pitch) < ($1.start, $1.end, $1.pitch) }

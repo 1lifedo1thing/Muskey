@@ -2202,6 +2202,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DettatoCheck.run(dir)
             return
         }
+        if let path = Self.stringOption("--notes-render") {
+            renderNotesWindow(fixture: path, to: Self.stringOption("--render") ?? Self.stringOption("--notes-out") ?? "/tmp")
+            return NSApp.terminate(nil)
+        }
         if let path = Self.stringOption("--notes-headless") {
             NotesPipeline.headless(path)
             return
