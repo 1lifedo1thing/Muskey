@@ -130,6 +130,12 @@ The network hears 8 seconds at 16 kHz at a time, and a window starts every 2 sec
 
 Muskey downloads the model (33 MB) from lowtechguys.com into `~/Library/Application Support/Muskey/Models/Dettato`. The command `make dettato-model` makes it from Dettato's weights. Dettato's drum transcriber isn't part of Muskey, so the Drums stem has no notes.
 
+**T** over the HUD shows the stems in place of the key column, for a song that plays in Muskey Player. Return separates the whole song into stems if the cache doesn't have them yet, transcribes the picked stem, and opens the notes window. The notes of each song and stem are kept in `~/Library/Caches/Muskey/Notes`, so they open at once the next time.
+
+The notes are placed on the beats that Essentia finds in the song, which also place the chords over the lyrics. Dettato finds no metre and no downbeat, so every bar has four beats and the first beat starts the first bar. Each note is rounded to a sixteenth. Bass and guitar get a string and a fret on the lowest frets that keep the hand near one place, and their staff is written an octave above where they sound, as is usual for both.
+
+The window holds the notes still, as pages of tab, sheet music or a piano roll, and a line moves through them as the song plays. The page is split into a top half and a bottom half: once the line reaches the bottom half, the top half turns to the next page, and the bottom half turns once the line reaches the top again. A click on the notes moves the song to that beat, and a drag across them sets the region loop. The notes follow the pitch change, and ← → in the window changes it. The window takes the shape of a portrait page when it is taller than wide, and of a landscape page otherwise, and its page button switches between the two.
+
 ### Whisper
 
 Muskey uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with the large-v3-turbo model on the GPU, or a server with a `POST /v1/audio/transcriptions` endpoint. Muskey sends one phrase of the vocals at a time, cut at the pauses in the singing.
@@ -243,6 +249,8 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 |---|---|
 | `--transcribe FILE` | Turn an audio file into notes with Dettato, print the first notes and how long it took, and quit. `--stem NAME` gives the notes the instrument of that stem |
 | `--notes-headless FILE` | Separate the song into stems when the cache doesn't have them, turn the stem of `--stem NAME` (bass by default) into notes, write them to `--notes-out DIR` as JSON, MusicXML, MIDI and text tab, and quit |
+| `--notes-file FIXTURE` | Open the notes window on the notes that `--notes-headless` wrote, without a song |
+| `--notes-render FIXTURE --notes-out DIR` | Write a PNG of the notes window in each view on a tall and a wide page, and quit. `--notes-at S` draws the line at S seconds into the song, `--notes-loop A-B` shows a region loop, `--notes-shift N` transposes, and `--light` renders in light mode |
 | `--dettato-check DIR` | Compare the spectrogram and the network's maps with the ones that `make dettato-model` saved in DIR, and quit |
 | `--dettato-install ZIP`, `--dettato-download` | Install the transcription model from a zip, or download it the way Settings does |
 | `--chords FILE` | Print the beats and the chords that the lyrics would show over the file, and quit. `--key Em` fits the chords to that key, and `--chord-step N` finds a chord every N beats instead of every 2 |

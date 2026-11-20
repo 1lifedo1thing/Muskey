@@ -56,5 +56,6 @@ Muskey is free software under the [GNU Affero General Public License v3.0](LICEN
 - [PitchTap](https://github.com/gkudva96/pitchtap): GPL-3.0, the starting point of the pitch change
 - [Sparkle](https://github.com/sparkle-project/Sparkle): MIT
 - [whisper.cpp](https://github.com/ggml-org/whisper.cpp): MIT, linked statically
+- [Dettato](https://github.com/kobimusic/dettato): Apache-2.0, the transcriber of notes, ported to Swift and Core ML. Its notice reads: "Dettato, Copyright 2026 KobiMusic. This product includes software and model weights developed by KobiMusic."
 
-The separation models and the Whisper model aren't part of the app. They are downloaded in Settings.
+The separation models, the transcription model and the Whisper model aren't part of the app. They are downloaded in Settings.
