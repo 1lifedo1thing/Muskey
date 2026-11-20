@@ -2754,13 +2754,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         queueAnalysis = item.id
         let duration = item.duration
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             let result = await Task.detached(priority: .utility) { await QueueItem.analyse(file, duration: duration) }.value
             guard let self else { return }
             queueAnalysis = nil
             if Self.logKeys { log("queue: \(item.title) in \(result.key?.name ?? "no key")\(result.bpm.map { String(format: " at %.0f BPM", $0) } ?? "")") }
             filePlayer.setAnalysis(item.id, key: result.key, bpm: result.bpm)
         }
+    }
+
+    /// The song that plays takes the key and the tempo of the HUD's listen, which heard more of it than the short
+    /// listen of the queue.
+    private func syncQueueRow() {
+        // Now Playing names the new song a moment after Muskey Player starts it, so the key has to belong to this song.
+        guard let id = filePlayer.currentID, let item = filePlayer.queue.first(where: { $0.id == id }), item.read,
+              let found = songKey, found.song == nil || found.song == model.track?.song, model.track?.title == item.title
+        else { return }
+        let key = found.key
+        let bpm = model.tempo.flatMap { $0.song == nil || $0.song == model.track?.song ? $0.bpm : nil }
+        guard item.key != key || (bpm != nil && item.bpm != bpm) else { return }
+        filePlayer.setAnalysis(id, key: key, bpm: bpm)
     }
 
     /// A double click or Return in the queue plays the song.
@@ -5831,6 +5844,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshStatus() {
         if mini.key != currentKey { mini.key = currentKey }
+        syncQueueRow()
         syncSavable()
         syncPauseStop()
         statusItem.update(shift: model.shift, from: shiftBase, heard: shiftBase.map { model.shown($0.transposed(by: model.shift)) }, kept: keptKey,

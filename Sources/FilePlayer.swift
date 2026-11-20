@@ -199,7 +199,8 @@ final class FilePlayer {
         // A link has its details once it is downloaded, and is read then.
         for item in queue where !item.read {
             guard let file = item.file else { continue }
-            Task { [weak self] in
+            // The queue and the HUD that shows it change on the main thread only.
+            Task { @MainActor [weak self] in
                 let details = await QueueItem.details(file)
                 guard let self, let at = queue.firstIndex(where: { $0.id == item.id }) else { return }
                 queue[at].apply(details)
@@ -210,9 +211,12 @@ final class FilePlayer {
     /// Sets the key and the tempo of a song in the queue, once they are known.
     func setAnalysis(_ id: UUID, key: DetectedKey?, bpm: Double?) {
         guard let at = queue.firstIndex(where: { $0.id == id }) else { return }
-        queue[at].key = key ?? queue[at].key
-        queue[at].bpm = bpm ?? queue[at].bpm
-        queue[at].analysed = true
+        // One change of the queue, since each change looks for the next song to analyse.
+        var item = queue[at]
+        item.key = key ?? item.key
+        item.bpm = bpm ?? item.bpm
+        item.analysed = true
+        queue[at] = item
     }
 
     /// Moves the song to `seconds` from its start.
