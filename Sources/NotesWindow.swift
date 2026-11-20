@@ -785,6 +785,8 @@ private struct NotesPageView: View {
     @State private var animateTurns = false
     @State private var placed = false
     @State private var drag: (from: Double, to: Double)?
+    /// The halves that are turning, where the playhead waits until the new page lies flat.
+    @State private var turning: Set<Bool> = []
     @Environment(\.renderingPreview) private var renderingPreview
 
     private static let tick = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
@@ -808,8 +810,7 @@ private struct NotesPageView: View {
                     .frame(height: 1)
                     .padding(.horizontal, 12)
                     .offset(y: layout.middle)
-                regions(painter, pages: pages)
-                NotesPlayhead(model: model, layout: layout, shown: pages)
+                NotesPlayhead(model: model, layout: layout, shown: pages, turning: turning)
             }
             .contentShape(Rectangle())
             .gesture(pointer(layout))
@@ -825,32 +826,39 @@ private struct NotesPageView: View {
     private func half(_ painter: NotesPainter, top: Bool, page: Int) -> some View {
         let layout = painter.layout
         let height = top ? layout.middle : layout.size.height - layout.middle
-        return NotesPageTurn(page: page, animated: animateTurns && !renderingPreview, paper: paper) { page in
-            Canvas { context, _ in
-                if !top { context.translateBy(x: 0, y: -layout.middle) }
-                painter.draw(&context, page: page, rows: layout.rows(top: top))
+        return NotesPageTurn(page: page, animated: animateTurns && !renderingPreview, paper: paper, onTurn: { on in
+            if on { turning.insert(top) } else { turning.remove(top) }
+        }) { page in
+            // The region loop belongs to the page, so it turns with it.
+            ZStack(alignment: .topLeading) {
+                Canvas { context, _ in
+                    if !top { context.translateBy(x: 0, y: -layout.middle) }
+                    painter.draw(&context, page: page, rows: layout.rows(top: top))
+                }
+                region(painter, page: page, top: top)
             }
-            .frame(width: layout.size.width, height: max(0, height))
+            .frame(width: layout.size.width, height: max(0, height), alignment: .topLeading)
         }
         .frame(width: layout.size.width, height: max(0, height))
         .clipped()
         .offset(y: top ? 0 : layout.middle)
     }
 
-    @ViewBuilder private func regions(_ painter: NotesPainter, pages: (top: Int, bottom: Int)) -> some View {
+    /// The region loop on the lines of one half of a page, in the coordinates of that half.
+    @ViewBuilder private func region(_ painter: NotesPainter, page: Int, top: Bool) -> some View {
         let beats = model.score.beats
         let loop: (Double, Double)? = drag.map { (min($0.from, $0.to), max($0.from, $0.to)) }
             ?? model.loop.flatMap { loop in loop.end.map { (Score.position(of: loop.start, in: beats), Score.position(of: $0, in: beats)) } }
         if let (start, end) = loop {
             let honey = StripColors.text(.honey, colorScheme)
-            let rects = painter.region(from: start, to: end, page: pages.top, rows: painter.layout.rows(top: true))
-                + painter.region(from: start, to: end, page: pages.bottom, rows: painter.layout.rows(top: false))
+            let rects = painter.region(from: start, to: end, page: page, rows: painter.layout.rows(top: top))
+            let dy = top ? 0 : painter.layout.middle
             ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
                 RoundedRectangle(cornerRadius: 5)
                     .fill(honey.opacity(0.16))
                     .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(honey.opacity(0.55), lineWidth: 1))
                     .frame(width: rect.width, height: rect.height)
-                    .offset(x: rect.minX, y: rect.minY)
+                    .offset(x: rect.minX, y: rect.minY - dy)
                     .allowsHitTesting(false)
             }
         }
@@ -896,6 +904,8 @@ private struct NotesPlayhead: View {
     @ObservedObject var model: NotesModel
     let layout: NotesLayout
     let shown: (top: Int, bottom: Int)
+    /// The halves that are turning (true is the top one): the line shows there once the page lies flat.
+    var turning: Set<Bool> = []
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -903,7 +913,7 @@ private struct NotesPlayhead: View {
             Canvas { context, _ in
                 guard let time = model.now(), let spot = layout.spot(at: time, in: model.score) else { return }
                 let inTop = spot.row < layout.topLines
-                guard spot.page == (inTop ? shown.top : shown.bottom) else { return }
+                guard spot.page == (inTop ? shown.top : shown.bottom), !turning.contains(inTop) else { return }
                 let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
                 let rect = CGRect(x: spot.x - 1, y: top, width: 2, height: layout.staff.linesHeight + 14)
                 let honey = StripColors.text(.honey, colorScheme)
@@ -927,6 +937,8 @@ private struct NotesPageTurn<Content: View>: View {
     /// False shows another page at once.
     let animated: Bool
     let paper: Color
+    /// Called with true when a turn starts, and with false once the new page lies flat.
+    var onTurn: (Bool) -> Void = { _ in }
     @ViewBuilder let content: (Int) -> Content
     /// The page that lies flat, and the page that turns over it, while a turn runs.
     @State private var beneath: Int?
@@ -950,6 +962,7 @@ private struct NotesPageTurn<Content: View>: View {
             }
         }
         .onChange(of: page) { old, new in turn(from: beneath ?? old, to: new) }
+        .onDisappear { onTurn(false) }
     }
 
     private func turn(from old: Int, to new: Int) {
@@ -961,8 +974,10 @@ private struct NotesPageTurn<Content: View>: View {
                 turning = nil
                 fold = 1
             }
+            onTurn(false)
             return
         }
+        onTurn(true)
         let curve = Animation.timingCurve(0.42, 0.05, 0.3, 1, duration: reduceMotion ? 0.2 : 0.5)
         if new > old {
             // The page read so far lifts at its right edge and turns over to the left, uncovering the next one.
@@ -972,7 +987,9 @@ private struct NotesPageTurn<Content: View>: View {
                 fold = 1
             }
             withAnimation(curve) { fold = 0 } completion: {
-                if turning == old { turning = nil }
+                guard turning == old else { return }
+                turning = nil
+                onTurn(false)
             }
         } else {
             // The earlier page turns back from the left and lies down over the later one.
@@ -985,6 +1002,7 @@ private struct NotesPageTurn<Content: View>: View {
                 guard turning == new else { return }
                 beneath = new
                 turning = nil
+                onTurn(false)
             }
         }
     }
