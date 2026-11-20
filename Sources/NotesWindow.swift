@@ -943,6 +943,9 @@ private struct NotesPageTurn<Content: View>: View {
     /// The page that lies flat, and the page that turns over it, while a turn runs.
     @State private var beneath: Int?
     @State private var turning: Int?
+    /// The page that the turn that runs ends on, and the number of that turn: only the latest turn may finish.
+    @State private var target: Int?
+    @State private var turnID = 0
     /// Where the fold is, from 1 at the right edge (the turning page lies flat) to 0 at the left edge (it is gone).
     @State private var fold: Double = 1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -961,11 +964,13 @@ private struct NotesPageTurn<Content: View>: View {
                 content(beneath ?? page)
             }
         }
-        .onChange(of: page) { old, new in turn(from: beneath ?? old, to: new) }
+        .onChange(of: page) { old, new in turn(from: target ?? beneath ?? old, to: new) }
         .onDisappear { onTurn(false) }
     }
 
     private func turn(from old: Int, to new: Int) {
+        turnID += 1
+        let id = turnID
         var transaction = Transaction()
         transaction.disablesAnimations = true
         guard animated, old != new else {
@@ -974,36 +979,45 @@ private struct NotesPageTurn<Content: View>: View {
                 turning = nil
                 fold = 1
             }
+            target = nil
             onTurn(false)
             return
         }
         onTurn(true)
+        target = new
         let curve = Animation.timingCurve(0.42, 0.05, 0.3, 1, duration: reduceMotion ? 0.2 : 0.5)
-        if new > old {
-            // The page read so far lifts at its right edge and turns over to the left, uncovering the next one.
+        let done = {
+            guard turnID == id else { return }
             withTransaction(transaction) {
                 beneath = new
-                turning = old
+                turning = nil
                 fold = 1
             }
-            withAnimation(curve) { fold = 0 } completion: {
-                guard turning == old else { return }
-                turning = nil
-                onTurn(false)
+            target = nil
+            onTurn(false)
+        }
+        if new > old {
+            // The page read so far lifts at its right edge and turns over to the left, uncovering the next one. A
+            // turn back to `old` that still runs reverses from where its fold is.
+            if turning != old || beneath != new {
+                withTransaction(transaction) {
+                    beneath = new
+                    turning = old
+                    fold = 1
+                }
             }
+            withAnimation(curve, { fold = 0 }, completion: done)
         } else {
-            // The earlier page turns back from the left and lies down over the later one.
-            withTransaction(transaction) {
-                beneath = old
-                turning = new
-                fold = 0
+            // The earlier page turns back from the left and lies down over the later one, or a turn to `old` that
+            // still runs goes back.
+            if turning != new || beneath != old {
+                withTransaction(transaction) {
+                    beneath = old
+                    turning = new
+                    fold = 0
+                }
             }
-            withAnimation(curve) { fold = 1 } completion: {
-                guard turning == new else { return }
-                beneath = new
-                turning = nil
-                onTurn(false)
-            }
+            withAnimation(curve, { fold = 1 }, completion: done)
         }
     }
 }
