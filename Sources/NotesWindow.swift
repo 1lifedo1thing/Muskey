@@ -1282,7 +1282,8 @@ struct NotesStemPicker: View {
                 }
             }
             .font(.system(size: 12, weight: .semibold, design: .rounded))
-            KeyHintsRow(hints: [(["1–\(picking.stems.count)"], "stem"), (["↩"], "transcribe"), (["esc"], "back")], palette: palette)
+            KeyHintsRow(hints: picking.available ? [(["1–\(picking.stems.count)"], "stem"), (["↩"], "transcribe"), (["esc"], "close")] : [(["esc"], "close")],
+                        palette: palette)
         }
         .frame(width: 330)
     }
@@ -1306,8 +1307,8 @@ struct NotesStemPicker: View {
                     .background(Circle().fill(palette.ink.opacity(0.1)))
                     .padding(6)
             }
-            .background(RoundedRectangle(cornerRadius: 12).fill(on ? honey.opacity(0.2) : palette.ink.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(on ? honey : palette.ink.opacity(0.05), lineWidth: on ? 1.5 : 1))
+            .background(RoundedRectangle(cornerRadius: 12).fill(on ? honey.opacity(0.2) : palette.ink.opacity(0.07)))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(on ? honey : palette.ink.opacity(0.12), lineWidth: on ? 1.5 : 1))
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
@@ -1327,7 +1328,8 @@ struct NotesStemPicker: View {
                     Text("Download and Transcribe · \(Int((Double(missing) / 1e6).rounded())) MB")
                 } else {
                     Text("Transcribe \(picking.selected.name)")
-                    Keycap(text: "↩", palette: palette, small: true)
+                    // The dark keycap of the light scheme, which reads on honey in both schemes.
+                    Keycap(text: "↩", palette: .of(.light), small: true)
                 }
             }
             .font(.system(size: 12, weight: .heavy, design: .rounded))

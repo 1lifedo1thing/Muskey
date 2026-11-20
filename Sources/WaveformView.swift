@@ -384,7 +384,7 @@ struct LoopFlags: View {
         if x > -20, x < width + 20 {
             // The dashed line where R was pressed, which shows how far the end moved when it snapped.
             if let press, abs(press - time) > 0.005 {
-                Path { $0.move(to: CGPoint(x: self.x(press), y: -5)); $0.addLine(to: CGPoint(x: self.x(press), y: height + 5)) }
+                Path { $0.move(to: CGPoint(x: self.x(press), y: 0)); $0.addLine(to: CGPoint(x: self.x(press), y: height)) }
                     .stroke(palette.ink.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [3, 3]))
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -408,9 +408,10 @@ struct LoopFlags: View {
             handle(end, time: time)
                 .offset(x: x - (hovered == end || dragged?.end == end ? 17 : end == .start ? 13 : 21), y: -14)
             // The time sits inside the bottom of the waveform, under the line, so it covers no other part of the HUD.
+            // Outside the band: left of A's line and right of B's, so it covers neither the loop nor the playhead in it.
             if showsTime(end) {
                 timeLabel(end, time: time)
-                    .offset(x: min(max(x - 30, 0), width - 60), y: height - 15)
+                    .offset(x: min(max(end == .start ? x - 64 : x + 4, 0), width - 60), y: height - 15)
                     .transition(.opacity)
             }
         }

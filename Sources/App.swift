@@ -6648,7 +6648,7 @@ extension EnvironmentValues {
             // Player.
             if variant.hasPrefix("-notes") {
                 model.notesPicking = NotesPicking(stems: [.vocals, .bass, .guitar, .piano, .winds, .other], selected: .bass,
-                                                  available: variant != "-notes-outside", duration: 222,
+                                                  available: variant != "-notes-outside", duration: song?.duration ?? 222,
                                                   missing: variant == "-notes-download" ? 33_437_377 : nil)
             }
             if variant == "-waveform-stems" {

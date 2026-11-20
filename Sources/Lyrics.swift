@@ -308,9 +308,12 @@ struct LyricsBadges: View {
     var downloading = false
     var writing = false
     let palette: Palette
+    @Environment(\.songChords) private var chords
 
     var body: some View {
         HStack(spacing: 8) {
+            // The pitch change and the capo of the chords sit in the same row, since the key row isn't there to show them.
+            if let chords, chords.shift != 0 || chords.capo != 0 { ChordsBadges(chords: chords, palette: palette, inline: true) }
             if lyrics.timing == .estimated || lyrics.timing == .written {
                 LyricsTimingStatus(timing: lyrics.timing, downloading: downloading, writing: writing, palette: palette)
             }
@@ -367,9 +370,10 @@ struct LyricsPanel: View {
             }
         }
         .frame(width: width, height: height)
-        // At the top right, where the lines, which start at the left, rarely reach.
+        // Karaoke shows the pitch change and the capo at the top right, where the lines, which start at the left, rarely
+        // reach. The other layouts show them beside the service of the lyrics.
         .overlay(alignment: .topTrailing) {
-            if rewind == nil, let chords, chords.shift != 0 || chords.capo != 0 { ChordsBadges(chords: chords, palette: palette, large: large) }
+            if large, rewind == nil, let chords, chords.shift != 0 || chords.capo != 0 { ChordsBadges(chords: chords, palette: palette, large: large) }
         }
     }
 
@@ -439,9 +443,11 @@ struct LyricsPanel: View {
     }
 
     private var fade: some View {
-        LinearGradient(stops: [
+        // With the timing and the service in a row under the lines, the lines are gone before they reach that row.
+        let bottom = !large && showsFooter ? max(0.6, 1 - 26 / max(height, 1)) : 1
+        return LinearGradient(stops: [
             .init(color: .clear, location: 0), .init(color: .black, location: 0.14),
-            .init(color: .black, location: 0.82), .init(color: .clear, location: 1),
+            .init(color: .black, location: bottom - 0.18), .init(color: .clear, location: bottom),
         ], startPoint: .top, endPoint: .bottom)
     }
 
@@ -561,7 +567,7 @@ struct LyricsPanel: View {
                     .frame(height: chordHeight, alignment: .top)
                 }
             }
-            .padding(.leading, songLoop == nil ? 0 : large ? 18 : 12)
+            .padding(.leading, songLoop == nil ? 0 : large ? 10 : 7)
             .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .leading) {
                 if looped {
@@ -644,6 +650,8 @@ struct ChordsBadges: View {
     let chords: SongChords
     let palette: Palette
     var large = false
+    /// In a row with the pill of the lyrics' service, at its size.
+    var inline = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -651,8 +659,9 @@ struct ChordsBadges: View {
             if chords.shift != 0 { badge(Shift.text(chords.shift), hue: chords.shift < 0 ? StripColors.down : StripColors.up) }
             if chords.capo != 0 { badge("Capo \(chords.capo)", hue: .honey) }
         }
-        .font(.system(size: large ? 13 : 11, weight: .bold, design: .rounded))
-        .padding(.top, large ? 6 : 2)
+        .font(.system(size: large ? 13 : inline ? 10 : 11, weight: .bold, design: .rounded))
+        .padding(.top, large ? 6 : inline ? 0 : 2)
+        .fixedSize()
     }
 
     private func badge(_ text: String, hue: StripColors.Hue) -> some View {

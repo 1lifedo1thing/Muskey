@@ -152,7 +152,7 @@ struct QueueView: View {
                 Color.clear.frame(width: 20, height: 20)
             }
             .overlay(alignment: .trailing) {
-                RoundButton(symbol: "arrow.uturn.backward", help: "Close the queue (Q)", label: "Close queue", key: "Q", palette: palette, action: close)
+                RoundButton(symbol: "xmark", help: "Close the queue (Q)", label: "Close queue", key: "Q", palette: palette, action: close)
                     .onHover { closeHovered = $0 }
             }
             .padding(.horizontal, 4)
@@ -355,11 +355,12 @@ struct DropZones: View {
                 .font(.system(size: 15, weight: .bold, design: .rounded))
             if hint {
                 HStack(spacing: 4) {
-                    Keycap(text: "⌥", palette: palette, small: true)
+                    // On honey, the dark keycap and text of the light scheme read in both schemes.
+                    Keycap(text: "⌥", palette: hot ? .of(.light) : palette, small: true)
                     Text("play next")
                 }
                 .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(palette.muted)
+                .foregroundStyle(hot ? honey.text.opacity(0.8) : palette.muted)
                 .opacity(zone == .addNext ? 0 : 1)
             }
         }
