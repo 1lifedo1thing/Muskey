@@ -622,9 +622,15 @@ private struct NotesTopBar: View {
                     .foregroundStyle(palette.muted)
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
             NotesViewSwitch(view: $model.view, palette: palette)
-            NotesStatus(model: model, palette: palette)
+            // A narrow window keeps the pills that it has room for, the transpose first.
+            ViewThatFits(in: .horizontal) {
+                NotesStatus(model: model, palette: palette, tempo: true, key: true)
+                NotesStatus(model: model, palette: palette, tempo: false, key: true)
+                NotesStatus(model: model, palette: palette, tempo: false, key: false)
+            }
             RoundButton(symbol: "rectangle.portrait.rotate", help: "Portrait or landscape page", palette: palette, action: model.onTurnPage)
             Menu {
                 Section("Save the notes as") {
@@ -690,6 +696,8 @@ private struct NotesViewSwitch: View {
 private struct NotesStatus: View {
     @ObservedObject var model: NotesModel
     let palette: Palette
+    var tempo = true
+    var key = true
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -704,8 +712,8 @@ private struct NotesStatus: View {
                 HUDButton(title: "Retry", symbol: "arrow.clockwise", palette: palette, small: true, action: model.onRetry)
             case .ready:
                 if model.shift != 0 { pill(Shift.text(model.shift), color: StripColors.text(.honey, colorScheme)) }
-                if let key = model.key?.transposed(by: model.shift) { pill(key.name, color: palette.ink) }
-                pill("\(Int(model.bpm.rounded())) BPM", color: palette.ink)
+                if key, let shown = model.key?.transposed(by: model.shift) { pill(shown.name, color: palette.ink) }
+                if tempo { pill("\(Int(model.bpm.rounded())) BPM", color: palette.ink) }
             }
         }
     }
@@ -722,6 +730,7 @@ private struct NotesStatus: View {
                 .font(.system(size: 11.5, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
+                .fixedSize()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
@@ -1035,7 +1044,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     func show(_ model: NotesModel) {
         self.model = model
         let window = window ?? make()
-        window.contentView = NSHostingView(rootView: NotesWindowView(model: model))
+        // The first click on the page seeks or starts a loop, instead of only bringing the window to the front.
+        window.contentView = FirstClickHostingView(rootView: NotesWindowView(model: model))
         window.title = "\(model.title) · \(model.stem.name)"
         RunLoop.main.perform(inModes: [.default]) {
             NSApp.setActivationPolicy(.regular)

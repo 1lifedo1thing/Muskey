@@ -1223,6 +1223,9 @@ final class HUDPanel: NSPanel {
         super.sendEvent(event)
     }
 
+    /// The pointer is over the glass now, whatever SwiftUI's hover last said.
+    var pointerOverGlass: Bool { isVisible && overGlass(NSEvent.mouseLocation) }
+
     private func overGlass(_ point: NSPoint) -> Bool {
         let glass = model.glassFrame
         guard !glass.isEmpty else { return true }
@@ -2838,6 +2841,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.notesPicking = NotesPicking(stems: stems, selected: selected, available: playsInFilePlayer, duration: model.track?.duration, missing: notesMissing)
         log("notes: picker shown\(playsInFilePlayer ? "" : " for a song outside Muskey Player")")
         updateHoverKeys()
+        keepHover()
+    }
+
+    /// A layout that changes under a pointer that stays still can end SwiftUI's hover, which turns the keys over the
+    /// HUD off until the pointer moves. They stay on while the pointer is still over the glass.
+    private func keepHover() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self, !model.hovering, panel.pointerOverGlass else { return }
+            log("hover kept after the layout changed under the pointer")
+            model.hovering = true
+        }
     }
 
     private func closeNotesPicker() {
@@ -2845,6 +2859,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.notesPicking = nil
         notesDownloads = []
         updateHoverKeys()
+        keepHover()
     }
 
     private func selectNotesStem(_ stem: Stem) {
@@ -2860,6 +2875,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let path = filePlayer.current?.path, let track = model.track else { return }
         closeNotesPicker()
         openNotes(path: path, track: track, stem: picking.selected)
+        // The HUD floats above every window, and the notes window takes the screen under it.
+        dismiss()
     }
 
     private func downloadNotesModels() {
@@ -2944,9 +2961,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.onSeek = { [weak self] seconds in self?.seek(to: seconds, flash: "") }
         notes.onLoop = { [weak self] start, end in self?.setNotesLoop(start, end) }
         notes.onPlayPause = { [weak self] in self?.playPause() }
+        // The window shows the new key itself, so the HUD stays closed and the window keeps the keyboard.
         notes.onTranspose = { [weak self] step in
-            guard let self else { return }
-            change(to: model.shift + step)
+            guard let self, model.pending == nil else { return }
+            setShift(model.shift + step)
         }
         notes.onRetry = { [weak self, weak notes] in
             guard let notes else { return }
