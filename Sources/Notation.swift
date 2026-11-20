@@ -138,32 +138,78 @@ struct Score: Sendable {
         return (bar, (position - Double(bar * Self.beatsPerBar)) / Double(Self.beatsPerBar))
     }
 
-    /// A string and a fret for every note, keeping the hand near where it was: notes that start together go on
-    /// different strings, the highest note on the highest string that can play it.
+    /// A string and a fret for every note, keeping the hand near where it was. The notes that start together get the
+    /// strings that keep them within reach of one hand: each one on its own string, close to the frets played before,
+    /// with as small a stretch as the notes allow. Open strings cost nothing. A note that no free string can play gets
+    /// no fret, and shows only on the staff.
     private static func fret(_ notes: [Note], tuning: [Int]) -> [Note] {
         var result: [Note] = []
         var hand = 3.0
         let groups = Dictionary(grouping: notes.indices) { notes[$0].bar * 64 + Int(notes[$0].beat * 4) }
         for key in groups.keys.sorted() {
-            var taken = Set<Int>()
-            for index in groups[key]!.sorted(by: { notes[$0].pitch > notes[$1].pitch }) {
-                var note = notes[index]
-                let options = tuning.indices.compactMap { string -> (string: Int, fret: Int, cost: Double)? in
-                    let fret = note.pitch - tuning[string]
-                    guard (0 ... 20).contains(fret), !taken.contains(string) else { return nil }
-                    // Open strings are easy, and high frets far from the hand are not.
-                    return (string, fret, fret == 0 ? 0.5 : abs(Double(fret) - hand))
+            // The highest notes first, and no more of them than there are strings.
+            let sorted = groups[key]!.sorted { notes[$0].pitch > notes[$1].pitch }
+            let playable = Array(sorted.prefix(tuning.count))
+            var best: (cost: Double, picks: [(string: Int, fret: Int)?])?
+            var picks: [(string: Int, fret: Int)?] = []
+            var used = Set<Int>()
+            func cost() -> Double {
+                let fretted = picks.compactMap { $0 }.map(\.fret).filter { $0 > 0 }
+                let skipped = Double(picks.filter { $0 == nil }.count)
+                guard let low = fretted.min(), let high = fretted.max() else { return skipped * 12 }
+                let center = Double(fretted.reduce(0, +)) / Double(fretted.count)
+                return abs(center - hand) + Double(max(0, high - low - 3)) * 4 + center * 0.08 + skipped * 12
+            }
+            func search(_ index: Int, skips: Int) {
+                guard index < playable.count else {
+                    let total = cost()
+                    if total < best?.cost ?? .infinity { best = (total, picks) }
+                    return
                 }
-                if let best = options.min(by: { $0.cost < $1.cost }) {
-                    note.string = best.string
-                    note.fret = best.fret
-                    taken.insert(best.string)
-                    if best.fret > 0 { hand = hand * 0.6 + Double(best.fret) * 0.4 }
+                let pitch = notes[playable[index]].pitch
+                for string in tuning.indices where !used.contains(string) {
+                    let fret = pitch - tuning[string]
+                    guard (0 ... 20).contains(fret) else { continue }
+                    used.insert(string)
+                    picks.append((string, fret))
+                    search(index + 1, skips: skips)
+                    picks.removeLast()
+                    used.remove(string)
+                }
+                // A note may go without a string only when the others can't all be placed.
+                if skips > 0 {
+                    picks.append(nil)
+                    search(index + 1, skips: skips - 1)
+                    picks.removeLast()
+                }
+            }
+            search(0, skips: 0)
+            if best == nil { search(0, skips: playable.count) }
+            for (position, index) in sorted.enumerated() {
+                var note = notes[index]
+                if position < playable.count, let pick = best?.picks[position] {
+                    note.string = pick.string
+                    note.fret = pick.fret
                 }
                 result.append(note)
             }
+            let fretted = (best?.picks ?? []).compactMap { $0 }.map(\.fret).filter { $0 > 0 }
+            if !fretted.isEmpty { hand = hand * 0.6 + Double(fretted.reduce(0, +)) / Double(fretted.count) * 0.4 }
         }
         return result.sorted { ($0.bar, $0.beat, $0.pitch) < ($1.bar, $1.beat, $1.pitch) }
+    }
+
+    /// The width that the busiest bars need, so that the fret numbers and the notes of two places next to each other
+    /// don't overlap: 15 points between the closest two places where notes start, in four bars out of five.
+    var busiestBarWidth: CGFloat {
+        let widths: [CGFloat] = notesByBar.compactMap { notes in
+            let places = Set(notes.map { Int(($0.beat * 4).rounded()) }).sorted()
+            guard places.count > 1 else { return places.isEmpty ? nil : 0 }
+            let closest = zip(places.dropFirst(), places).map { $0 - $1 }.min() ?? 16
+            return 16 / CGFloat(max(1, closest)) * 15 + 24
+        }.sorted()
+        guard !widths.isEmpty else { return 0 }
+        return widths[min(widths.count - 1, widths.count * 4 / 5)]
     }
 
     /// The notes of each bar, in one pass.

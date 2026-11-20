@@ -230,7 +230,7 @@ struct NotesLayout: Equatable {
         case .roll: x0 = 32
         }
         let landscape = size.width > size.height * 1.05
-        let shortest: CGFloat = view == .roll ? 60 : 96
+        let shortest: CGFloat = view == .roll ? 60 : min(420, max(96, score.busiestBarWidth))
         let fit = Int((size.width - x0 - Self.margin) / shortest)
         barsPerLine = max(1, min(landscape ? 8 : 4, fit))
         linesPerPage = max(2, Int((size.height - Self.margin * 2) / staff.height))
@@ -622,8 +622,9 @@ private struct NotesTopBar: View {
                     .foregroundStyle(palette.muted)
                     .lineLimit(1)
             }
-            .frame(minWidth: 90, maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 90, alignment: .leading)
             .layoutPriority(1)
+            Spacer(minLength: 0)
             NotesViewSwitch(view: $model.view, palette: palette)
             // A narrow window keeps the pills that it has room for, the transpose first.
             ViewThatFits(in: .horizontal) {
@@ -755,6 +756,10 @@ private struct NotesPageView: View {
     let palette: Palette
     @Environment(\.colorScheme) private var colorScheme
     @State private var shown = (top: 0, bottom: 0)
+    /// The pages turn with an animation only when the song reaches another page. The first pages, another view and
+    /// another size of the window show at once.
+    @State private var animateTurns = false
+    @State private var placed = false
     @State private var drag: (from: Double, to: Double)?
     @Environment(\.renderingPreview) private var renderingPreview
 
@@ -786,6 +791,7 @@ private struct NotesPageView: View {
             .gesture(pointer(layout))
             .onReceive(Self.tick) { _ in turn(layout) }
             .onChange(of: layout) { turn(layout, animated: false) }
+            .onAppear { turn(layout, animated: false) }
         }
         .background(RoundedRectangle(cornerRadius: 14).fill(paper))
         .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -795,7 +801,7 @@ private struct NotesPageView: View {
     private func half(_ painter: NotesPainter, top: Bool, page: Int) -> some View {
         let layout = painter.layout
         let height = top ? layout.middle : layout.size.height - layout.middle
-        return NotesPageTurn(page: page, paper: paper) { page in
+        return NotesPageTurn(page: page, animated: animateTurns && !renderingPreview, paper: paper) { page in
             Canvas { context, _ in
                 if !top { context.translateBy(x: 0, y: -layout.middle) }
                 painter.draw(&context, page: page, rows: layout.rows(top: top))
@@ -853,12 +859,10 @@ private struct NotesPageView: View {
 
     private func turn(_ layout: NotesLayout, animated: Bool = true) {
         let pages = layout.pagesShown(at: model.now(), in: model.score)
+        defer { placed = true }
         guard pages != shown else { return }
-        if animated { shown = pages } else {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { shown = pages }
-        }
+        animateTurns = animated && placed
+        shown = pages
     }
 }
 
@@ -893,6 +897,8 @@ private struct NotesPlayhead: View {
 /// folds away to the left over the new one, or back from the left for an earlier page.
 private struct NotesPageTurn<Content: View>: View {
     let page: Int
+    /// False shows another page at once.
+    let animated: Bool
     let paper: Color
     @ViewBuilder let content: (Int) -> Content
     @State private var under: Int?
@@ -918,6 +924,14 @@ private struct NotesPageTurn<Content: View>: View {
         let forward = new > old
         var transaction = Transaction()
         transaction.disablesAnimations = true
+        guard animated else {
+            withTransaction(transaction) {
+                under = new
+                lifted = nil
+                angle = 0
+            }
+            return
+        }
         if forward {
             // The old page lies on top of the new one and folds away.
             withTransaction(transaction) {

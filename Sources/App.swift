@@ -1470,6 +1470,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if songKey?.key != oldValue?.key { log("menu bar: \(songKey.map(\.key.name) ?? "turntable")") }
             updateWatching(shown: model.shown)
             refreshStatus()
+            // A key found after the notes window opened gives the notes their key signature.
+            if let notes = notesWindow.model, let key = songKey?.key, notes.key != key, playsInFilePlayer, filePlayer.current?.path == notes.path {
+                notes.key = key
+            }
         }
     }
 
