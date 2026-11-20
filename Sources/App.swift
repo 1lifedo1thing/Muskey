@@ -2503,6 +2503,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.syncWaveform()
         }
         filePlayer.onMove = { [weak self] in self?.playerMoved(to: $0) }
+        // Muskey Player drops its loop when it opens a file, and the same song stays, so its loop is cleared here.
+        filePlayer.onReopen = { [weak self] in self?.clearLoop() }
         stemsCache.log = { [weak self] in self?.log($0) }
         StemModel.log = { [weak self] message in DispatchQueue.main.async { self?.log(message) } }
         stemsCache.live = { [separating = pitch.separatingLive] in separating.value }

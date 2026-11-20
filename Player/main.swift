@@ -153,6 +153,13 @@ final class Player: NSObject, NSApplicationDelegate {
                 player.replaceCurrentItem(with: item)
                 player.play()
                 report()
+                // The same file opened again sends the same info (elapsed 0), which Now Playing keeps with the time
+                // of the first start, so the song would seem to go on from where it was. Another report once the song
+                // has moved on gives Now Playing a new time.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self, current == opened else { return }
+                    report()
+                }
                 say(String(format: "ready %.3f", duration))
             } catch {
                 guard current == opened else { return }

@@ -65,6 +65,8 @@ final class FilePlayer {
     var onChange: () -> Void = {}
     /// Muskey Player moved its song to a place, in seconds, for any move. Now Playing reports some of them seconds later.
     var onMove: (Double) -> Void = { _ in }
+    /// The file that plays was opened again, by Play Now or by the queue, and starts over without the region loop.
+    var onReopen: () -> Void = {}
 
     /// Muskey Player has a song, playing or paused. Without one, the songs that it plays next start at their tempo.
     private(set) var hasSong = false {
@@ -414,9 +416,17 @@ final class FilePlayer {
         if line.hasPrefix("ready") {
             log("Muskey Player plays the song (\(line.dropFirst(6)) seconds)")
             show(nil)
+            // A dropped file and the same file opened by its path can name it through /private/tmp and /tmp.
+            let resolved = { (path: String?) in path.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } }
+            let reopened = hasSong && current != nil && resolved(current?.path) == resolved(starting?.path)
             current = starting
             hasSong = true
             onPlaying()
+            if reopened {
+                log("Muskey Player plays the same file again from its start")
+                onMove(0)
+                onReopen()
+            }
         } else if line.hasPrefix("failed") {
             log("Muskey Player can't play the song: \(line.dropFirst(7))")
             current = nil
