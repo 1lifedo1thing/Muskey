@@ -741,6 +741,8 @@ struct KeyHints: View {
     var restart = false
     /// The key row shows in karaoke, and the keys that change the key are listed.
     var karaokeKeys = false
+    /// Chords show over the lyrics, and the arrows transpose instead of seeking.
+    var chords = false
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -765,7 +767,7 @@ struct KeyHints: View {
                 + (vocals ? [Hint(keys: ["V"], name: "vocals")] : [])
                 + [Hint(keys: ["space"], name: "play or pause")]
                 + (focus && seek ? [Hint(keys: ["0–9"], name: "seek")] : focus && restart ? [Hint(keys: ["0"], name: "start over")] : [])
-                + (seek ? [Hint(keys: ["←", "→"], name: "5 s")] : [])
+                + (chords ? [Hint(keys: ["←", "→"], name: "transpose")] : seek ? [Hint(keys: ["←", "→"], name: "5 s")] : [])
                 + [Hint(keys: ["N", "P"], name: "skip")]
                 + [Hint(keys: ["K"], name: "lock key"), Hint(keys: ["esc"], name: "close")]
         case .band:
@@ -996,6 +998,9 @@ final class StatusItem: NSObject {
     var onOpenLocation: () -> Void = {}
     var onStopPlaying: () -> Void = {}
     var onSave: () -> Void = {}
+    var onAddFiles: () -> Void = {}
+    var onAddLocation: () -> Void = {}
+    var onMiniPlayer: () -> Void = {}
     private var item: NSStatusItem?
 
     /// Opens the menu as a click on the icon does, for `--open-menu-after`, since no automation can open it.
@@ -1015,7 +1020,7 @@ final class StatusItem: NSObject {
     /// `playing` is true while Muskey Player has a song, which the menu can stop, so the icon shows then too.
     /// `savable` is true while the song can be saved with its changes.
     func update(shift: Int, from original: DetectedKey?, heard: DetectedKey?, kept: DetectedKey?, current: DetectedKey?, stems: [Stem]?,
-                alwaysShown: Bool, playing: Bool, savable: Bool, hotkey: Shortcut)
+                alwaysShown: Bool, playing: Bool, savable: Bool, miniPlayer: Bool, hotkey: Shortcut)
     {
         let changing = shift != 0 || kept != nil || stems != nil
         guard changing || alwaysShown || playing else {
@@ -1055,8 +1060,19 @@ final class StatusItem: NSObject {
         menu.addItem(.separator())
         menu.addItem(menuItem("Open File…", #selector(openFile), key: "o"))
         menu.addItem(menuItem("Open URL…", #selector(openLocation), key: "l"))
+        // Songs added while Muskey Player plays wait in its queue.
+        if playing {
+            let files = menuItem("Add Files to Queue…", #selector(addFiles), key: "O")
+            let link = menuItem("Add URL to Queue…", #selector(addLocation), key: "L")
+            menu.addItem(files)
+            menu.addItem(link)
+        }
         if savable { menu.addItem(menuItem("Save Song…", #selector(save), key: "s")) }
         if playing { menu.addItem(menuItem("Stop Playing", #selector(stopPlaying))) }
+        menu.addItem(.separator())
+        let mini = menuItem("Mini Player", #selector(toggleMiniPlayer))
+        mini.state = miniPlayer ? .on : .off
+        menu.addItem(mini)
         menu.addItem(.separator())
         menu.addItem(menuItem("Settings…", #selector(settings), key: ","))
         menu.addItem(menuItem("Check for Updates…", #selector(checkForUpdates)))
@@ -1086,5 +1102,8 @@ final class StatusItem: NSObject {
     @objc private func openFile() { onOpenFile() }
     @objc private func openLocation() { onOpenLocation() }
     @objc private func stopPlaying() { onStopPlaying() }
+    @objc private func addFiles() { onAddFiles() }
+    @objc private func addLocation() { onAddLocation() }
+    @objc private func toggleMiniPlayer() { onMiniPlayer() }
     @objc private func checkForUpdates() { Updates.shared.check() }
 }

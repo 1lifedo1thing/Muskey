@@ -697,7 +697,7 @@ struct HUDView: View {
 
             if showsStrip, let key = model.key {
                 HStack(spacing: 16) {
-                    KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
+                    KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, chords: !model.chords.isEmpty, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
                         .opacity(model.hintsOpacity)
                     Spacer(minLength: 0)
                     // The ? button sits as close to Lock Key as Stop Pitch Change does.
@@ -814,7 +814,7 @@ struct HUDView: View {
                             .frame(maxWidth: Self.focusLyricsWidth)
                     }
                     // FocusDim makes these faint without the pointer, so they get no second dim.
-                    KeyHints(lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
+                    KeyHints(lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, karaokeKeys: model.karaokeKeys, chords: !model.chords.isEmpty, otherMode: otherMode,
                              palette: palette)
                 }
                 .modifier(FocusDim(on: true))
@@ -848,7 +848,7 @@ struct HUDView: View {
     /// The hints along the bottom edge of the record, no wider than the record: the keys of the lyrics, or the keys
     /// that change the key while the key row shows.
     private var karaokeFooter: some View {
-        KeyHints(style: .footer, lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, karaokeKeys: model.karaokeKeys, otherMode: otherMode,
+        KeyHints(style: .footer, lyrics: true, focus: true, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, karaokeKeys: model.karaokeKeys, chords: !model.chords.isEmpty, otherMode: otherMode,
                  palette: Palette.of(.dark))
             .padding(.horizontal, 12)
             .padding(.top, 4)
@@ -2471,6 +2471,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             syncWaveformStems()
         }
         statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
+        statusItem.onAddFiles = { [weak self] in self?.addFiles() }
+        statusItem.onAddLocation = { [weak self] in self?.addLocation() }
+        statusItem.onMiniPlayer = { [weak self] in self?.toggleMiniPlayer() }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === panel else { return event }
             // A save in progress leaves the stems and the songs as they are, and so do the shortcuts, which hide them.
@@ -2770,6 +2773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let wanted = prefs.miniPlayer && model.track?.title?.isEmpty == false
         if mini.key != currentKey { mini.key = currentKey }
         if wanted { miniPanel.show() } else if miniPanel.isVisible { miniPanel.hide() }
+        refreshStatus()
     }
 
     /// M over the HUD or the mini player, and Mini Player in the ⋯ menu.
@@ -2827,7 +2831,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { return }
         let song: [String?] = [item.title, item.artist, item.album]
         if prefs.rememberKeys, let key = keyCache.key(for: song) {
-            filePlayer.setAnalysis(item.id, key: key, bpm: keyCache.bpm(for: song))
+            // On the next turn of the run loop, so a long queue of remembered songs doesn't nest a call for each one.
+            queueAnalysis = item.id
+            let bpm = keyCache.bpm(for: song)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                queueAnalysis = nil
+                filePlayer.setAnalysis(item.id, key: key, bpm: bpm)
+            }
             return
         }
         queueAnalysis = item.id
@@ -3801,7 +3812,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.queueShown, !model.lyricsFocus, handleQueueKey(code, shift: shift) { return true }
         // With chords over the lyrics, ← and → move the song a semitone, and ⌥← and ⌥→ move the capo, which changes
         // only the chords shown.
-        if model.lyricsShown, !model.karaokeKeys, !model.chords.isEmpty, !shift, code == kVK_LeftArrow || code == kVK_RightArrow {
+        // Over the record, they still seek.
+        if model.lyricsShown, !model.karaokeKeys, !model.overRecord, !model.chords.isEmpty, !shift, code == kVK_LeftArrow || code == kVK_RightArrow {
             let step = code == kVK_RightArrow ? 1 : -1
             if option { setCapo(model.capo + step) } else { change(to: model.shift + step) }
             return true
@@ -5941,7 +5953,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.update(shift: model.shift, from: shiftBase, heard: shiftBase.map { model.shown($0.transposed(by: model.shift)) }, kept: keptKey,
                           current: currentKey,
                           stems: model.stemsAdjusted ? Stem.shown.filter { !model.stemsMuted.contains($0) } : nil,
-                          alwaysShown: prefs.menuBarIcon == .always, playing: filePlayer.hasSong, savable: model.savable, hotkey: prefs.hotkey)
+                          alwaysShown: prefs.menuBarIcon == .always, playing: filePlayer.hasSong, savable: model.savable, miniPlayer: prefs.miniPlayer,
+                          hotkey: prefs.hotkey)
     }
 
     private func logShift() {

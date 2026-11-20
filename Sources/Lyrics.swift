@@ -367,7 +367,8 @@ struct LyricsPanel: View {
             }
         }
         .frame(width: width, height: height)
-        .overlay(alignment: .topLeading) {
+        // At the top right, where the lines, which start at the left, rarely reach.
+        .overlay(alignment: .topTrailing) {
             if rewind == nil, let chords, chords.shift != 0 || chords.capo != 0 { ChordsBadges(chords: chords, palette: palette, large: large) }
         }
     }
