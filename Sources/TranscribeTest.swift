@@ -1,35 +1,39 @@
 import AVFoundation
 
-/// `--transcribe FILE` turns an audio file into notes with MuScriptor, through the helper the way the app runs it,
-/// prints how many notes it found, the first ones and how long it took, and quits.
-/// - `--instrument NAME[,NAME...]` limits the notes to those instrument groups, and a stem's name (`bass`, `guitar`...)
-///   picks that stem's groups.
-/// - `--transcribe-model PATH` uses that GGUF instead of the downloaded one.
-/// - `--transcribe-gain DB` changes the level of the audio before the model hears it.
+/// `--transcribe FILE` turns an audio file into notes with Dettato the way the notes window does with a stem, prints how
+/// many notes it found, the first ones and how long it took, and quits. `--stem NAME` gives the notes the General MIDI
+/// program of that stem.
 enum TranscribeTest {
     static func run(_ path: String) {
-        let url = URL(fileURLWithPath: path)
-        let instruments: [String] = TestFlags.value("--instrument").map { value in
-            if let stem = Stem.allCases.first(where: { $0.name.lowercased() == value.lowercased() }) { return stem.instruments }
-            return value.split(separator: ",").map(String.init)
-        } ?? []
-        let model = TestFlags.value("--transcribe-model").map { URL(fileURLWithPath: $0) }
-        let gain = TestFlags.value("--transcribe-gain").flatMap(Double.init) ?? 0
-        let duration = (try? AVAudioFile(forReading: url)).map { Double($0.length) / $0.fileFormat.sampleRate } ?? 0
-        print(String(format: "audio: %.1fs, instruments: %@", duration, instruments.isEmpty ? "any" : instruments.joined(separator: ",")))
+        let stem = TestFlags.value("--stem").flatMap { name in Stem.allCases.first { $0.name.lowercased() == name.lowercased() } } ?? .bass
+        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)),
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+              (try? file.read(into: buffer)) != nil, let channels = buffer.floatChannelData
+        else {
+            print("can't read \(path)")
+            exit(1)
+        }
+        let count = Int(buffer.frameLength), width = Int(buffer.format.channelCount)
+        var mono = [Float](repeating: 0, count: count)
+        for channel in 0 ..< width {
+            for index in 0 ..< count { mono[index] += channels[channel][index] / Float(width) }
+        }
+        let duration = Double(count) / file.processingFormat.sampleRate
+        let audio = Dettato.resample(mono, from: file.processingFormat.sampleRate)
+        print(String(format: "audio: %.1fs, stem: %@", duration, stem.name))
 
         Task.detached {
             let started = Date()
             do {
-                let notes = try await Transcriber.transcribe(url, instruments: instruments, gain: gain, model: model) { progress in
+                let notes = try Dettato.transcribe(audio, program: stem.program) { progress in
                     print(String(format: "%.0f%%", progress * 100), terminator: " ")
                     fflush(stdout)
                 }
                 let took = Date().timeIntervalSince(started)
                 print("")
                 for note in notes.prefix(12) {
-                    print(String(format: "[%7.2f–%7.2f] %@ %3d  program %3d", note.start, note.end,
-                                 note.drum ? "drum" : name(note.pitch).padding(toLength: 4, withPad: " ", startingAt: 0), note.pitch, note.program))
+                    print(String(format: "[%7.2f–%7.2f] %@ %3d", note.start, note.end,
+                                 name(note.pitch).padding(toLength: 4, withPad: " ", startingAt: 0), note.pitch))
                 }
                 if let low = notes.map(\.pitch).min(), let high = notes.map(\.pitch).max() {
                     print("pitches \(low)–\(high) (\(name(low))–\(name(high)))")

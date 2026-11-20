@@ -3,8 +3,8 @@ import CryptoKit
 import Foundation
 
 /// Downloads a model that Muskey doesn't come with into Application Support, checks it against its SHA-256, and
-/// installs it: the stems and winds models, which are compiled for this Mac, and the Whisper and transcription models,
-/// which are used as they are.
+/// installs it: the stems, winds and transcription models, which are compiled for this Mac, and the Whisper model, which
+/// is used as it is.
 @MainActor
 final class ModelDownload: NSObject, ObservableObject {
     enum State: Equatable {
@@ -48,15 +48,17 @@ final class ModelDownload: NSObject, ObservableObject {
         }, install: { file in try ModelDownload.place(file, at: WhisperModel.url) }
     )
 
-    /// MuScriptor Medium for muscriptor.cpp, which turns a stem into notes, as the author of muscriptor.cpp converts
-    /// and publishes it. The URL names a commit of that repository, so the file can't change under its checksum.
-    static let transcriber = ModelDownload(
+    /// Dettato's transcriber, which turns a stem into notes, as four zipped Core ML packages and the weights of the GRUs
+    /// that run between them, 33 MB in all. `make dettato-model` converts it from kobimusic/dettato at the commit in the
+    /// file name.
+    static let dettato = ModelDownload(
         name: "transcription model",
-        url: URL(string: "https://huggingface.co/DamRsn/muscriptor-gguf/resolve/13a851294c5b5701966e850c7eba326f9da97e8d/v1/muscriptor-medium-f16.gguf")!,
-        sha256: "3850cc9e5b436b17a09bd25b8f2615cb3366ab96a71e7b50f73a793a917fdf03", size: 618_442_496,
-        installed: { Transcriber.installed }, remove: {
-            try? FileManager.default.removeItem(at: Transcriber.modelURL)
-        }, install: { file in try ModelDownload.place(file, at: Transcriber.modelURL) }
+        url: URL(string: "https://files.lowtechguys.com/muskey/models/Dettato-9b72425.zip")!,
+        sha256: "947abc9d1caf6932dcd7ed051745644d79497183ffd95ed6195b122f67276756", size: 33_437_377,
+        installed: { Dettato.installed }, remove: {
+            Dettato.unload()
+            try? FileManager.default.removeItem(at: Dettato.folder)
+        }, install: { zip in try ModelDownload.installDettato(from: zip) }
     )
 
     @Published private(set) var state = State.idle
@@ -143,7 +145,7 @@ final class ModelDownload: NSObject, ObservableObject {
         state = .failed
     }
 
-    /// `--stems-install PATH` and `--winds-install PATH` install the model from a copy of the file, the way a download
+    /// `--stems-install PATH`, `--winds-install PATH` and `--dettato-install PATH` install the model from a copy of the file, the way a download
     /// does, and quit.
     func installForTesting(_ path: String) {
         let copy = FileManager.default.temporaryDirectory.appending(path: "muskey-model-test")
@@ -164,8 +166,8 @@ final class ModelDownload: NSObject, ObservableObject {
         }
     }
 
-    /// `--stems-download`, `--winds-download` and `--whisper-download` run a download the way Settings does, print how
-    /// it ended, and quit.
+    /// `--stems-download`, `--winds-download`, `--whisper-download` and `--dettato-download` run a download the way
+    /// Settings does, print how it ended, and quit.
     func downloadForTesting() {
         log = { print($0) }
         let started = Date()
@@ -225,6 +227,29 @@ final class ModelDownload: NSObject, ObservableObject {
         let compiled = try MLModel.compileModel(at: folder.appending(path: "\(kind.file).mlpackage"))
         defer { try? FileManager.default.removeItem(at: compiled) }
         try place(compiled, at: StemModel.url(kind))
+    }
+
+    /// Unzips Dettato, compiles its four packages for this Mac and puts them with the GRU weights where it loads from.
+    nonisolated static func installDettato(from zip: URL) throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "muskey-dettato-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["-x", "-k", zip.path, folder.path]
+        try ditto.run()
+        ditto.waitUntilExit()
+        guard ditto.terminationStatus == 0 else { throw StemError.unpack }
+        let unpacked = folder.appending(path: "Dettato")
+        let ready = folder.appending(path: "Ready")
+        try FileManager.default.createDirectory(at: ready, withIntermediateDirectories: true)
+        for part in 1 ... 4 {
+            let compiled = try MLModel.compileModel(at: unpacked.appending(path: "Part\(part).mlpackage"))
+            try FileManager.default.moveItem(at: compiled, to: ready.appending(path: "Part\(part).mlmodelc"))
+        }
+        for file in ["gru.bin", "config.json"] {
+            try FileManager.default.moveItem(at: unpacked.appending(path: file), to: ready.appending(path: file))
+        }
+        try place(ready, at: Dettato.folder)
     }
 
     nonisolated static func place(_ item: URL, at destination: URL) throws {

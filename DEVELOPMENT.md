@@ -122,6 +122,14 @@ A seek, karaoke's start over and a move during a pause are silent until the stem
 
 Muskey Player tells Muskey of every move of its song, including the ones from Control Center's scrubber and from Previous, which starts the song over. Now Playing reports some of these moves seconds later, and the stems would look for the song in the wrong place until then.
 
+### Notes
+
+Muskey turns one stem of a song into notes with the transcriber of [Dettato](https://kobi.music/research/dettato) (Apache-2.0). Its network is converted to Core ML and cut at its three GRUs into four models, because Core ML runs those GRUs about five times slower than Accelerate does. The GRUs run with Accelerate between the four models. The spectrogram before the network and the peak picking after it are ported from Dettato's Python.
+
+The network hears 8 seconds at 16 kHz at a time, and a window starts every 2 seconds. Each 20 ms frame of the song gets the mean of the windows over it, weighted by a Hann taper. Notes are then picked from the onset, frame and offset maps of two voices on each of the 88 keys.
+
+Muskey downloads the model (33 MB) from lowtechguys.com into `~/Library/Application Support/Muskey/Models/Dettato`. The command `make dettato-model` makes it from Dettato's weights. Dettato's drum transcriber isn't part of Muskey, so the Drums stem has no notes.
+
 ### Whisper
 
 Muskey uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with the large-v3-turbo model on the GPU, or a server with a `POST /v1/audio/transcriptions` endpoint. Muskey sends one phrase of the vocals at a time, cut at the pauses in the singing.
@@ -228,6 +236,16 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--lyrics-lookup "Title\|Artist\|Album\|Seconds"` | Look up the lyrics of that song the way the lyrics panel does, print the service, the timing and the first lines, and quit |
 | `--lyrics-source NAME` | Ask only one lyrics service: `lrclib`, `lrcred`, `netease` or `amll` |
 | `--lyrics-plain` | Drop the times of synced lyrics, time them by listening, and log how far the heard times are from the dropped ones. With `--pick`, the lyrics show from the start. |
+
+### Notes
+
+| Flag | Action |
+|---|---|
+| `--transcribe FILE` | Turn an audio file into notes with Dettato, print the first notes and how long it took, and quit. `--stem NAME` gives the notes the instrument of that stem |
+| `--notes-headless FILE` | Separate the song into stems when the cache doesn't have them, turn the stem of `--stem NAME` (bass by default) into notes, write them to `--notes-out DIR` as JSON, MusicXML, MIDI and text tab, and quit |
+| `--dettato-check DIR` | Compare the spectrogram and the network's maps with the ones that `make dettato-model` saved in DIR, and quit |
+| `--dettato-install ZIP`, `--dettato-download` | Install the transcription model from a zip, or download it the way Settings does |
+| `--chords FILE` | Print the beats and the chords that the lyrics would show over the file, and quit. `--key Em` fits the chords to that key, and `--chord-step N` finds a chord every N beats instead of every 2 |
 
 ### Files and links
 
