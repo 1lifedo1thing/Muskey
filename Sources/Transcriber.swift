@@ -30,8 +30,8 @@ enum Transcriber {
     ///
     /// - `instruments`: MuScriptor's instrument groups, such as `Stem.instruments`. The model is told that only these
     ///   play, and no other instrument can appear in the notes. Empty lets any instrument appear.
-    /// - `gain`: decibels added to the audio before the model hears it. A stem that sits low in the mix can give fewer
-    ///   notes, and a big boost can turn the bleed of other instruments into notes.
+    /// - `gain`: decibels added to the audio before the model hears it. How many notes the model finds depends on the
+    ///   level, and a stem keeps the level it had in the mix.
     /// - `model`: a GGUF other than the downloaded one.
     /// - `progress`: from 0 to 1, after every 5 seconds of audio, on a background thread.
     ///
@@ -110,7 +110,7 @@ enum Transcriber {
     }
 
     /// Hands each line that the helper writes to `handle` to `add` as soon as the line is complete, until the helper
-    /// closes it. `FileHandle.bytes` held lines back for more than a second, which made the progress jump.
+    /// closes it. `FileHandle.bytes` held lines back and delivered several at once, which made the progress jump.
     private static func readLines<Result: Sendable>(_ handle: FileHandle, into initial: Result,
                                                     _ add: @escaping @Sendable (inout Result, String) -> Void) async -> Result
     {

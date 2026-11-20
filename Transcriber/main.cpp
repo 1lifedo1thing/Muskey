@@ -243,9 +243,8 @@ int main(int argc, char** argv)
         msl::LogLevel::Error);
 
     std::vector<float> samples = decode(audio);
-    // The model hears a quiet stem differently from a loud one: the smaller model can find no notes at all in a stem
-    // that sits low in the mix, and a big boost lets the bleed of other instruments through as notes. The gain lets
-    // the host choose the level instead of the helper guessing one.
+    // How many notes the model finds depends on the level of the audio, and a stem keeps the level it had in the mix.
+    // The gain lets the host choose the level instead of the helper guessing one.
     if (gain != 0) {
         const float factor = static_cast<float>(std::pow(10.0, gain / 20));
         for (float& sample : samples) {
