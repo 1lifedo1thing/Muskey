@@ -88,6 +88,33 @@ $(WHISPER_LIB): | $(WHISPER)
 		-DWHISPER_BUILD_SERVER=OFF
 	cmake --build $(WHISPER_BUILD) --config Release --target whisper -j8
 
+# MuScriptor turns a stem into notes, through muscriptor.cpp on ggml with Metal. It runs as a helper of its own, because
+# whisper.cpp already links a copy of ggml into the app, and two copies in one binary clash. Configuring fetches the ggml
+# commit that muscriptor.cpp pins, and its CMakeLists forces OpenMP off. GGML_NATIVE stays off for the same reason as in
+# whisper.cpp. The Metal shaders are embedded, so nothing ships next to the helper, and macOS compiles them the first
+# time the helper runs.
+MUSCRIPTOR := $(VENDOR)/muscriptor.cpp
+MUSCRIPTOR_COMMIT := 8589219cc3b584bce970f95aec2ec4a04e53b280
+MUSCRIPTOR_BUILD := $(MUSCRIPTOR)/build
+MUSCRIPTOR_LIB := $(MUSCRIPTOR_BUILD)/libmuscriptor_ggml.a
+MUSCRIPTOR_LIBS := $(MUSCRIPTOR_LIB) $(MUSCRIPTOR_BUILD)/libpffft.a $(addprefix $(MUSCRIPTOR_BUILD)/_deps/ggml-build/src/,libggml.a \
+	libggml-base.a libggml-cpu.a ggml-metal/libggml-metal.a)
+TRANSCRIBER := muskey-transcribe
+
+$(MUSCRIPTOR):
+	git init -q $@ && git -C $@ fetch -q --depth 1 https://github.com/DamRsn/muscriptor.cpp.git $(MUSCRIPTOR_COMMIT) && git -C $@ checkout -q FETCH_HEAD
+
+$(MUSCRIPTOR_LIB): | $(MUSCRIPTOR)
+	cmake -S $(MUSCRIPTOR)/cpp -B $(MUSCRIPTOR_BUILD) -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
+		-DCMAKE_OSX_DEPLOYMENT_TARGET=$(MACOS) -DMUSCRIPTOR_METAL_PRECOMPILED=OFF -DMUSCRIPTOR_NATIVE=OFF \
+		-DMUSCRIPTOR_BUILD_TESTS=OFF -DMUSCRIPTOR_BUILD_BENCH=OFF -DGGML_CCACHE=OFF
+	cmake --build $(MUSCRIPTOR_BUILD) --config Release --target muscriptor_ggml -j8
+
+$(BUILD)/obj/$(TRANSCRIBER): Transcriber/main.cpp $(MUSCRIPTOR_LIB)
+	@mkdir -p $(@D)
+	clang++ -std=c++23 -O2 -target $(TARGET) -Wall -Wextra -I$(MUSCRIPTOR)/cpp/include $< $(MUSCRIPTOR_LIBS) \
+		-framework AudioToolbox -framework CoreFoundation -framework Foundation -framework Metal -o $@
+
 # Sparkle checks for updates. The release archive holds the framework and the appcast tools.
 SPARKLE_VERSION := 2.10.1
 SPARKLE_SHA256 := 1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27
@@ -122,7 +149,7 @@ $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 		--minimum-deployment-target $(MACOS) --output-partial-info-plist $(@D)/icon.plist >/dev/null
 
 $(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB) $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
-		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE)
+		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player $(BUILD)/obj/$(TRANSCRIBER) Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE)
 	rm -rf $@
 	mkdir -p $@/Contents/MacOS $@/Contents/Helpers $@/Contents/Frameworks $@/Contents/Resources
 	swiftc -O -target $(TARGET) $(DEV) -parse-as-library -import-objc-header Sources/bridge.h $(WHISPER_INCLUDES) -Xcc -I$(LAME)/include \
@@ -140,6 +167,8 @@ $(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB
 	$(SIGN) $(SPARKLE_FRAMEWORK)
 	cp $(BUILD)/obj/$(HELPER) $@/Contents/Helpers/
 	$(SIGN) --identifier com.apple.controlcenter.Muskey $@/Contents/Helpers/$(HELPER)
+	cp $(BUILD)/obj/$(TRANSCRIBER) $@/Contents/Helpers/
+	$(SIGN) --identifier com.lowtechguys.Muskey.transcribe $@/Contents/Helpers/$(TRANSCRIBER)
 	mkdir -p "$(PLAYER_APP)/Contents/MacOS" "$(PLAYER_APP)/Contents/Resources"
 	cp $(BUILD)/obj/player "$(PLAYER_APP)/Contents/MacOS/$(PLAYER)"
 	sed "s/1\.0\.1/$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)/" Player/Info.plist > "$(PLAYER_APP)/Contents/Info.plist"
