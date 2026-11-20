@@ -963,7 +963,7 @@ private struct NotesPageTurn<Content: View>: View {
             }
             return
         }
-        let curve = Animation.timingCurve(0.42, 0.05, 0.22, 1, duration: reduceMotion ? 0.2 : 0.5)
+        let curve = Animation.timingCurve(0.42, 0.05, 0.3, 1, duration: reduceMotion ? 0.2 : 0.5)
         if new > old {
             // The page read so far lifts at its right edge and turns over to the left, uncovering the next one.
             withTransaction(transaction) {
@@ -1074,6 +1074,8 @@ private struct PageFold<Front: View, Beneath: View>: View, Animatable {
             // Highest halfway through, the free edge of the page comes towards the viewer.
             .rotation3DEffect(.degrees(24 * lift), axis: (x: 0, y: 1, z: 0), anchor: UnitPoint(x: Double(f / max(w, 1)), y: 0.5),
                               perspective: 0.55)
+            // The last sliver of the page lying down at the left edge fades instead of lingering.
+            .opacity(min(1, fold * 14))
             .allowsHitTesting(false)
         }
         .frame(width: w, alignment: .leading)
