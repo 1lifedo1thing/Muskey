@@ -382,6 +382,11 @@ final class HUDModel: ObservableObject {
     @Published var waveformStyle = Preferences.shared.waveformStyle
     /// The region loop (R), on the waveform, the time bar and the lyrics.
     @Published var loop: LoopRegion?
+    /// The chords of a song in Muskey Player, in its own key, over the lyrics. Empty while they aren't known.
+    @Published var chords: [ChordMark] = []
+    /// ⌥← and ⌥→ over the chords: the fret of a capo, which moves the chords shown down by as many semitones and leaves
+    /// the song as it is.
+    @Published var capo = 0
     var onLoopSet: (LoopEnd, Double) -> Void = { _, _ in }
     var onLoopTyping: (Bool) -> Void = { _ in }
 }
@@ -600,6 +605,7 @@ struct HUDView: View {
                                                     seek: { model.onSeekFraction($0) }, seekable: model.seekable))
         .environment(\.recordPlaying, model.playing)
         .environment(\.songLoop, model.loop)
+        .environment(\.songChords, model.chords.isEmpty ? nil : SongChords(marks: model.chords, shift: model.shift, capo: model.capo))
         .environment(\.openURL, OpenURLAction { url in
             model.onLink(url)
             return .systemAction
@@ -2192,6 +2198,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let spec = Self.stringOption("--lyrics-lookup") { return lookUpLyrics(spec) }
         if let spec = Self.stringOption("--key-lookup") { return lookUpKeyForTesting(spec) }
         if let path = Self.stringOption("--tempo") { return tempoForTesting(path) }
+        if let path = Self.stringOption("--chords") {
+            // `--chords FILE` prints the beats and the chords that the lyrics would show over the file.
+            Task {
+                let url = URL(fileURLWithPath: path)
+                let duration = await ChordDetector.duration(url)
+                let started = Date()
+                guard let grid = await ChordDetector.analyse(url, duration: duration) else {
+                    print("chords: nothing found in \(path)")
+                    exit(1)
+                }
+                print(String(format: "%d beats at %.1f BPM, %d chords, %.1f s for %.0f s of song", grid.beats.count, grid.bpm, grid.chords.count,
+                             Date().timeIntervalSince(started), duration))
+                print(grid.chords.prefix(40).map { String(format: "%.1f %@", $0.time, $0.name(moved: 0)) }.joined(separator: "  "))
+                if let key = Self.stringOption("--key").flatMap(DetectedKey.init(name:)) {
+                    let fitted = grid.fitted(to: key)
+                    print("in \(key.name), \(fitted.count) chords:")
+                    print(fitted.prefix(40).map { String(format: "%.1f %@", $0.time, $0.name(moved: 0)) }.joined(separator: "  "))
+                }
+                exit(0)
+            }
+            return
+        }
         if let path = Self.stringOption("--loop-snap") {
             // `--loop-snap FILE --at S --to S` prints where presses at those moments of the file would land.
             Task {
@@ -2269,6 +2297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.miniPanel.chooseSide() }
         }.store(in: &prefChanges)
         model.$track.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.syncMini() } }.store(in: &prefChanges)
+        model.$lyricsShown.dropFirst().removeDuplicates().sink { [weak self] _ in DispatchQueue.main.async { self?.syncChords() } }.store(in: &prefChanges)
         mini.onHide = { [weak self] in self?.prefs.miniPlayer = false }
         mini.onShowHUD = { [weak self] in self?.pickKey() }
         mini.onSettings = { [weak self] in
@@ -2425,6 +2454,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onSkip = { [weak self] in self?.skip($0) }
         model.onLink = { [weak self] url in self?.log("opening \(url.host() ?? url.absoluteString) in the browser") }
         filePlayer.onChange = { [weak self] in
+            self?.syncChords()
             self?.refreshStatus()
             self?.syncSpeed()
             self?.syncWaveform()
@@ -2484,6 +2514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.songChanged($0)
         }
         nowPlaying.onTrack = { [weak self] in
+            self?.syncChords()
             self?.syncWaveform()
             self?.checkLoopSong()
             self?.listenWhenPlaying()
@@ -2683,6 +2714,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func open(_ urls: [URL]) {
         log("opening \(urls.count == 1 ? (urls[0].isFileURL ? "a file" : "a link") : "\(urls.count) items")")
         filePlayer.open(urls)
+    }
+
+    // MARK: Chords
+
+    /// The beats and the chords of each file that Muskey Player played while the lyrics showed, until Muskey quits.
+    private var grids: [String: SongGrid] = [:]
+    private var gridTask: (path: String, task: Task<Void, Never>)?
+
+    /// The file that plays in Muskey Player gets its chords once the lyrics show, in about 2 seconds for a song of 5
+    /// minutes, off the main thread.
+    private func syncChords() {
+        let path = playsInFilePlayer ? filePlayer.current?.path : nil
+        if let task = gridTask, task.path != path {
+            task.task.cancel()
+            gridTask = nil
+        }
+        guard let path else { return fitChords() }
+        if grids[path] != nil || !model.lyricsShown || gridTask != nil { return fitChords() }
+        let duration = model.track?.duration
+        gridTask = (path, Task { @MainActor [weak self] in
+            let url = URL(fileURLWithPath: path)
+            let seconds: Double = if let duration { duration } else { await ChordDetector.duration(url) }
+            let grid = await Task.detached(priority: .utility) { await ChordDetector.analyse(url, duration: seconds) }.value
+            guard let self, !Task.isCancelled else { return }
+            gridTask = nil
+            if let grid {
+                grids[path] = grid
+                log("chords: \(grid.chords.count) chords over \(grid.beats.count) beats")
+            } else {
+                log("chords: none found")
+            }
+            fitChords()
+        })
+    }
+
+    /// The chords of the song that plays, with the mode that its key gives each root.
+    private func fitChords() {
+        let path = playsInFilePlayer ? filePlayer.current?.path : nil
+        let fitted = path.flatMap { grids[$0] }?.fitted(to: songKey?.key) ?? []
+        if model.chords != fitted { model.chords = fitted }
+    }
+
+    private func setCapo(_ fret: Int) {
+        let fret = min(11, max(0, fret))
+        guard fret != model.capo else { return }
+        model.capo = fret
+        log(fret == 0 ? "no capo" : "capo on fret \(fret)")
     }
 
     // MARK: Mini player
@@ -3721,6 +3799,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
         if model.queueShown, !model.lyricsFocus, handleQueueKey(code, shift: shift) { return true }
+        // With chords over the lyrics, ← and → move the song a semitone, and ⌥← and ⌥→ move the capo, which changes
+        // only the chords shown.
+        if model.lyricsShown, !model.karaokeKeys, !model.chords.isEmpty, !shift, code == kVK_LeftArrow || code == kVK_RightArrow {
+            let step = code == kVK_RightArrow ? 1 : -1
+            if option { setCapo(model.capo + step) } else { change(to: model.shift + step) }
+            return true
+        }
         // Q turns the record over to the queue, in both layouts.
         if code == kVK_ANSI_Q, !shift, !option, !model.lyricsFocus {
             toggleQueue()
@@ -5425,6 +5510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForSave = false
     private var hoverKeysForRecord = false
     private var hoverKeysForQueue = false
+    private var hoverKeysForChords = false
     private var hoverKeysForKey = false
     /// The clipboard when the keys were registered: ⌘V over the HUD is a key only while it holds files or a link.
     private var hoverKeysPasteboard = 0
@@ -5458,7 +5544,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
-                || hoverKeysForRecord != model.overRecord || hoverKeysForQueue != model.queueShown || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
+                || hoverKeysForRecord != model.overRecord || hoverKeysForQueue != model.queueShown
+                || hoverKeysForChords != !model.chords.isEmpty || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -5474,6 +5561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForSave = model.savable
         hoverKeysForRecord = model.overRecord
         hoverKeysForQueue = model.queueShown
+        hoverKeysForChords = !model.chords.isEmpty
         hoverKeysLock = lock
         hoverKeysQuestion = LayoutKey.questionMark
         let question = hoverKeysQuestion.map { [($0.code, $0.modifiers)] } ?? []
@@ -5507,6 +5595,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Return shows the lyrics large, or back at their usual size, and the arrows seek while a seek is instant.
         if keyed, model.lyricsShown { keys += [kVK_Return, kVK_ANSI_KeypadEnter].map { ($0, 0) } }
         if model.lyricsShown, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
+        // Over the chords, the arrows transpose, and with Option they move the capo.
+        if model.lyricsShown, !model.chords.isEmpty { keys += [kVK_LeftArrow, kVK_RightArrow].flatMap { [($0, 0), ($0, optionKey)] } }
         // Karaoke seeks with the number keys, and 0 starts the song over in every player.
         if model.lyricsFocus, model.seekable { keys += Self.digitKeys.map { ($0, 0) } }
         if model.lyricsFocus, model.restartable { keys.append((kVK_ANSI_0, 0)) }
@@ -5845,6 +5935,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshStatus() {
         if mini.key != currentKey { mini.key = currentKey }
         syncQueueRow()
+        fitChords()
         syncSavable()
         syncPauseStop()
         statusItem.update(shift: model.shift, from: shiftBase, heard: shiftBase.map { model.shown($0.transposed(by: model.shift)) }, kept: keptKey,
@@ -5943,6 +6034,7 @@ extension EnvironmentValues {
     @Entry var renderingPreview = false
     /// The region loop of the song, for the time bar and the lyrics.
     @Entry var songLoop: LoopRegion?
+    @Entry var songChords: SongChords?
 }
 
 /// `--render <dir>` writes a PNG of each HUD state over a light and a dark backdrop, to check the design without the screen.
@@ -6042,7 +6134,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-loop", "-loop-armed", "-loop-zoom", "-lyrics-loop", "-lyrics-focus-loop", "-queue", "-queue-drop", "-queue-drop-next"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-loop", "-loop-armed", "-loop-zoom", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-queue", "-queue-drop", "-queue-drop-next"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -6065,7 +6157,7 @@ extension EnvironmentValues {
             if variant.hasPrefix("-lyrics") {
                 model.lyricsShown = true
                 let text = sampleLyrics.map { "[00:\(String(format: "%05.2f", $0.0))] \($0.1)" }.joined(separator: "\n")
-                var lyrics = variant == "-lyrics" || variant.hasSuffix("-loop") ? Lyrics.parse(lrc: text) : Lyrics.estimate(plain: sampleLyrics.map(\.1).joined(separator: "\n"), duration: 238)
+                var lyrics = variant == "-lyrics" || variant.hasSuffix("-loop") || variant.hasSuffix("-chords") ? Lyrics.parse(lrc: text) : Lyrics.estimate(plain: sampleLyrics.map(\.1).joined(separator: "\n"), duration: 238)
                 lyrics?.source = variant.hasPrefix("-lyrics-focus") ? .lrcRed(isrc: "USQX91300108") : .lrclib
                 model.lyrics = switch variant {
                 case "-lyrics-loading": .loading
@@ -6145,6 +6237,13 @@ extension EnvironmentValues {
                 model.loop = variant.contains("lyrics") ? LoopRegion(start: 16.5, end: 30)
                     : LoopRegion(start: 86.2, end: variant == "-loop-armed" ? nil : 110.4, startPress: 86.6, endPress: variant == "-loop-armed" ? nil : 110.1)
                 if variant == "-loop-zoom" { model.wave.zoom = 6 }
+            }
+            // Chords over the lyrics, two semitones down with a capo on the second fret.
+            if variant.hasSuffix("-chords") {
+                model.chords = [(0, 9, true), (8, 5, false), (12.5, 0, false), (16.6, 7, false), (21, 9, true), (25, 2, true), (29.2, 4, false), (33, 9, true),
+                                (37, 5, false), (41.5, 0, false), (45, 7, false), (50, 4, false)].map { ChordMark(time: $0.0, root: $0.1, minor: $0.2) }
+                model.shift = -2
+                model.capo = 2
             }
             // The queue on the back of the record, with two songs selected, and a drag of songs over the HUD.
             if variant.hasPrefix("-queue") {

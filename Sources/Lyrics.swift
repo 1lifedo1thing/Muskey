@@ -350,6 +350,7 @@ struct LyricsPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.renderingPreview) private var renderingPreview
     @Environment(\.songLoop) private var songLoop
+    @Environment(\.songChords) private var chords
 
     private static let pause: TimeInterval = 4
 
@@ -366,6 +367,9 @@ struct LyricsPanel: View {
             }
         }
         .frame(width: width, height: height)
+        .overlay(alignment: .topLeading) {
+            if rewind == nil, let chords, chords.shift != 0 || chords.capo != 0 { ChordsBadges(chords: chords, palette: palette, large: large) }
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -534,10 +538,28 @@ struct LyricsPanel: View {
         // to make room for it while a loop is set.
         let next = lyrics.lines.indices.contains(index + 1) ? lyrics.lines[index + 1].time : .infinity
         let looped = songLoop.map { loop in timed && next > loop.start + 0.05 && line.time < (loop.end ?? .infinity) - 0.05 } ?? false
+        // The chords that change during the line sit over it, as far along it as they come in time.
+        let marks = timed ? (chords.map { chords in chords.marks.filter { $0.time >= line.time - 0.3 && $0.time < next - 0.3 } } ?? []) : []
+        let chordHeight: CGFloat = marks.isEmpty ? 0 : large ? 28 : 15
         Text(line.text.isEmpty ? (timed ? "♪" : " ") : line.text)
             .font(.system(size: large ? 36 : 18, weight: .bold, design: .rounded))
             .foregroundStyle(current ? palette.ink : palette.muted.opacity(faded))
             .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, chordHeight)
+            .overlay(alignment: .topLeading) {
+                if let chords, !marks.isEmpty {
+                    let length = max(0.5, (next.isFinite ? next : line.time + 4) - line.time)
+                    ChordRow(fractions: marks.map { CGFloat(min(1, max(0, ($0.time - line.time) / length))) }) {
+                        ForEach(Array(marks.enumerated()), id: \.offset) { _, mark in
+                            Text(mark.name(moved: chords.move))
+                                .font(.system(size: large ? 22 : 12, weight: .heavy, design: .rounded))
+                                .foregroundStyle(StripColors.text(.honey, colorScheme).opacity(current || !timed ? 1 : faded))
+                                .fixedSize()
+                        }
+                    }
+                    .frame(height: chordHeight, alignment: .top)
+                }
+            }
             .padding(.leading, songLoop == nil ? 0 : large ? 18 : 12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .leading) {
@@ -593,5 +615,50 @@ struct LyricsCredit: View {
         .buttonStyle(.plain)
         .pointerStyle(.link)
         .help("Open \(source.name)")
+    }
+}
+
+/// The chords of a line, each as far along the line as it comes in time, and never over the chord before it.
+struct ChordRow: Layout {
+    let fractions: [CGFloat]
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 0, height: subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
+        var x = bounds.minX
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            let fraction = fractions.indices.contains(index) ? fractions[index] : 0
+            x = max(x, bounds.minX + fraction * max(0, bounds.width - size.width))
+            subview.place(at: CGPoint(x: x, y: bounds.minY), proposal: .unspecified)
+            x += size.width + 8
+        }
+    }
+}
+
+/// The pitch change and the capo of the chords, at the top of the lyrics, since the key row isn't there to show them.
+struct ChordsBadges: View {
+    let chords: SongChords
+    let palette: Palette
+    var large = false
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if chords.shift != 0 { badge(Shift.text(chords.shift), hue: chords.shift < 0 ? StripColors.down : StripColors.up) }
+            if chords.capo != 0 { badge("Capo \(chords.capo)", hue: .honey) }
+        }
+        .font(.system(size: large ? 13 : 11, weight: .bold, design: .rounded))
+        .padding(.top, large ? 6 : 2)
+    }
+
+    private func badge(_ text: String, hue: StripColors.Hue) -> some View {
+        Text(text)
+            .foregroundStyle(StripColors.text(hue, scheme))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(StripColors.tint(hue, strong: false, scheme)))
     }
 }

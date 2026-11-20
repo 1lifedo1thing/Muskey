@@ -129,3 +129,82 @@ int ek_onsets(const float *samples, unsigned int count, float *onsets, int capac
     }
     return n;
 }
+
+int ek_chords(const float *samples, unsigned int count, const float *ticks, int nticks, int *roots, int *minors, float *strengths, int capacity) {
+    initEssentia();
+    const int frameSize = 8192, hop = 2048;
+    const Real rate = 44100;
+    std::vector<Real> audio(samples, samples + count), frame, windowed, spectrum, frequencies, magnitudes, chroma;
+    std::vector<std::vector<Real>> pcp;
+    std::vector<std::string> labels;
+    std::vector<Real> strength, beats(ticks, ticks + nticks);
+    try {
+        std::unique_ptr<Algorithm> cutter(AlgorithmFactory::create("FrameCutter", "frameSize", frameSize, "hopSize", hop, "startFromZero", true));
+        std::unique_ptr<Algorithm> window(AlgorithmFactory::create("Windowing", "type", std::string("blackmanharris62")));
+        std::unique_ptr<Algorithm> fft(AlgorithmFactory::create("Spectrum", "size", frameSize));
+        std::unique_ptr<Algorithm> peaks(AlgorithmFactory::create("SpectralPeaks"));
+        ParameterMap peakParameters;
+        peakParameters.add("orderBy", Parameter(std::string("magnitude")));
+        peakParameters.add("magnitudeThreshold", Parameter((Real)0.00001));
+        peakParameters.add("minFrequency", Parameter((Real)40));
+        peakParameters.add("maxFrequency", Parameter((Real)5000));
+        peakParameters.add("maxPeaks", Parameter(60));
+        peakParameters.add("sampleRate", Parameter(rate));
+        peaks->configure(peakParameters);
+        std::unique_ptr<Algorithm> hpcp(AlgorithmFactory::create("HPCP"));
+        ParameterMap hpcpParameters;
+        hpcpParameters.add("size", Parameter(36));
+        hpcpParameters.add("referenceFrequency", Parameter((Real)440));
+        hpcpParameters.add("harmonics", Parameter(8));
+        hpcpParameters.add("bandPreset", Parameter(true));
+        hpcpParameters.add("minFrequency", Parameter((Real)40));
+        hpcpParameters.add("maxFrequency", Parameter((Real)5000));
+        hpcpParameters.add("weightType", Parameter(std::string("cosine")));
+        hpcpParameters.add("nonLinear", Parameter(false));
+        hpcpParameters.add("windowSize", Parameter((Real)1));
+        hpcpParameters.add("sampleRate", Parameter(rate));
+        hpcp->configure(hpcpParameters);
+        cutter->input("signal").set(audio);
+        cutter->output("frame").set(frame);
+        window->input("frame").set(frame);
+        window->output("frame").set(windowed);
+        fft->input("frame").set(windowed);
+        fft->output("spectrum").set(spectrum);
+        peaks->input("spectrum").set(spectrum);
+        peaks->output("frequencies").set(frequencies);
+        peaks->output("magnitudes").set(magnitudes);
+        hpcp->input("frequencies").set(frequencies);
+        hpcp->input("magnitudes").set(magnitudes);
+        hpcp->output("hpcp").set(chroma);
+        while (true) {
+            cutter->compute();
+            if (frame.empty()) break;
+            window->compute();
+            fft->compute();
+            peaks->compute();
+            hpcp->compute();
+            pcp.push_back(chroma);
+        }
+        if (pcp.empty() || beats.size() < 2) return 0;
+        std::unique_ptr<Algorithm> chords(AlgorithmFactory::create("ChordsDetectionBeats", "sampleRate", rate, "hopSize", hop));
+        chords->input("pcp").set(pcp);
+        chords->input("ticks").set(beats);
+        chords->output("chords").set(labels);
+        chords->output("strength").set(strength);
+        chords->compute();
+    } catch (const std::exception &) {
+        return 0;
+    }
+    int n = 0;
+    for (size_t i = 0; i < labels.size() && n < capacity; i++) {
+        std::string label = labels[i];
+        bool minor = label.size() > 1 && label.back() == 'm';
+        if (minor) label.pop_back();
+        auto found = pitchClasses.find(label);
+        roots[n] = found == pitchClasses.end() ? -1 : found->second;
+        minors[n] = minor ? 1 : 0;
+        strengths[n] = i < strength.size() && std::isfinite(strength[i]) ? strength[i] : 0;
+        n++;
+    }
+    return n;
+}

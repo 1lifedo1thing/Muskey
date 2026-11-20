@@ -69,6 +69,8 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("⌘"), .key("K")], name: "karaoke"),
             Row(caps: [.key("↩")], name: "karaoke", condition: "when lyrics are visible"),
             Row(caps: [.key("0–9")], name: "seek to 0%-90%", condition: "in karaoke"),
+            Row(caps: [.key("←"), .key("→")], name: "transpose", condition: "when chords are visible"),
+            Row(caps: [.key("⌥"), .key("←"), .key("→")], name: "capo", condition: "when chords are visible"),
         ])
         let instruments = KeyGroup(name: "Instruments and vocals", symbol: "slider.vertical.3", hue: 82, rows: [
             Row(caps: [.key(stems)], name: "mute instrument"),

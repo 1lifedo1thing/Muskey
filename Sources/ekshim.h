@@ -29,6 +29,11 @@ int ek_beats(const float *samples, unsigned int count, float *ticks, int capacit
 // The attacks that OnsetRate finds in mono samples at 44.1 kHz, in seconds from the first sample, at most `capacity`.
 int ek_onsets(const float *samples, unsigned int count, float *onsets, int capacity);
 
+// The chord between each two beats of `ticks` in mono samples at 44.1 kHz, from Essentia's HPCP and ChordsDetectionBeats:
+// its root (0 = C .. 11 = B, -1 when none was found), whether it is minor, and how sure the detection is. Chord `i`
+// lasts from `ticks[i]` to `ticks[i + 1]`. Returns how many it wrote, at most `capacity`.
+int ek_chords(const float *samples, unsigned int count, const float *ticks, int nticks, int *roots, int *minors, float *strengths, int capacity);
+
 #ifdef __cplusplus
 }
 #endif
