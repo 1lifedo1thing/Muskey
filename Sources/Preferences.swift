@@ -199,6 +199,13 @@ final class Preferences: ObservableObject {
     @Published var waveformStyle: WaveformStyle {
         didSet { defaults.set(waveformStyle.rawValue, forKey: "waveformStyle") }
     }
+    /// The floating mini player (M over the HUD, Settings > Mini player).
+    @Published var miniPlayer: Bool {
+        didSet { defaults.set(miniPlayer, forKey: "miniPlayer") }
+    }
+    @Published var miniLayout: MiniLayout {
+        didSet { defaults.set(try? JSONEncoder().encode(miniLayout), forKey: "miniLayout") }
+    }
 
     private init() {
         defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true])
@@ -225,6 +232,8 @@ final class Preferences: ObservableObject {
         cacheCleanup = CacheCleanup(rawValue: defaults.double(forKey: "cacheCleanup")) ?? .weekly
         waveform = defaults.bool(forKey: "waveform")
         waveformStyle = defaults.string(forKey: "waveformStyle").flatMap(WaveformStyle.init) ?? .ribbon
+        miniPlayer = defaults.bool(forKey: "miniPlayer")
+        miniLayout = defaults.data(forKey: "miniLayout").flatMap { try? JSONDecoder().decode(MiniLayout.self, from: $0) } ?? MiniLayout()
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }

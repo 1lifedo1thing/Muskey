@@ -52,6 +52,7 @@ struct ShortcutsSheet: View {
         let hud = KeyGroup(name: "HUD", symbol: "macwindow", hue: 95, rows: [
             Row(caps: [.key(hotkey)], name: "find key"),
             Row(caps: [.key("S")], name: card ? "wide style" : "card style"),
+            Row(caps: [.key("M")], name: "mini player"),
             Row(caps: [.key("⌘"), .key("⌥"), .key("C")], name: "move to bottom centre"),
             Row(caps: [.key("?")], name: "shortcuts"),
             Row(caps: [.key("esc")], name: "close"),

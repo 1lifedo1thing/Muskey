@@ -427,6 +427,69 @@ struct RecordDisc: View {
     }
 }
 
+/// The mini player's record: a larger cover with no spindle, and the time of the song as a honey ring around the
+/// cover. The pointer over it shows previous and next on the rim and play or pause over the cover, as on the HUD's
+/// record.
+struct MiniRecord: View {
+    let track: NowPlaying.Track
+    let artwork: NSImage?
+    let spinning: Bool
+    let side: CGFloat
+    var flash: PlayFlash?
+    @Environment(\.renderingPreview) private var renderingPreview
+
+    static let label: CGFloat = 0.64
+
+    private var song: String { track.song.map { $0 ?? "" }.joined(separator: "\u{1F}") }
+
+    var body: some View {
+        ZStack {
+            ZStack {
+                if renderingPreview {
+                    Record(artwork: artwork, label: Self.label, spindle: false)
+                } else {
+                    SpinningRecord(artwork: artwork, spinning: spinning, side: side, label: Self.label, spindle: false)
+                        .background(Circle().fill(Color(white: 0.09)).shadow(color: .black.opacity(0.45), radius: 9, y: 5))
+                }
+                Sheen()
+            }
+            .id(song)
+            .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            MiniTimeRing(track: track, diameter: side * Self.label + 9)
+            PlayFlashView(flash: flash, size: 44)
+        }
+        .frame(width: side, height: side)
+        .modifier(RecordControls(diameter: side, label: Self.label))
+        .animation(.smooth(duration: TurntableDeck.swap), value: song)
+    }
+}
+
+/// The time of the song, as a honey ring around the cover that fills while it plays. The ring follows the cover in
+/// when the pointer over the record shrinks it.
+private struct MiniTimeRing: View {
+    let track: NowPlaying.Track
+    let diameter: CGFloat
+    @Environment(\.recordButtonsShown) private var buttonsShown
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            let progress = track.duration.flatMap { duration in track.position(at: context.date).map { duration > 0 ? min(1, $0 / duration) : 0 } } ?? 0
+            ZStack {
+                Circle().stroke(.white.opacity(0.1), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(StripColors.solid(.honey, .dark).fill, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: diameter, height: diameter)
+        }
+        .scaleEffect(buttonsShown ? (diameter - 9) / diameter * RecordControls.shrink + 9 / diameter : 1)
+        .animation(.easeOut(duration: 0.18), value: buttonsShown)
+        .allowsHitTesting(false)
+    }
+}
+
 /// An empty platter in the middle of the single card, while no player reports a song.
 struct EmptyPlatter: View {
     let side: CGFloat
@@ -475,6 +538,8 @@ private struct Record: View {
     var label: CGFloat = 0.66
     /// The spinning record draws the vinyl and the cover apart, so the cover can shrink while it turns with it.
     var part = Part.whole
+    /// The mini player's record has no spindle on its cover.
+    var spindle = true
     @Environment(\.recordButtonsShown) private var buttonsShown
     @Environment(\.recordGlyph) private var glyph
 
@@ -529,10 +594,12 @@ private struct Record: View {
             .blur(radius: blur, opaque: true)
             .clipShape(Circle())
             .overlay(Circle().strokeBorder(.black.opacity(0.5), lineWidth: 1))
-            Circle()
-                .fill(Color(red: 0.93, green: 0.90, blue: 0.89))
-                .overlay(Circle().strokeBorder(.black.opacity(0.3), lineWidth: 0.5))
-                .frame(width: 8, height: 8)
+            if spindle {
+                Circle()
+                    .fill(Color(red: 0.93, green: 0.90, blue: 0.89))
+                    .overlay(Circle().strokeBorder(.black.opacity(0.3), lineWidth: 0.5))
+                    .frame(width: 8, height: 8)
+            }
         }
         .frame(width: width, height: width)
     }
@@ -547,6 +614,7 @@ private struct SpinningRecord: NSViewRepresentable {
     var label: CGFloat = 0.66
     /// Seconds for one turn: 33⅓ turns a minute on the deck, and a calmer turn in karaoke.
     var period = 1.8
+    var spindle = true
 
     final class Coordinator {
         var artwork: NSImage?
@@ -567,7 +635,7 @@ private struct SpinningRecord: NSViewRepresentable {
             let vinyl = ImageRenderer(content: Record(artwork: artwork, shadow: false, label: label, part: .vinyl).frame(width: side, height: side))
             vinyl.scale = scale
             view.record.contents = vinyl.cgImage
-            let cover = ImageRenderer(content: Record(artwork: artwork, shadow: false, label: label, part: .cover).frame(width: side * label, height: side * label))
+            let cover = ImageRenderer(content: Record(artwork: artwork, shadow: false, label: label, part: .cover, spindle: spindle).frame(width: side * label, height: side * label))
             cover.scale = scale
             view.cover.contents = cover.cgImage
             // The art alone, square and without the label's edge, for the blur: a blur of the round label would let

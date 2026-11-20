@@ -1478,6 +1478,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Songs whose whole separation failed, which aren't separated whole again until Muskey quits.
     private var stemsCacheFailed: Set<String> = []
     private let activityPill = ActivityPill()
+    private let mini = MiniState()
+    private lazy var miniPanel: MiniPlayerPanel = {
+        let panel = MiniPlayerPanel(model: model, mini: mini)
+        panel.onSkip = { [weak self] in self?.skip($0) }
+        panel.naturalSwipes = { [weak self] in self?.prefs.naturalSwipes ?? false }
+        panel.onHover = { [weak self] _ in self?.updateMiniKeys() }
+        return panel
+    }()
     private lazy var locationPanel: OpenLocationPanel = {
         let panel = OpenLocationPanel()
         panel.onOpen = { [weak self] url in
@@ -2255,6 +2263,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.syncWaveform() }
         }.store(in: &prefChanges)
         prefs.$waveformStyle.dropFirst().sink { [weak self] in self?.model.waveformStyle = $0 }.store(in: &prefChanges)
+        prefs.$miniPlayer.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.syncMini() } }.store(in: &prefChanges)
+        prefs.$miniLayout.dropFirst().sink { [weak self] layout in
+            self?.mini.layout = layout
+            DispatchQueue.main.async { self?.miniPanel.chooseSide() }
+        }.store(in: &prefChanges)
+        model.$track.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.syncMini() } }.store(in: &prefChanges)
+        mini.onHide = { [weak self] in self?.prefs.miniPlayer = false }
+        mini.onShowHUD = { [weak self] in self?.pickKey() }
+        mini.onSettings = { [weak self] in
+            SettingsRoute.shared.pane = .mini
+            self?.settingsWindow.show()
+        }
         // The waveform of another player's song is drawn only while the HUD shows it.
         model.$shown.dropFirst().removeDuplicates().sink { [weak self] _ in DispatchQueue.main.async { self?.syncWaveform() } }.store(in: &prefChanges)
         prefs.$rewindEffect.sink { [weak self] effect in
@@ -2665,6 +2685,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         filePlayer.open(urls)
     }
 
+    // MARK: Mini player
+
+    /// The mini player floats while Settings has it on and a player names a song.
+    private func syncMini() {
+        let wanted = prefs.miniPlayer && model.track?.title?.isEmpty == false
+        if mini.key != currentKey { mini.key = currentKey }
+        if wanted { miniPanel.show() } else if miniPanel.isVisible { miniPanel.hide() }
+    }
+
+    /// M over the HUD or the mini player, and Mini Player in the ⋯ menu.
+    @objc private func toggleMiniPlayer() {
+        prefs.miniPlayer.toggle()
+        log(prefs.miniPlayer ? "mini player on" : "mini player off")
+        if prefs.miniPlayer, model.track?.title?.isEmpty != false { log("the mini player shows once a song plays") }
+    }
+
+    private var miniKeys: [HotKey] = []
+
+    /// The keys that work over the mini player: Space, N and P, the arrows that seek, and M, which hides it.
+    private func updateMiniKeys() {
+        miniKeys = []
+        guard miniPanel.hovering else { return }
+        var keys: [(Int, () -> Void)] = [
+            (kVK_Space, { [weak self] in self?.playPause() }),
+            (kVK_ANSI_N, { [weak self] in self?.skip(1) }),
+            (kVK_ANSI_P, { [weak self] in self?.skip(-1) }),
+            (kVK_ANSI_M, { [weak self] in self?.toggleMiniPlayer() }),
+        ]
+        if model.seekable {
+            keys += [(kVK_LeftArrow, { [weak self] in self?.seek(by: -5) }), (kVK_RightArrow, { [weak self] in self?.seek(by: 5) })]
+        }
+        miniKeys = keys.compactMap { code, action in try? HotKey(keyCode: code, modifiers: 0, action: action) }
+    }
+
     // MARK: Queue
 
     /// Adds files or links to the queue: dropped on Add to Queue, pasted with ⇧⌘V, or picked with Add Files to Queue…
@@ -2806,6 +2860,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item("Add Copied Songs", #selector(addCopied), key: "v", modifiers: [.command, .shift], enabled: !Self.pastedURLs().isEmpty)
         menu.addItem(.separator())
         item("Waveform", #selector(toggleWaveformFromMenu), key: "w", on: model.waveformShown)
+        item("Mini Player", #selector(toggleMiniPlayer), key: "m", on: prefs.miniPlayer)
         menu.addItem(.separator())
         item("Open File…", #selector(openFile), key: "o", modifiers: .command)
         item("Open URL…", #selector(openLocation), key: "l", modifiers: .command)
@@ -3656,6 +3711,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Q turns the record over to the queue, in both layouts.
         if code == kVK_ANSI_Q, !shift, !option, !model.lyricsFocus {
             toggleQueue()
+            return true
+        }
+        // M shows the mini player, or hides it.
+        if code == kVK_ANSI_M, !shift, !option {
+            toggleMiniPlayer()
             return true
         }
         if !shift, handleSongKey(code, option: option) { return true }
@@ -5418,8 +5478,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var keys: [(Int, Int)] = [kVK_Escape, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
         if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } + [(kVK_ANSI_W, 0), (kVK_ANSI_W, optionKey)] }
         if model.seekable || model.loop != nil { keys += [(kVK_ANSI_R, 0), (kVK_ANSI_R, optionKey)] }
-        // Q shows the queue, which takes the arrows, Return and Delete while it shows.
+        // Q shows the queue, which takes the arrows, Return and Delete while it shows, and M the mini player.
         if !model.lyricsFocus { keys.append((kVK_ANSI_Q, 0)) }
+        keys.append((kVK_ANSI_M, 0))
         if model.queueShown {
             keys += [kVK_UpArrow, kVK_DownArrow].flatMap { [($0, 0), ($0, shiftKey)] }
             keys += [kVK_Return, kVK_ANSI_KeypadEnter, kVK_Delete, kVK_ForwardDelete].map { ($0, 0) }
@@ -5769,6 +5830,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshStatus() {
+        if mini.key != currentKey { mini.key = currentKey }
         syncSavable()
         syncPauseStop()
         statusItem.update(shift: model.shift, from: shiftBase, heard: shiftBase.map { model.shown($0.transposed(by: model.shift)) }, kept: keptKey,
@@ -5870,7 +5932,50 @@ extension EnvironmentValues {
 }
 
 /// `--render <dir>` writes a PNG of each HUD state over a light and a dark backdrop, to check the design without the screen.
+/// The mini player on each side of its record, with pills on the rim, as a plain vinyl, and the editor of Settings.
+@MainActor func renderMiniPreviews(to dir: String) {
+    let model = HUDSample.model(card: false, relative: false)
+    model.tempo = SongTempo(song: nil, bpm: 124)
+    model.queue = HUDSample.queue
+    model.queueCurrent = model.queue[1].id
+    let variants: [(String, MiniTextSide, MiniLayout)] = [
+        ("below", .below, MiniLayout()),
+        ("above", .above, MiniLayout()),
+        ("right", .right, MiniLayout()),
+        ("left", .left, MiniLayout()),
+        ("pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [.next])),
+        ("plain", .below, MiniLayout(line: [], track: false, artist: false, album: false)),
+        ("tempo-only", .below, MiniLayout(bottom: .tempo, line: [], track: false, artist: false, album: false)),
+    ]
+    for (name, side, layout) in variants {
+        let mini = MiniState()
+        mini.key = DetectedKey(pitchClass: 1, minor: true)
+        mini.side = side
+        mini.layout = layout
+        let view = MiniPlayerView(model: model, mini: mini)
+            .background(LinearGradient(colors: [Color(red: 0.36, green: 0.42, blue: 0.5), Color(red: 0.62, green: 0.55, blue: 0.5)], startPoint: .top, endPoint: .bottom))
+            .environment(\.renderingPreview, true)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-\(name).png"))
+        }
+    }
+    let mini = MiniState()
+    mini.layout = MiniLayout(top: .key, line: [.tempo, .pitch])
+    let editor = MiniPlayerView(model: model, mini: mini, editing: true)
+        .padding(18)
+        .background(Color(red: 0.16, green: 0.13, blue: 0.14))
+        .environment(\.renderingPreview, true)
+    let renderer = ImageRenderer(content: editor)
+    renderer.scale = 2
+    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+        try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-editor.png"))
+    }
+}
+
 @MainActor func renderPreviews(to dir: String) {
+    renderMiniPreviews(to: dir)
     let csm = EKResult(pitchClass: 1, minor: 1, strength: 0.8)
     let a = EKResult(pitchClass: 9, minor: 0, strength: 0.8)
     // Name, phase, key, progress, shift, picking, relative, Lock Key.

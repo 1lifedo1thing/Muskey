@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The panes of Settings, in the sidebar's order.
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, hud, listening, lyrics, stems, permissions, updates, about
+    case general, hud, mini, listening, lyrics, stems, permissions, updates, about
 
     var id: String { rawValue }
 
@@ -11,6 +11,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: "General"
         case .hud: "HUD"
+        case .mini: "Mini player"
         case .listening: "Listening"
         case .lyrics: "Lyrics"
         case .stems: "Instruments and vocals"
@@ -24,6 +25,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape"
         case .hud: "rectangle.on.rectangle"
+        case .mini: "record.circle"
         case .listening: "ear"
         case .lyrics: "quote.bubble"
         case .stems: "slider.vertical.3"
@@ -37,6 +39,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: .stone
         case .hud: .skin
+        case .mini: .teal
         case .listening: .dustyBlue
         case .lyrics: .plum
         case .stems: .sage
@@ -58,6 +61,7 @@ struct SidebarHue {
     static let stone = rgb(0.45, 0.43, 0.37, 0.66, 0.64, 0.57)
     static let ochre = rgb(0.78, 0.56, 0.16, 0.83, 0.68, 0.40)
     static let dustyRose = rgb(0.76, 0.39, 0.40, 0.80, 0.60, 0.58)
+    static let teal = rgb(0.20, 0.49, 0.49, 0.48, 0.67, 0.65)
 
     let light: Color
     let dark: Color
@@ -128,21 +132,29 @@ private struct SidebarWidth: NSViewRepresentable {
     }
 }
 
+/// The pane that Settings shows, which the mini player's menu can pick before Settings opens.
+final class SettingsRoute: ObservableObject {
+    static let shared = SettingsRoute()
+    /// `--settings-pane NAME` opens Settings on that pane, for checking each one without clicks.
+    @Published var pane: SettingsPane = TestFlags.value("--settings-pane").flatMap(SettingsPane.init) ?? .general
+}
+
 struct SettingsView: View {
     @ObservedObject var prefs = Preferences.shared
     @ObservedObject var hud: HUDModel
     let keyCache: KeyCache
     let setLayout: (Bool) -> Void
 
-    /// `--settings-pane NAME` opens Settings on that pane, for checking each one without clicks.
-    @State private var selection: SettingsPane = TestFlags.value("--settings-pane").flatMap(SettingsPane.init) ?? .general
+    @ObservedObject private var route = SettingsRoute.shared
+    private var selection: SettingsPane { route.pane }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
+            List(selection: $route.pane) {
                 Section {
                     row(.general)
                     row(.hud)
+                    row(.mini)
                     row(.listening)
                 }
                 Section("Music") {
@@ -163,6 +175,7 @@ struct SettingsView: View {
                 switch selection {
                 case .general: GeneralPane(prefs: prefs)
                 case .hud: HUDPane(prefs: prefs, hud: hud, setLayout: setLayout)
+                case .mini: MiniPlayerPane(prefs: prefs)
                 case .listening: ListeningPane(prefs: prefs, keyCache: keyCache)
                 case .lyrics: LyricsPane(prefs: prefs)
                 case .stems: StemsPane(prefs: prefs)
@@ -257,6 +270,28 @@ private struct GeneralPane: View {
             }
             Section("Startup") {
                 Toggle("Launch at login", isOn: $prefs.launchAtLogin)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct MiniPlayerPane: View {
+    @ObservedObject var prefs: Preferences
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Mini player", isOn: $prefs.miniPlayer)
+            }
+            Section("Song") {
+                Toggle("Track", isOn: $prefs.miniLayout.track)
+                Toggle("Artist", isOn: $prefs.miniLayout.artist)
+                Toggle("Album", isOn: $prefs.miniLayout.album)
+            }
+            Section("Elements") {
+                MiniLayoutEditor(prefs: prefs)
+                    .padding(.vertical, 4)
             }
         }
         .formStyle(.grouped)
