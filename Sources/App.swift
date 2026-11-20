@@ -1233,13 +1233,15 @@ final class HUDPanel: NSPanel {
 
     /// The pointer is over the glass now, whatever SwiftUI's hover last said.
     var pointerOverGlass: Bool { isVisible && overGlass(NSEvent.mouseLocation) }
+    /// The pointer is on the glass itself, without the margin that takes clicks, as SwiftUI's hover counts it.
+    var pointerOnGlass: Bool { isVisible && !model.glassFrame.isEmpty && overGlass(NSEvent.mouseLocation, margin: 0) }
 
-    private func overGlass(_ point: NSPoint) -> Bool {
+    private func overGlass(_ point: NSPoint, margin: CGFloat = 4) -> Bool {
         let glass = model.glassFrame
         guard !glass.isEmpty else { return true }
         // The glass frame is in the window's coordinates, from its top left.
         let local = CGPoint(x: point.x - frame.minX, y: frame.maxY - point.y)
-        return glass.insetBy(dx: -4, dy: -4).contains(local)
+        return glass.insetBy(dx: -margin, dy: -margin).contains(local)
     }
 
     /// The pointer moves over other apps while the panel lets it through, and over the panel while it doesn't.
@@ -1426,7 +1428,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var panel: HUDPanel = {
         let panel = HUDPanel(model: model)
         panel.log = { [weak self] in self?.log($0) }
-        panel.pointerMoved = { [weak self] in self?.checkClipboard() }
+        panel.pointerMoved = { [weak self] in
+            self?.checkClipboard()
+            self?.followPointer()
+        }
         return panel
     }()
     /// When the clipboard was last checked for ⌘V over the HUD.
@@ -2434,6 +2439,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateLyricLine()
         }
         model.onHoverChange = { [weak self] in
+            // A hover that ended under a pointer that is still on the glass came from a change of the layout.
+            if self?.model.hovering == false { self?.keepHover() }
             self?.updateHoverKeys()
             self?.updateKeysActive()
             self?.warmUpStems()
@@ -2503,8 +2510,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.syncWaveform()
         }
         filePlayer.onMove = { [weak self] in self?.playerMoved(to: $0) }
-        // Muskey Player drops its loop when it opens a file, and the same song stays, so its loop is cleared here.
-        filePlayer.onReopen = { [weak self] in self?.clearLoop() }
+        // Muskey Player drops its loop when it opens a file, while the same song in another file stays the same song.
+        filePlayer.onReplace = { [weak self] in self?.clearLoop() }
         stemsCache.log = { [weak self] in self?.log($0) }
         StemModel.log = { [weak self] message in DispatchQueue.main.async { self?.log(message) } }
         stemsCache.live = { [separating = pitch.separatingLive] in separating.value }
@@ -2858,11 +2865,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keepHover()
     }
 
+    /// SwiftUI's hover ends when the layout changes under a pointer that stays still, and doesn't start again while the
+    /// pointer moves on the glass, only once it leaves and comes back. That left the keys over the HUD off for a pointer
+    /// resting on the HUD when the waveform arrived. Each move of the pointer sets the hover from where it is.
+    private func followPointer() {
+        let on = panel.pointerOnGlass
+        guard model.hovering != on else { return }
+        if Self.logKeys { log("hover \(on ? "started" : "ended") with a move of the pointer") }
+        model.hovering = on
+    }
+
     /// A layout that changes under a pointer that stays still can end SwiftUI's hover, which turns the keys over the
     /// HUD off until the pointer moves. They stay on while the pointer is still over the glass.
     private func keepHover() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self, !model.hovering, panel.pointerOverGlass else { return }
+            guard let self, !model.hovering, panel.pointerOnGlass else { return }
             log("hover kept after the layout changed under the pointer")
             model.hovering = true
         }
@@ -5016,6 +5033,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and wait for the new place when nobody asked them.
     private func playerMoved(to seconds: Double) {
         if Self.logKeys { log(String(format: "Muskey Player moved to %.2f s", seconds)) }
+        nowPlaying.moved(to: seconds, bundleID: FilePlayer.bundleID)
         guard playsInFilePlayer, let feed = pitch.stemsFeed else { return }
         feed.moved(to: seconds)
         // A move during the pause is known from here, before Now Playing reports it.

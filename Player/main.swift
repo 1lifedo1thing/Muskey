@@ -42,6 +42,8 @@ final class Player: NSObject, NSApplicationDelegate {
     private var speed: Float = 1
     /// The region loop: where it starts, and the observer that moves the song back there at its end.
     private var loopStart: Double?
+    /// Counts the moves of the song, so that only the last one gets its second report.
+    private var moves = 0
     private var loopObserver: Any?
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -153,13 +155,7 @@ final class Player: NSObject, NSApplicationDelegate {
                 player.replaceCurrentItem(with: item)
                 player.play()
                 report()
-                // The same file opened again sends the same info (elapsed 0), which Now Playing keeps with the time
-                // of the first start, so the song would seem to go on from where it was. Another report once the song
-                // has moved on gives Now Playing a new time.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    guard let self, current == opened else { return }
-                    report()
-                }
+                reportAgain()
                 say(String(format: "ready %.3f", duration))
             } catch {
                 guard current == opened else { return }
@@ -253,6 +249,20 @@ final class Player: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.report() }
         }
         report(at: max(0, seconds))
+        reportAgain()
+    }
+
+    /// Now Playing ignores a report whose elapsed time is the one it already holds, however long ago that one came: a
+    /// region loop goes back to the same start on every pass, and the same file opened again starts at 0 like the
+    /// last one. Control Center then showed the song playing on past the loop. A second report once the song has moved
+    /// on gets through when the first one didn't. Muskey takes the time of a move from `moved` in any case.
+    private func reportAgain() {
+        moves += 1
+        let move = moves
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, moves == move else { return }
+            report()
+        }
     }
 
     /// Tells Now Playing where the song is and whether it plays. Now Playing moves the time on by itself between reports.

@@ -217,6 +217,7 @@ final class NowPlaying {
         reported = nil
         track = nil
         player = nil
+        move = nil
         artwork = nil
         playerArtwork = nil
         onTrack()
@@ -264,7 +265,28 @@ final class NowPlaying {
         return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
     }
 
+    /// The time of Muskey Player's last move, which the track keeps until Now Playing reports a later one. Now Playing
+    /// ignores a report whose elapsed time is the one it already holds, which a region loop sends on every pass, and
+    /// the song then seemed to play on past the loop.
+    private var move: (elapsed: Double, at: Double, bundleID: String)?
+
+    /// Muskey Player moved its song to `seconds`, which the track shows at once.
+    func moved(to seconds: Double, bundleID: String) {
+        move = (seconds, Date().timeIntervalSince1970, bundleID)
+        guard let player, player.bundleID == bundleID else { return }
+        update(player, cover: nil)
+    }
+
     private func update(_ track: Track, cover: NSImage??) {
+        var track = track
+        if let move {
+            if track.bundleID == move.bundleID, (track.timestamp ?? 0) < move.at {
+                track.elapsed = move.elapsed
+                track.timestamp = move.at
+            } else {
+                self.move = nil
+            }
+        }
         if let cover {
             playerArtwork = cover
         } else if track.artworkBytes == 0, track.song != player?.song {
