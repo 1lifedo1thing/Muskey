@@ -3,8 +3,8 @@ import CryptoKit
 import Foundation
 
 /// Downloads a model that Muskey doesn't come with into Application Support, checks it against its SHA-256, and
-/// installs it: the stems and winds models, which are compiled for this Mac, and the Whisper model, which is used as
-/// it is.
+/// installs it: the stems and winds models, which are compiled for this Mac, and the Whisper and transcription models,
+/// which are used as they are.
 @MainActor
 final class ModelDownload: NSObject, ObservableObject {
     enum State: Equatable {
@@ -46,6 +46,17 @@ final class ModelDownload: NSObject, ObservableObject {
             WhisperModel.unload()
             try? FileManager.default.removeItem(at: WhisperModel.url)
         }, install: { file in try ModelDownload.place(file, at: WhisperModel.url) }
+    )
+
+    /// MuScriptor Medium for muscriptor.cpp, which turns a stem into notes, as the author of muscriptor.cpp converts
+    /// and publishes it. The URL names a commit of that repository, so the file can't change under its checksum.
+    static let transcriber = ModelDownload(
+        name: "transcription model",
+        url: URL(string: "https://huggingface.co/DamRsn/muscriptor-gguf/resolve/13a851294c5b5701966e850c7eba326f9da97e8d/v1/muscriptor-medium-f16.gguf")!,
+        sha256: "3850cc9e5b436b17a09bd25b8f2615cb3366ab96a71e7b50f73a793a917fdf03", size: 618_442_496,
+        installed: { Transcriber.installed }, remove: {
+            try? FileManager.default.removeItem(at: Transcriber.modelURL)
+        }, install: { file in try ModelDownload.place(file, at: Transcriber.modelURL) }
     )
 
     @Published private(set) var state = State.idle

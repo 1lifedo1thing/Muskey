@@ -2138,6 +2138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if let path = Self.stringOption("--transcribe") { return TranscribeTest.run(path) }
+        if TestFlags.has("--transcriber-download") { return ModelDownload.transcriber.downloadForTesting() }
         if let path = Self.stringOption("--splice-dump") {
             exit(SlowStream.searchDump(path, old: Self.option("--splice-old", 3), move: Self.option("--splice-move", 0)))
         }
