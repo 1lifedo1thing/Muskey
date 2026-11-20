@@ -8,6 +8,44 @@ import SwiftUI
                                         timestamp: Date().timeIntervalSince1970, rate: 0, bundleID: nil)
     static let cover = sampleCover()
 
+    /// A queue of seven songs for the renders, with the second one playing, one still waiting for its key, and one
+    /// link that isn't downloaded yet.
+    static let queue: [QueueItem] = {
+        let songs: [(String, String, Double, Int, Bool, Double?, (Double, Double, Double)?)] = [
+            ("Copper Kettle", "Odd Harbour", 201, 7, false, 98, (0.72, 0.42, 0.2)),
+            ("Paper Lanterns", "Mira Vale", 238, 1, true, 124, nil),
+            ("Night Bus", "The Lindens", 187, 2, false, 132, (0.2, 0.24, 0.45)),
+            ("Orchard Road", "Saffron June", 254, 9, true, 86, (0.38, 0.55, 0.3)),
+            ("Lowlight", "Marrow & Pine", 223, 4, false, 110, (0.5, 0.3, 0.45)),
+            ("Tidewater", "Hollis Gray", 266, 0, false, nil, (0.25, 0.45, 0.55)),
+            ("Slow Parade", "Ines Calder", 0, 0, false, nil, nil),
+        ]
+        return songs.enumerated().map { index, song in
+            var item = QueueItem(url: URL(fileURLWithPath: "/Music/\(song.0).m4a"), cached: nil)
+            item.title = song.0
+            item.artist = song.1
+            item.duration = song.2 > 0 ? song.2 : nil
+            item.read = true
+            item.artwork = index == 1 ? cover : song.6.flatMap { sampleTile(red: $0.0, green: $0.1, blue: $0.2) }
+            item.analysed = song.5 != nil
+            item.key = song.5 == nil ? nil : DetectedKey(pitchClass: song.3, minor: song.4)
+            item.bpm = song.5
+            return item
+        }
+    }()
+
+    private static func sampleTile(red: Double, green: Double, blue: Double) -> NSImage? {
+        let base = Color(red: red, green: green, blue: blue)
+        let tile = ZStack {
+            LinearGradient(colors: [base.mix(with: .white, by: 0.25), base, base.mix(with: .black, by: 0.35)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Circle().fill(.white.opacity(0.18)).frame(width: 26, height: 26).offset(x: 12, y: -10)
+        }
+        .frame(width: 60, height: 60)
+        let renderer = ImageRenderer(content: tile)
+        renderer.scale = 2
+        return renderer.nsImage
+    }
+
     /// A made-up waveform for the sample song: verses, a louder chorus in the middle, and a beat at 124 BPM.
     static let waveform: SongWaveform = {
         var levels = Data(count: SongWaveform.slots(for: 238))

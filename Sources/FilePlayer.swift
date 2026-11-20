@@ -95,9 +95,19 @@ final class FilePlayer {
     private var buffer = Data()
     /// Muskey Player's process, while it runs.
     var pid: pid_t? { process.flatMap { $0.isRunning ? $0.processIdentifier : nil } }
-    /// The songs opened together, and the one that plays.
-    private var items: [URL] = []
-    private var index = 0
+    /// The queue: the songs opened or added together, in the order they play.
+    private(set) var queue: [QueueItem] = [] {
+        didSet { onQueue() }
+    }
+    /// The song of the queue that plays, or nil after it was removed while it played. `resume` is then the place of
+    /// the song that plays next.
+    private(set) var currentID: UUID? {
+        didSet { if currentID != oldValue { onQueue() } }
+    }
+    private var resume = 0
+    /// The queue changed: songs added, removed or moved, details read, or another song started.
+    var onQueue: () -> Void = {}
+    private var index: Int { currentID.flatMap { id in queue.firstIndex { $0.id == id } } ?? resume }
     /// The link or file being opened, for Retry.
     private var opening: URL?
     private var download: LinkDownload?
@@ -108,24 +118,101 @@ final class FilePlayer {
         Bundle.main.bundleURL.appending(path: "Contents/Helpers/Muskey Player.app/Contents/MacOS/Muskey Player")
     }
 
-    /// Files and links of the web, the first one played now and the rest after it.
-    func open(_ urls: [URL]) {
-        let urls = urls.filter { $0.isFileURL || ["http", "https"].contains($0.scheme?.lowercased() ?? "") }
-        guard let first = urls.first else { return }
-        items = urls
-        index = 0
-        start(first)
+    private static func playable(_ urls: [URL]) -> [URL] {
+        urls.filter { $0.isFileURL || ["http", "https"].contains($0.scheme?.lowercased() ?? "") }
     }
 
-    /// Previous or next, for the songs opened together. Previous on the first song starts it over.
+    /// Files and links of the web, the first one played now and the rest after it. They replace the queue.
+    func open(_ urls: [URL]) {
+        let urls = Self.playable(urls)
+        guard !urls.isEmpty else { return }
+        queue = urls.map { QueueItem(url: $0, cached: cache.song(for: $0)) }
+        play(queue[0].id)
+        readDetails()
+    }
+
+    /// Adds songs to the end of the queue, or after the song that plays with `next`. A queue with nothing playing
+    /// starts with them.
+    func add(_ urls: [URL], next: Bool) {
+        let items = Self.playable(urls).map { QueueItem(url: $0, cached: cache.song(for: $0)) }
+        guard !items.isEmpty else { return }
+        log("adding \(items.count) song\(items.count == 1 ? "" : "s") to the queue\(next ? " after the song that plays" : "")")
+        let at = next ? min(queue.count, (currentID == nil ? resume : index + 1)) : queue.count
+        queue.insert(contentsOf: items, at: at)
+        if !hasSong, download == nil { play(items[0].id) }
+        readDetails()
+    }
+
+    /// Plays a song of the queue.
+    func play(_ id: UUID) {
+        guard let item = queue.first(where: { $0.id == id }) else { return }
+        currentID = id
+        start(item.url)
+    }
+
+    /// Takes songs out of the queue. The song that plays goes on to its end, and then the song after it plays.
+    func remove(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        let place = index
+        let before = queue.prefix(place).filter { ids.contains($0.id) }.count
+        if let currentID, ids.contains(currentID) {
+            resume = place - before
+            self.currentID = nil
+        } else if currentID == nil {
+            resume = max(0, resume - before)
+        }
+        queue.removeAll { ids.contains($0.id) }
+    }
+
+    /// Moves songs to `offset` in the queue, keeping their order, as a drag in the list does.
+    func move(_ ids: Set<UUID>, to offset: Int) {
+        let moving = queue.filter { ids.contains($0.id) }
+        guard !moving.isEmpty else { return }
+        let target = offset - queue.prefix(offset).filter { ids.contains($0.id) }.count
+        var rest = queue.filter { !ids.contains($0.id) }
+        rest.insert(contentsOf: moving, at: max(0, min(rest.count, target)))
+        queue = rest
+    }
+
+    /// Moves a song right after the one that plays.
+    func playNext(_ id: UUID) {
+        guard let item = queue.first(where: { $0.id == id }), id != currentID else { return }
+        var rest = queue.filter { $0.id != id }
+        let place = currentID.flatMap { current in rest.firstIndex { $0.id == current } }.map { $0 + 1 } ?? min(resume, rest.count)
+        rest.insert(item, at: place)
+        if currentID == nil { resume = place }
+        queue = rest
+    }
+
+    /// Previous or next, for the songs in the queue. Previous on the first song starts it over.
     func skip(_ direction: Int) {
-        let target = index + (direction > 0 ? 1 : -1)
-        if items.indices.contains(target) {
-            index = target
-            start(items[target])
+        let target = currentID == nil && direction > 0 ? resume : index + (direction > 0 ? 1 : -1)
+        if queue.indices.contains(target) {
+            play(queue[target].id)
         } else if direction < 0 {
             send("seek 0")
         }
+    }
+
+    /// Reads the title, artist, album, length and cover of each song in the queue that doesn't have them yet.
+    private func readDetails() {
+        // A link has its details once it is downloaded, and is read then.
+        for item in queue where !item.read {
+            guard let file = item.file else { continue }
+            Task { [weak self] in
+                let details = await QueueItem.details(file)
+                guard let self, let at = queue.firstIndex(where: { $0.id == item.id }) else { return }
+                queue[at].apply(details)
+            }
+        }
+    }
+
+    /// Sets the key and the tempo of a song in the queue, once they are known.
+    func setAnalysis(_ id: UUID, key: DetectedKey?, bpm: Double?) {
+        guard let at = queue.firstIndex(where: { $0.id == id }) else { return }
+        queue[at].key = key ?? queue[at].key
+        queue[at].bpm = bpm ?? queue[at].bpm
+        queue[at].analysed = true
     }
 
     /// Moves the song to `seconds` from its start.
@@ -142,7 +229,9 @@ final class FilePlayer {
         log("stop playing")
         download?.cancel()
         download = nil
-        items = []
+        queue = []
+        currentID = nil
+        resume = 0
         opening = nil
         show(nil)
         stop()
@@ -241,6 +330,8 @@ final class FilePlayer {
             self.download = nil
             guard let song else { return show(.failed(name: name)) }
             cache.keep(song, for: url)
+            if let at = queue.firstIndex(where: { $0.url == url }) { queue[at].apply(cached: song) }
+            readDetails()
             play(song)
         }
     }
@@ -326,7 +417,7 @@ final class FilePlayer {
             log("Muskey Player can't play the song: \(line.dropFirst(7))")
             current = nil
             show(.unplayable(name: opening.map { $0.isFileURL ? $0.lastPathComponent : ($0.host() ?? $0.absoluteString) } ?? "Song"))
-        } else if line == "ended", index + 1 < items.count {
+        } else if line == "ended", currentID == nil ? resume < queue.count : index + 1 < queue.count {
             skip(1)
         } else if line.hasPrefix("moved "), let seconds = Double(line.dropFirst(6)) {
             onMove(seconds)

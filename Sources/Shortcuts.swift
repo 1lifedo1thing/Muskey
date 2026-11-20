@@ -89,6 +89,14 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("R")], name: "region loop", condition: "start, end, clear"),
             Row(caps: [.key("⌥"), .key("R")], name: "region loop end without snapping"),
         ])
+        let queue = KeyGroup(name: "Queue", symbol: "list.bullet", hue: 40, rows: [
+            Row(caps: [.key("Q")], name: "queue"),
+            Row(caps: [.key("↩")], name: "play song", condition: "in the queue"),
+            Row(caps: [.key("⌫")], name: "remove songs", condition: "in the queue"),
+            Row(caps: [.key("⇧"), .key("⌘"), .key("O")], name: "add files"),
+            Row(caps: [.key("⇧"), .key("⌘"), .key("V")], name: "add copied songs"),
+            Row(caps: [.gesture("swipe on song", symbol: "arrow.left.and.right")], name: "remove or play next"),
+        ])
         let pointer = KeyGroup(name: "Mouse and trackpad", symbol: "computermouse", hue: 58, rows: [
             Row(caps: [.gesture("click record", symbol: "cursorarrow.click")], name: "play or pause"),
             Row(caps: [.gesture("swipe", symbol: "arrow.left.and.right")], name: "next or previous song"),
@@ -98,7 +106,7 @@ struct ShortcutsSheet: View {
             Row(caps: [.gesture("drop file", symbol: "arrow.down.doc")], name: "play file or link"),
             Row(caps: [.gesture("pinch on waveform", symbol: "arrow.up.left.and.arrow.down.right")], name: "zoom"),
         ])
-        return [[key, tempo, hud], [playback, lyrics, instruments], [song, waveform, pointer]]
+        return [[key, tempo, hud], [playback, lyrics, instruments, queue], [song, waveform, pointer]]
     }
 
     var body: some View {

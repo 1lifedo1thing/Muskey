@@ -353,6 +353,26 @@ final class HUDModel: ObservableObject {
     var onLink: (URL) -> Void = { _ in }
     /// A file or a link is dragged over the HUD.
     @Published var dropTargeted = false
+    /// The zone under a drag of songs while the queue has songs: Play Now or Add to Queue.
+    @Published var dropZone: DropZone?
+
+    /// The queue of Muskey Player (Q), on the back of the record in the wide layout and on the back of the card.
+    @Published var queue: [QueueItem] = []
+    @Published var queueCurrent: UUID?
+    @Published var queueShown = false
+    @Published var queueSelection: Set<UUID> = []
+    /// Where the list of the queue is, in the coordinates of the HUD's window from its top left. Scrolls and drags
+    /// there stay in the list, instead of skipping songs and moving the panel.
+    var queueFrame: CGRect?
+    var onQueuePlay: (UUID) -> Void = { _ in }
+    var onQueueRemove: (Set<UUID>) -> Void = { _ in }
+    var onQueueMove: (Set<UUID>, Int) -> Void = { _, _ in }
+    var onQueuePlayNext: (UUID) -> Void = { _ in }
+    var onQueueToggle: () -> Void = {}
+    /// Songs dropped on Add to Queue, after the song that plays with `next`.
+    var onAdd: ([URL], Bool) -> Void = { _, _ in }
+    /// The ⋯ button in the corner.
+    var onMore: () -> Void = {}
 
     /// The waveform of the song, with its zoom, its lanes and the region loop, in their own object so that the
     /// waveform redraws without the rest of the HUD.
@@ -436,7 +456,7 @@ struct HUDView: View {
     /// The ✕ closes the HUD while it stays up: with the key row, a listen, its result, or nothing playing. A failed
     /// listen closes by itself.
     private var closable: Bool { model.picking || [.listening, .done, .idle].contains(model.phase) }
-    private var showsSave: Bool { showsStrip && model.saving == nil && !model.shortcuts && !focus && model.savable }
+    private var showsSave: Bool { showsStrip && model.saving == nil && !model.shortcuts && !focus && model.savable && !(model.card && model.queueShown) }
 
     /// The large lyrics take the place of either layout.
     private var focus: Bool { model.saving == nil && !model.shortcuts && model.lyricsFocus && model.lyricsShown && showsStrip }
@@ -474,7 +494,15 @@ struct HUDView: View {
             } else if focus {
                 lyricsFocus(palette)
             } else if model.card {
-                HUDCard(model: model, palette: palette, showsKeys: showsStrip, track: deckTrack)
+                // Q turns the card over to the queue.
+                FlipCard(flipped: model.queueShown) {
+                    HUDCard(model: model, palette: palette, showsKeys: showsStrip, track: deckTrack)
+                } back: {
+                    queue(palette)
+                        .padding(.top, 12)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 14)
+                }
             } else {
                 wide(palette)
             }
@@ -513,7 +541,8 @@ struct HUDView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if showsStrip, model.saving == nil, !model.shortcuts {
+            // The queue has its own button in this corner, and the other buttons wait until it turns back.
+            if showsStrip, model.saving == nil, !model.shortcuts, !model.queueShown {
                 HStack(spacing: 6) {
                     // Karaoke keeps only its own button, which closes it.
                     if !focus {
@@ -536,6 +565,8 @@ struct HUDView: View {
                         RoundButton(symbol: model.card ? "rectangle" : "rectangle.portrait", help: model.card ? "Switch to the wide layout (S)" : "Switch to the card layout (S)",
                                     label: model.card ? "Wide style" : "Card style", key: "S", palette: palette, action: model.onLayout)
                             .transition(.opacity)
+                        RoundButton(symbol: "ellipsis", help: "Queue, waveform and more", palette: palette, action: model.onMore)
+                            .transition(.opacity)
                     }
                 }
                 .padding(focus ? 10 : 9)
@@ -544,7 +575,11 @@ struct HUDView: View {
             }
         }
         .overlay {
-            if model.dropTargeted {
+            if model.dropTargeted, model.dropZone != nil {
+                // While the queue has songs, a drag shows where the songs can go.
+                DropZones(zone: model.dropZone, palette: Palette.of(colorScheme))
+                    .transition(.opacity)
+            } else if model.dropTargeted {
                 // A file or a link dragged over the HUD plays once dropped.
                 Image(systemName: "play.circle.fill")
                     .font(.system(size: 44, weight: .regular))
@@ -558,10 +593,7 @@ struct HUDView: View {
         .animation(.easeOut(duration: 0.12), value: model.dropTargeted)
         .animation(.smooth(duration: 0.3), value: model.saving == nil)
         .modifier(HUDBackground(tint: tint, scheme: colorScheme))
-        .dropDestination(for: DroppedSong.self) { songs, _ in
-            model.onOpen(songs.map(\.url))
-            return !songs.isEmpty
-        } isTargeted: { model.dropTargeted = $0 }
+        .onDrop(of: SongDrop.types, delegate: SongDrop(model: model))
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.songArriving, model.songArriving)
         .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }, scroll: model.scroll, scrub: model.scrub,
@@ -639,11 +671,18 @@ struct HUDView: View {
                         .frame(width: 1)
                         .padding(.leading, 30)
                         .transition(.opacity)
-                    TurntableDeck(track: track, artwork: model.artwork, playing: model.playing, spinning: model.shown && model.playing,
-                                  flash: model.playFlash, palette: palette)
-                        .onHover { model.overRecord = $0 }
-                        .padding(.leading, 30)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    // Q turns this side over to the queue, which takes the margins around the record too.
+                    FlipCard(flipped: model.queueShown) {
+                        TurntableDeck(track: track, artwork: model.artwork, playing: model.playing, spinning: model.shown && model.playing,
+                                      flash: model.playFlash, palette: palette)
+                            .onHover { model.overRecord = $0 && !model.queueShown }
+                    } back: {
+                        queue(palette)
+                            .padding(.horizontal, -20)
+                            .padding(.top, -8)
+                    }
+                    .padding(.leading, 30)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
             }
             .padding(.horizontal, 30)
@@ -671,6 +710,13 @@ struct HUDView: View {
                 .transition(.opacity)
             }
         }
+    }
+
+    /// The queue, on the back of the record in the wide layout and on the back of the card.
+    private func queue(_ palette: Palette) -> some View {
+        QueueView(songs: model.queue, current: model.queueCurrent, selection: $model.queueSelection, palette: palette, compact: !model.card,
+                  play: model.onQueuePlay, remove: model.onQueueRemove, move: model.onQueueMove, playNext: model.onQueuePlayNext,
+                  close: model.onQueueToggle, frame: { model.queueFrame = $0 }, headerInset: model.card ? 22 : 0)
     }
 
     /// The title fills as the listen goes on, so there is no progress bar under it.
@@ -1096,6 +1142,12 @@ final class HUDPanel: NSPanel {
         return model.scroll.frames.values.contains { $0.region.seeks && $0.frame.insetBy(dx: -2, dy: -4).contains(point) }
     }
 
+    private func onQueue(_ event: NSEvent) -> Bool {
+        guard model.queueShown, let queue = model.queueFrame, let view = contentView else { return false }
+        let local = view.convert(event.locationInWindow, from: nil)
+        return queue.contains(CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y))
+    }
+
     /// A drag that starts anywhere on the glass moves the panel once the pointer has moved a few points, also from
     /// a button, the key or the record. SwiftUI's window drag gesture never moved this non-activating panel.
     override func sendEvent(_ event: NSEvent) {
@@ -1106,7 +1158,8 @@ final class HUDPanel: NSPanel {
             // Text fields, scroll bars and the time bar keep their drags.
             let hit = contentView?.hitTest(event.locationInWindow)
             let onBar = onTimeBar(event)
-            pressStart = hit is NSControl || hit is NSText || onBar ? nil : (NSEvent.mouseLocation, frame.origin)
+            // The list of the queue keeps its drags too, which move songs.
+            pressStart = hit is NSControl || hit is NSText || onBar || onQueue(event) ? nil : (NSEvent.mouseLocation, frame.origin)
             pressHit = onBar ? "the time bar" : hit.map { String(describing: type(of: $0)).components(separatedBy: "<").first ?? "" } ?? "nothing"
             pressedAt = Date()
             pressDragged = false
@@ -1427,7 +1480,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let activityPill = ActivityPill()
     private lazy var locationPanel: OpenLocationPanel = {
         let panel = OpenLocationPanel()
-        panel.onOpen = { [weak self] url in self?.open([url]) }
+        panel.onOpen = { [weak self] url in
+            guard let self else { return }
+            addingLocation ? add([url], next: false) : open([url])
+        }
         if Self.logKeys { panel.onLog = { [weak self] in self?.log($0) } }
         // The HUD takes the keyboard back while a key is picked, and the app that was in front otherwise.
         panel.onClose = { [weak self] in
@@ -2331,6 +2387,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onSaveStop = { [weak self] in self?.stopSave() }
         statusItem.onSave = { [weak self] in self?.saveSong() }
         model.onOpen = { [weak self] urls in self?.open(urls) }
+        model.onAdd = { [weak self] urls, next in self?.add(urls, next: next) }
+        model.onQueuePlay = { [weak self] id in self?.playFromQueue(id) }
+        model.onQueueRemove = { [weak self] ids in self?.removeFromQueue(ids) }
+        model.onQueueMove = { [weak self] ids, offset in self?.filePlayer.move(ids, to: offset) }
+        model.onQueuePlayNext = { [weak self] id in self?.filePlayer.playNext(id) }
+        model.onQueueToggle = { [weak self] in self?.toggleQueue() }
+        model.onMore = { [weak self] in self?.showMoreMenu() }
+        filePlayer.onQueue = { [weak self] in self?.syncQueue() }
         model.onOpenFile = { [weak self] in self?.openFile() }
         model.onSeekFraction = { [weak self] in self?.seek(toFraction: $0) }
         model.onStemsClose = { [weak self] in self?.closeStems() }
@@ -2361,6 +2425,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, event.window === panel else { return event }
             // A save in progress leaves the stems and the songs as they are, and so do the shortcuts, which hide them.
             if model.saving != nil || model.shortcuts { return nil }
+            // The list of the queue scrolls, and takes the sideways swipes that remove a song or play it next.
+            if overQueue(event) { return event }
             // ⌘ with a scroll over the waveform zooms it, fingers up zooming in.
             if event.modifierFlags.contains(.command), overWaveform(event) {
                 let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
@@ -2436,6 +2502,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Published before the change, so the new value comes from the publisher.
         shownChange = model.$shown.removeDuplicates().sink { [weak self] shown in
             if shown { self?.shownAt = Date() }
+            // The HUD opens on the record again, not on the queue that it closed on.
+            if !shown { DispatchQueue.main.async { self?.model.queueShown = false } }
             // The sink runs before `shown` changes.
             DispatchQueue.main.async { self?.syncPauseStop() }
             self?.updateWatching(shown: shown)
@@ -2595,6 +2663,154 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func open(_ urls: [URL]) {
         log("opening \(urls.count == 1 ? (urls[0].isFileURL ? "a file" : "a link") : "\(urls.count) items")")
         filePlayer.open(urls)
+    }
+
+    // MARK: Queue
+
+    /// Adds files or links to the queue: dropped on Add to Queue, pasted with ⇧⌘V, or picked with Add Files to Queue…
+    /// and Add URL to Queue…. With `next`, they play right after the song that plays.
+    private func add(_ urls: [URL], next: Bool) {
+        filePlayer.add(urls, next: next)
+    }
+
+    /// The queue changed in Muskey Player, so the HUD shows it, and the songs that have no key yet get one.
+    private func syncQueue() {
+        let queue = filePlayer.queue
+        if model.queue != queue { model.queue = queue }
+        if model.queueCurrent != filePlayer.currentID { model.queueCurrent = filePlayer.currentID }
+        let ids = Set(queue.map(\.id))
+        if !model.queueSelection.isSubset(of: ids) { model.queueSelection.formIntersection(ids) }
+        analyseQueue()
+    }
+
+    /// The song of the queue whose key and tempo are looked for, one song at a time so a long queue never takes more
+    /// than one core.
+    private var queueAnalysis: UUID?
+
+    /// Finds the key and the tempo of the next song in the queue that has neither: the key that Muskey remembers for the
+    /// song, or else a listen of 30 seconds of its file, which takes a fraction of a second.
+    private func analyseQueue() {
+        guard queueAnalysis == nil,
+              let item = filePlayer.queue.first(where: { !$0.analysed && $0.read && $0.file != nil }), let file = item.file
+        else { return }
+        let song: [String?] = [item.title, item.artist, item.album]
+        if prefs.rememberKeys, let key = keyCache.key(for: song) {
+            filePlayer.setAnalysis(item.id, key: key, bpm: keyCache.bpm(for: song))
+            return
+        }
+        queueAnalysis = item.id
+        let duration = item.duration
+        Task { [weak self] in
+            let result = await Task.detached(priority: .utility) { await QueueItem.analyse(file, duration: duration) }.value
+            guard let self else { return }
+            queueAnalysis = nil
+            if Self.logKeys { log("queue: \(item.title) in \(result.key?.name ?? "no key")\(result.bpm.map { String(format: " at %.0f BPM", $0) } ?? "")") }
+            filePlayer.setAnalysis(item.id, key: result.key, bpm: result.bpm)
+        }
+    }
+
+    /// A double click or Return in the queue plays the song.
+    private func playFromQueue(_ id: UUID) {
+        log("playing a song of the queue")
+        filePlayer.play(id)
+    }
+
+    private func removeFromQueue(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        log("removing \(ids.count) song\(ids.count == 1 ? "" : "s") from the queue")
+        filePlayer.remove(ids)
+        model.queueSelection.subtract(ids)
+    }
+
+    /// Q: the record turns over to the queue, and back.
+    private func toggleQueue() {
+        if !model.picking, model.shown { pickKey() }
+        model.queueShown.toggle()
+        log(model.queueShown ? "queue shown" : "queue hidden")
+        updateHoverKeys()
+    }
+
+    /// The arrows in the queue: the next or the previous song is selected, and Shift adds it to the selection.
+    private func stepQueueSelection(_ direction: Int, extending: Bool) {
+        let ids = model.queue.map(\.id)
+        guard !ids.isEmpty else { return }
+        let selected = ids.indices.filter { model.queueSelection.contains(ids[$0]) }
+        guard let from = direction > 0 ? selected.last : selected.first else {
+            // Nothing selected yet: the song that plays, or the first song.
+            model.queueSelection = [model.queueCurrent.flatMap { ids.contains($0) ? $0 : nil } ?? ids[0]]
+            return
+        }
+        let target = ids[max(0, min(ids.count - 1, from + direction))]
+        if extending { model.queueSelection.insert(target) } else { model.queueSelection = [target] }
+    }
+
+    /// Keys while the queue shows. Space, N and P still play, pause and skip, and the other keys, which change what
+    /// the queue hides, do nothing. Returns false for the keys that go on to the usual handling.
+    private func handleQueueKey(_ code: Int, shift: Bool) -> Bool {
+        switch code {
+        case kVK_ANSI_Q, kVK_Escape: toggleQueue()
+        case kVK_UpArrow, kVK_DownArrow: stepQueueSelection(code == kVK_DownArrow ? 1 : -1, extending: shift)
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            if let id = model.queue.first(where: { model.queueSelection.contains($0.id) })?.id { playFromQueue(id) }
+        case kVK_Delete, kVK_ForwardDelete: removeFromQueue(model.queueSelection)
+        case kVK_Space, kVK_ANSI_N, kVK_ANSI_P: return false
+        default: break
+        }
+        return true
+    }
+
+    /// Add URL to Queue… opens the same bar as Open URL…, and the link it takes is added instead of played.
+    private var addingLocation = false
+
+    @objc private func addFiles() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio, .movie]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.prompt = "Add to Queue"
+        guard inFront({ panel.runModal() }) == .OK else { return }
+        add(panel.urls, next: false)
+    }
+
+    @objc private func addLocation() {
+        addingLocation = true
+        dialogOpen = true
+        locationPanel.show()
+    }
+
+    /// ⇧⌘V: adds the files or the link on the clipboard to the queue. Returns false when the clipboard holds neither.
+    @discardableResult @objc private func addCopied() -> Bool {
+        let urls = Self.pastedURLs()
+        guard !urls.isEmpty else { return false }
+        add(urls, next: false)
+        return true
+    }
+
+    @objc private func toggleQueueFromMenu() { toggleQueue() }
+    @objc private func toggleWaveformFromMenu() { toggleWaveform() }
+
+    /// The ⋯ button in the corner of the HUD: the queue and the other things that have a key but no button.
+    private func showMoreMenu() {
+        if !model.picking, model.shown { pickKey() }
+        let menu = NSMenu()
+        func item(_ title: String, _ action: Selector, key: String = "", modifiers: NSEvent.ModifierFlags = [], on: Bool = false, enabled: Bool = true) {
+            let item = NSMenuItem(title: title, action: enabled ? action : nil, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+            item.target = self
+            item.state = on ? .on : .off
+            menu.addItem(item)
+        }
+        item("Queue", #selector(toggleQueueFromMenu), key: "q", on: model.queueShown)
+        item("Add Files to Queue…", #selector(addFiles), key: "o", modifiers: [.command, .shift])
+        item("Add URL to Queue…", #selector(addLocation), key: "l", modifiers: [.command, .shift])
+        item("Add Copied Songs", #selector(addCopied), key: "v", modifiers: [.command, .shift], enabled: !Self.pastedURLs().isEmpty)
+        menu.addItem(.separator())
+        item("Waveform", #selector(toggleWaveformFromMenu), key: "w", on: model.waveformShown)
+        menu.addItem(.separator())
+        item("Open File…", #selector(openFile), key: "o", modifiers: .command)
+        item("Open URL…", #selector(openLocation), key: "l", modifiers: .command)
+        if filePlayer.hasSong { item("Stop Playing", #selector(stopPlaying)) }
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
     /// The previous or next song, from the buttons beside the record or a swipe over the HUD. The player gets the
@@ -2829,6 +3045,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A link to a song or a video, or the path of a file, in a glass bar like the HUD's.
     @objc private func openLocation() {
+        addingLocation = false
         dialogOpen = true
         locationPanel.show()
     }
@@ -2921,6 +3138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = NSMenu(title: "File")
         file.addItem(withTitle: "Open File…", action: #selector(openFile), keyEquivalent: "o").target = self
         file.addItem(withTitle: "Open URL…", action: #selector(openLocation), keyEquivalent: "l").target = self
+        file.addItem(withTitle: "Add Files to Queue…", action: #selector(addFiles), keyEquivalent: "O").target = self
+        file.addItem(withTitle: "Add URL to Queue…", action: #selector(addLocation), keyEquivalent: "L").target = self
         file.addItem(withTitle: "Save Song…", action: #selector(saveFromMenu), keyEquivalent: "s").target = self
         file.addItem(withTitle: "Stop Playing", action: #selector(stopPlaying), keyEquivalent: "").target = self
         let edit = NSMenu(title: "Edit")
@@ -3351,9 +3570,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let self, self.model.shortcuts, event.window === self.panel, flags.contains(.command) {
                 return Self.hudCommandKeys.contains(Int(event.keyCode)) ? nil : event
             }
-            // ⌘V plays the file or the link on the clipboard, while the HUD takes the keyboard.
+            // ⌘V plays the file or the link on the clipboard, while the HUD takes the keyboard, and ⇧⌘V adds it to the queue.
             if let self, event.window === self.panel, flags.contains(.command), Int(event.keyCode) == kVK_ANSI_V {
-                return self.pasteSongs() ? nil : event
+                return (flags.contains(.shift) ? self.addCopied() : self.pasteSongs()) ? nil : event
+            }
+            // ⌘A selects every song of the queue.
+            if let self, self.model.queueShown, event.window === self.panel, flags.contains(.command), Int(event.keyCode) == kVK_ANSI_A {
+                self.model.queueSelection = Set(self.model.queue.map(\.id))
+                return nil
             }
             // ⌘⌫ takes the song back to how it was: its key, its tempo and every stem.
             if let self, self.model.picking || self.model.phase == .idle, event.window === self.panel, flags.contains(.command),
@@ -3361,10 +3585,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.resetAll()
                 return nil
             }
-            // ⌘O and ⌘L open a file or a link.
+            // ⌘O and ⌘L open a file or a link, and with Shift they add it to the queue.
             if let self, event.window === self.panel, flags.contains(.command),
                [kVK_ANSI_O, kVK_ANSI_L].contains(Int(event.keyCode)) {
-                Int(event.keyCode) == kVK_ANSI_O ? self.openFile() : self.openLocation()
+                switch (Int(event.keyCode) == kVK_ANSI_O, flags.contains(.shift)) {
+                case (true, false): self.openFile()
+                case (false, false): self.openLocation()
+                case (true, true): self.addFiles()
+                case (false, true): self.addLocation()
+                }
                 return nil
             }
             // ⌘+ and ⌘− zoom the waveform.
@@ -3421,6 +3650,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if model.shortcuts {
             if code == kVK_Escape { model.shortcuts = false }
+            return true
+        }
+        if model.queueShown, !model.lyricsFocus, handleQueueKey(code, shift: shift) { return true }
+        // Q turns the record over to the queue, in both layouts.
+        if code == kVK_ANSI_Q, !shift, !option, !model.lyricsFocus {
+            toggleQueue()
             return true
         }
         if !shift, handleSongKey(code, option: option) { return true }
@@ -4575,6 +4810,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Self.logKeys, before != model.wave.zoom { log(String(format: "waveform zoom %.1f", model.wave.zoom)) }
     }
 
+    /// The pointer of `event` is over the list of the queue, while it shows.
+    private func overQueue(_ event: NSEvent) -> Bool {
+        guard model.queueShown, let frame = model.queueFrame, let view = panel.contentView else { return false }
+        let local = view.convert(event.locationInWindow, from: nil)
+        return frame.contains(CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y))
+    }
+
     /// The pointer of `event` is over the waveform.
     private func overWaveform(_ event: NSEvent) -> Bool {
         guard let view = panel.contentView else { return false }
@@ -5109,6 +5351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForRestart = false
     private var hoverKeysForSave = false
     private var hoverKeysForRecord = false
+    private var hoverKeysForQueue = false
     private var hoverKeysForKey = false
     /// The clipboard when the keys were registered: ⌘V over the HUD is a key only while it holds files or a link.
     private var hoverKeysPasteboard = 0
@@ -5142,7 +5385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
-                || hoverKeysForRecord != model.overRecord || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
+                || hoverKeysForRecord != model.overRecord || hoverKeysForQueue != model.queueShown || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
         hoverKeys = []
@@ -5157,6 +5400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForRestart = model.restartable
         hoverKeysForSave = model.savable
         hoverKeysForRecord = model.overRecord
+        hoverKeysForQueue = model.queueShown
         hoverKeysLock = lock
         hoverKeysQuestion = LayoutKey.questionMark
         let question = hoverKeysQuestion.map { [($0.code, $0.modifiers)] } ?? []
@@ -5174,6 +5418,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var keys: [(Int, Int)] = [kVK_Escape, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
         if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } + [(kVK_ANSI_W, 0), (kVK_ANSI_W, optionKey)] }
         if model.seekable || model.loop != nil { keys += [(kVK_ANSI_R, 0), (kVK_ANSI_R, optionKey)] }
+        // Q shows the queue, which takes the arrows, Return and Delete while it shows.
+        if !model.lyricsFocus { keys.append((kVK_ANSI_Q, 0)) }
+        if model.queueShown {
+            keys += [kVK_UpArrow, kVK_DownArrow].flatMap { [($0, 0), ($0, shiftKey)] }
+            keys += [kVK_Return, kVK_ANSI_KeypadEnter, kVK_Delete, kVK_ForwardDelete].map { ($0, 0) }
+        }
         if keyed, model.stemsAvailable {
             // V mutes the vocals or plays them again, in every layout.
             keys += Self.stemKeys.flatMap { code in [(code, 0), (code, optionKey)] } + [(kVK_ANSI_0, 0), (kVK_ANSI_V, 0)]
@@ -5224,6 +5474,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let open = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey, action: { [weak self] in self?.openFile() }) { hoverKeys.append(open) }
         if let link = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey, action: { [weak self] in self?.openLocation() }) { hoverKeys.append(link) }
+        // ⇧⌘O, ⇧⌘L and ⇧⌘V add to the queue.
+        if let add = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey | shiftKey, action: { [weak self] in self?.addFiles() }) { hoverKeys.append(add) }
+        if let add = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey | shiftKey, action: { [weak self] in self?.addLocation() }) { hoverKeys.append(add) }
+        if !Self.pastedURLs().isEmpty, let add = try? HotKey(keyCode: kVK_ANSI_V, modifiers: cmdKey | shiftKey, action: { [weak self] in self?.addCopied() }) {
+            hoverKeys.append(add)
+        }
+        if model.queueShown, let all = try? HotKey(keyCode: kVK_ANSI_A, modifiers: cmdKey, action: { [weak self] in
+            guard let self else { return }
+            model.queueSelection = Set(model.queue.map(\.id))
+        }) {
+            hoverKeys.append(all)
+        }
         if let home = try? HotKey(keyCode: kVK_ANSI_C, modifiers: cmdKey | optionKey, action: { [weak self] in self?.panel.returnHome() }) {
             hoverKeys.append(home)
         }
@@ -5661,7 +5923,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-loop", "-loop-armed", "-loop-zoom", "-lyrics-loop", "-lyrics-focus-loop"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-loop", "-loop-armed", "-loop-zoom", "-lyrics-loop", "-lyrics-focus-loop", "-queue", "-queue-drop", "-queue-drop-next"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -5764,6 +6026,17 @@ extension EnvironmentValues {
                 model.loop = variant.contains("lyrics") ? LoopRegion(start: 16.5, end: 30)
                     : LoopRegion(start: 86.2, end: variant == "-loop-armed" ? nil : 110.4, startPress: 86.6, endPress: variant == "-loop-armed" ? nil : 110.1)
                 if variant == "-loop-zoom" { model.wave.zoom = 6 }
+            }
+            // The queue on the back of the record, with two songs selected, and a drag of songs over the HUD.
+            if variant.hasPrefix("-queue") {
+                model.queue = HUDSample.queue
+                model.queueCurrent = model.queue[1].id
+                model.queueShown = variant == "-queue"
+                model.queueSelection = variant == "-queue" ? [model.queue[3].id, model.queue[4].id] : []
+                if variant.hasPrefix("-queue-drop") {
+                    model.dropTargeted = true
+                    model.dropZone = variant == "-queue-drop-next" ? .addNext : .add
+                }
             }
             if variant == "-waveform-stems" {
                 model.stemsAvailable = true
