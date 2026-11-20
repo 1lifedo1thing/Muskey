@@ -919,66 +919,164 @@ private struct NotesPlayhead: View {
 
 /// Half a page that turns like a page of a book when it shows another page: the old page lifts at its right edge and
 /// folds away to the left over the new one, or back from the left for an earlier page.
+/// `--notes-fold F` renders each half in the middle of a turn, with the fold at F (1 is the right edge, 0 the left).
+nonisolated(unsafe) var notesFoldInRenders: Double?
+
 private struct NotesPageTurn<Content: View>: View {
     let page: Int
     /// False shows another page at once.
     let animated: Bool
     let paper: Color
     @ViewBuilder let content: (Int) -> Content
-    @State private var under: Int?
-    @State private var lifted: Int?
-    @State private var angle: Double = 0
+    /// The page that lies flat, and the page that turns over it, while a turn runs.
+    @State private var beneath: Int?
+    @State private var turning: Int?
+    /// Where the fold is, from 1 at the right edge (the turning page lies flat) to 0 at the left edge (it is gone).
+    @State private var fold: Double = 1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        ZStack {
-            content(under ?? page)
-            if let lifted {
-                content(lifted)
-                    .background(paper)
-                    .overlay(Color.black.opacity(abs(angle) / 90 * 0.25))
-                    .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), anchor: .leading, perspective: 0.35)
-                    .opacity(reduceMotion ? 1 - abs(angle) / 90 : 1)
+        GeometryReader { geometry in
+            if let fold = notesFoldInRenders {
+                // `--notes-fold`: the turn to the next page, stopped where the fold is.
+                PageFold(fold: fold, width: geometry.size.width, paper: paper, dark: scheme == .dark, crossfade: false,
+                         front: content(page), beneath: content(page + 1))
+            } else if let turning, let beneath {
+                PageFold(fold: fold, width: geometry.size.width, paper: paper, dark: scheme == .dark, crossfade: reduceMotion,
+                         front: content(turning), beneath: content(beneath))
+            } else {
+                content(beneath ?? page)
             }
         }
-        .onChange(of: page) { old, new in turn(from: under ?? old, to: new) }
+        .onChange(of: page) { old, new in turn(from: beneath ?? old, to: new) }
     }
 
     private func turn(from old: Int, to new: Int) {
-        let forward = new > old
         var transaction = Transaction()
         transaction.disablesAnimations = true
-        guard animated else {
+        guard animated, old != new else {
             withTransaction(transaction) {
-                under = new
-                lifted = nil
-                angle = 0
+                beneath = new
+                turning = nil
+                fold = 1
             }
             return
         }
-        if forward {
-            // The old page lies on top of the new one and folds away.
+        let curve = Animation.timingCurve(0.42, 0.05, 0.22, 1, duration: reduceMotion ? 0.2 : 0.5)
+        if new > old {
+            // The page read so far lifts at its right edge and turns over to the left, uncovering the next one.
             withTransaction(transaction) {
-                under = new
-                lifted = old
-                angle = 0
+                beneath = new
+                turning = old
+                fold = 1
             }
-            withAnimation(.easeIn(duration: reduceMotion ? 0.15 : 0.32)) { angle = -90 } completion: {
-                if lifted == old { lifted = nil }
+            withAnimation(curve) { fold = 0 } completion: {
+                if turning == old { turning = nil }
             }
         } else {
-            // The earlier page comes back from the left over the later one.
+            // The earlier page turns back from the left and lies down over the later one.
             withTransaction(transaction) {
-                under = old
-                lifted = new
-                angle = -90
+                beneath = old
+                turning = new
+                fold = 0
             }
-            withAnimation(.easeOut(duration: reduceMotion ? 0.15 : 0.32)) { angle = 0 } completion: {
-                guard lifted == new else { return }
-                under = new
-                lifted = nil
+            withAnimation(curve) { fold = 1 } completion: {
+                guard turning == new else { return }
+                beneath = new
+                turning = nil
             }
         }
+    }
+}
+
+/// A page turning over another, folded along a vertical line: left of the fold the page still lies flat, the part
+/// right of it has flipped over to the left and shows its back, and the page beneath shows where it lifted.
+private struct PageFold<Front: View, Beneath: View>: View, Animatable {
+    var fold: Double
+    let width: CGFloat
+    let paper: Color
+    let dark: Bool
+    /// Reduce Motion: the pages cross-fade instead.
+    let crossfade: Bool
+    let front: Front
+    let beneath: Beneath
+
+    var animatableData: Double {
+        get { fold }
+        set { fold = newValue }
+    }
+
+    /// The back of the page, a shade lighter than its front in the dark, and warmer in the light.
+    private var back: Color { dark ? Color(white: 0.2) : Color(red: 0.95, green: 0.94, blue: 0.92) }
+
+    var body: some View {
+        if crossfade {
+            ZStack {
+                beneath
+                front.background(paper).opacity(fold)
+            }
+        } else {
+            folded
+        }
+    }
+
+    private var folded: some View {
+        let w = width
+        let f = CGFloat(fold) * w
+        // The flipped part is as wide as what lifted, mirrored over the fold, and cut at the left edge.
+        let flapStart = max(0, 2 * f - w)
+        let flapWidth = max(0, f - flapStart)
+        // Deepest halfway through the turn, when the page stands highest.
+        let lift = sin(Double.pi * (1 - fold))
+        return ZStack(alignment: .topLeading) {
+            beneath
+            // The shadow that the lifted page casts on the page beneath, along the fold.
+            LinearGradient(colors: [.black.opacity((dark ? 0.45 : 0.22) * lift), .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: 22 + 34 * lift)
+                .offset(x: f)
+                .allowsHitTesting(false)
+            // The part of the turning page that still lies flat.
+            front
+                .background(paper)
+                .mask(alignment: .leading) { Rectangle().frame(width: flapStart) }
+            // A soft shadow where the free edge of the flap hovers over the flat part.
+            if flapStart > 0 {
+                LinearGradient(colors: [.clear, .black.opacity((dark ? 0.3 : 0.14) * lift)], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 16)
+                    .offset(x: flapStart - 16)
+                    .allowsHitTesting(false)
+            }
+            // The back of the page: paper with the notes faintly showing through, mirrored, and shaded darker towards
+            // the fold, where it curves.
+            ZStack(alignment: .topLeading) {
+                back
+                front
+                    .scaleEffect(x: -1, y: 1, anchor: .center)
+                    .offset(x: 2 * f - w)
+                    .opacity(dark ? 0.09 : 0.07)
+                // The paper bends at the fold: a bright band where it faces the light, dark at the crease itself, and a
+                // little shade at the free edge.
+                LinearGradient(stops: [
+                    .init(color: .black.opacity(dark ? 0.18 : 0.07), location: 0),
+                    .init(color: .clear, location: 0.22),
+                    .init(color: .clear, location: 0.62),
+                    .init(color: .white.opacity(dark ? 0.14 : 0.7), location: 0.84),
+                    .init(color: .clear, location: 0.93),
+                    .init(color: .black.opacity(dark ? 0.4 : 0.2), location: 1),
+                ], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: flapWidth)
+                    .offset(x: flapStart)
+            }
+            .frame(width: w, alignment: .leading)
+            .mask(alignment: .leading) { Rectangle().frame(width: flapWidth).offset(x: flapStart) }
+            .shadow(color: .black.opacity((dark ? 0.5 : 0.22) * lift), radius: 8 * lift, x: -3 * lift)
+            // Highest halfway through, the free edge of the page comes towards the viewer.
+            .rotation3DEffect(.degrees(24 * lift), axis: (x: 0, y: 1, z: 0), anchor: UnitPoint(x: Double(f / max(w, 1)), y: 0.5),
+                              perspective: 0.55)
+            .allowsHitTesting(false)
+        }
+        .frame(width: w, alignment: .leading)
     }
 }
 
@@ -1388,6 +1486,7 @@ extension NotesModel {
     }
     let at = TestFlags.value("--notes-at").flatMap(Double.init) ?? 40
     model.now = { at }
+    notesFoldInRenders = TestFlags.value("--notes-fold").flatMap(Double.init)
     if let shift = TestFlags.value("--notes-shift").flatMap(Int.init) { model.shift = shift }
     if let loop = TestFlags.value("--notes-loop")?.split(separator: "-").compactMap({ Double($0) }), loop.count == 2 {
         model.loop = LoopRegion(start: loop[0], end: loop[1], startPress: nil)

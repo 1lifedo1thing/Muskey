@@ -591,6 +591,10 @@ struct HUDView: View {
                 .transition(.opacity)
             }
         }
+        // Songs dragged over the HUD blur it, and the zones where they can go show over it.
+        .blur(radius: model.dropTargeted && model.dropZone != nil ? 8 : 0)
+        // In light mode the dark record would show through the pale zones and under their text, so the HUD fades too.
+        .opacity(model.dropTargeted && model.dropZone != nil && colorScheme == .light ? 0.45 : 1)
         .overlay {
             if model.dropTargeted, model.dropZone != nil {
                 // While the queue has songs, a drag shows where the songs can go.

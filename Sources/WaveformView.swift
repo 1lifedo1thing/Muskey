@@ -359,6 +359,7 @@ struct LoopFlags: View {
         hoveredParts.contains { $0.hasPrefix("\(LoopEnd.start)") } ? .start : hoveredParts.isEmpty ? nil : .end
     }
     @State private var dragged: (end: LoopEnd, start: Double, time: Double)?
+    @State private var lingering: LoopEnd?
     @State private var nudged: (end: LoopEnd, at: Date)?
     @State private var editing: LoopEnd?
     @State private var text = ""
@@ -418,7 +419,7 @@ struct LoopFlags: View {
     }
 
     private func showsTime(_ end: LoopEnd) -> Bool {
-        hovered == end || dragged?.end == end || editing == end || (nudged.map { $0.end == end && Date().timeIntervalSince($0.at) < 1.5 } ?? false)
+        hovered == end || lingering == end || dragged?.end == end || editing == end || (nudged.map { $0.end == end && Date().timeIntervalSince($0.at) < 1.5 } ?? false)
     }
 
     /// The A or B tab, or the arrows that take its place while the pointer is over it. The tab sits outside the
@@ -447,8 +448,19 @@ struct LoopFlags: View {
         .animation(.easeOut(duration: 0.12), value: open)
     }
 
+    /// The time stays a moment after the pointer leaves the end, so that it can be reached from the tab to type a time.
     private func hover(_ end: LoopEnd, _ part: String, _ inside: Bool) {
-        if inside { hoveredParts.insert("\(end)-\(part)") } else { hoveredParts.remove("\(end)-\(part)") }
+        if inside {
+            hoveredParts.insert("\(end)-\(part)")
+            if lingering == end { lingering = nil }
+            return
+        }
+        hoveredParts.remove("\(end)-\(part)")
+        guard !hoveredParts.contains(where: { $0.hasPrefix("\(end)") }) else { return }
+        lingering = end
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            if lingering == end, hovered != end { lingering = nil }
+        }
     }
 
     /// A press nudges the end, and a drag moves it with the pointer.

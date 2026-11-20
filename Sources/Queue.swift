@@ -335,42 +335,49 @@ struct DropZones: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        HStack(spacing: 10) {
-            tile("Play Now", symbol: "play.fill", hot: zone == .playNow)
-            tile(zone == .addNext ? "Play Next" : "Add to Queue", symbol: zone == .addNext ? "text.line.first.and.arrowtriangle.forward" : "text.badge.plus",
+        HStack(spacing: 12) {
+            tile("Play Now", symbol: "play.fill", detail: "replaces the queue", hot: zone == .playNow)
+            tile(zone == .addNext ? "Play Next" : "Add to Queue", symbol: zone == .addNext ? "text.line.first.and.arrowtriangle.forward" : "plus",
                  hot: zone == .add || zone == .addNext, hint: true)
         }
-        .padding(14)
-        // Opaque enough that the keys and the record under the zones don't compete with them.
-        .background(scheme == .dark ? Color(white: 0.07).opacity(0.9) : Color(white: 0.98).opacity(0.92), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .padding(16)
         .allowsHitTesting(false)
     }
 
-    private func tile(_ title: String, symbol: String, hot: Bool, hint: Bool = false) -> some View {
-        let honey = StripColors.solid(.honey, scheme)
-        return VStack(spacing: 8) {
+    /// A zone over the blurred HUD: dark and translucent, and amber with the drag over it, so the HUD still shows
+    /// through both.
+    private func tile(_ title: String, symbol: String, detail: String? = nil, hot: Bool, hint: Bool = false) -> some View {
+        let amber = StripColors.solid(.honey, scheme).fill
+        // The darker amber of the light scheme's chips reads on the pale zone; the bright one reads on the dark zone.
+        let text = hot ? (scheme == .dark ? amber : StripColors.text(.honey, scheme)) : palette.ink
+        return VStack(spacing: 7) {
             Image(systemName: symbol)
-                .font(.system(size: 26, weight: .semibold))
+                .font(.system(size: 24, weight: .bold))
             Text(title)
-                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .font(.system(size: 16, weight: .heavy, design: .rounded))
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(palette.muted)
+            }
             if hint {
                 HStack(spacing: 4) {
-                    // On honey, the dark keycap and text of the light scheme read in both schemes.
-                    Keycap(text: "⌥", palette: hot ? .of(.light) : palette, small: true)
+                    Keycap(text: "⌥", palette: palette, small: true)
                     Text("play next")
                 }
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(hot ? honey.text.opacity(0.8) : palette.muted)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(palette.muted)
                 .opacity(zone == .addNext ? 0 : 1)
             }
         }
-        .foregroundStyle(hot ? honey.text : palette.ink)
+        .foregroundStyle(text)
+        .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0), radius: 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(hot ? honey.fill : palette.ink.opacity(0.07))
+                .fill(hot ? amber.opacity(scheme == .dark ? 0.16 : 0.34) : (scheme == .dark ? Color.black.opacity(0.3) : Color.white.opacity(0.5)))
                 .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(hot ? .clear : palette.ink.opacity(0.25), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
+                    .strokeBorder(hot ? amber.opacity(0.9) : palette.ink.opacity(0.35), style: StrokeStyle(lineWidth: 2, dash: [6, 5])))
         }
         .animation(.easeOut(duration: 0.1), value: hot)
     }
