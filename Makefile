@@ -229,9 +229,11 @@ release:
 # The Core ML models behind the stems. Each prints the size and the SHA-256 of its zip, which go into ModelDownload.
 # stems-model: BS-Roformer-SW, from its checkpoint and YAML config.
 # winds-model: the woodwind and brass heads of MVSep's 53-stem BS-RoFormer, which find the winds in the song and play as one Winds stem.
+# torch 2.7.1 and coremltools 9.0 have no wheels for the newest Python, so the venvs are made with this one.
+MODEL_PYTHON ?= python3.12
 STEMS_VENV := $(BUILD)/stems-venv
 $(STEMS_VENV)/bin/python:
-	python3 -m venv $(STEMS_VENV) && $(STEMS_VENV)/bin/pip install -q torch==2.7.1 coremltools==9.0 pyyaml numpy
+	$(MODEL_PYTHON) -m venv $(STEMS_VENV) && $(STEMS_VENV)/bin/pip install -q torch==2.7.1 coremltools==9.0 pyyaml numpy
 stems-model: $(STEMS_VENV)/bin/python
 	@test -n "$(CKPT)" -a -n "$(YAML)" || (echo "usage: make stems-model CKPT=BS-Roformer-SW.ckpt YAML=BS-Roformer-SW.yaml" && exit 1)
 	cd Scripts/stems-model && $(STEMS_VENV)/bin/python convert.py "$(abspath $(CKPT))" "$(abspath $(YAML))" $(BUILD)/stems-model BSRoformerSW
@@ -244,7 +246,7 @@ winds-model: $(STEMS_VENV)/bin/python
 DETTATO_COMMIT := 9b724251794f2bbd5eaa43e54734e5a251829130
 DETTATO_VENV := $(BUILD)/dettato-venv
 $(DETTATO_VENV)/bin/python:
-	python3 -m venv $(DETTATO_VENV) && $(DETTATO_VENV)/bin/pip install -q torch==2.7.1 coremltools==9.0 numpy==2.1.3 \
+	$(MODEL_PYTHON) -m venv $(DETTATO_VENV) && $(DETTATO_VENV)/bin/pip install -q torch==2.7.1 coremltools==9.0 numpy==2.1.3 \
 		"dettato @ git+https://github.com/kobimusic/dettato.git@$(DETTATO_COMMIT)"
 dettato-model: $(DETTATO_VENV)/bin/python
 	@test -n "$(AUDIO)" || (echo "usage: make dettato-model AUDIO=song-16k.wav" && exit 1)

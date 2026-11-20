@@ -474,41 +474,65 @@ struct NotesPainter {
             return (step, accidental, note.length)
         }
         let length = spelled.map(\.length).min() ?? 1
-        var ys: [CGFloat] = []
-        for note in spelled {
-            let y = clef.bottom - CGFloat(note.step - clef.step) * gap / 2
-            ys.append(y)
-            // Ledger lines under and over the staff.
+        let ys = spelled.map { clef.bottom - CGFloat($0.step - clef.step) * gap / 2 }
+        // Notes under the middle line take a stem up on their right, the others a stem down on their left.
+        let middle = clef.bottom - gap * 2
+        let up = ys.isEmpty ? true : (ys.max()! + ys.min()!) / 2 > middle
+        // Two notes a step apart can't share a column: the upper one of a second goes right of an up stem, the lower one
+        // left of a down stem, walking away from the stem's foot so that a cluster alternates sides.
+        let shift: CGFloat = 7.6
+        var side = [CGFloat](repeating: 0, count: spelled.count)
+        let order = spelled.indices.sorted { up ? spelled[$0].step < spelled[$1].step : spelled[$0].step > spelled[$1].step }
+        for (n, index) in order.enumerated() where n > 0 {
+            let before = order[n - 1]
+            if abs(spelled[index].step - spelled[before].step) == 1, side[before] == 0 { side[index] = up ? shift : -shift }
+        }
+        let left = side.contains { $0 < 0 } ? shift : 0
+        let right = side.contains { $0 > 0 } ? shift : 0
+        // Accidentals from the top down, each in the first column left of the heads that has no sign within a sixth.
+        var columns: [[Int]] = []
+        var signs: [(index: Int, sign: String, column: Int)] = []
+        for index in spelled.indices.sorted(by: { spelled[$0].step > spelled[$1].step }) {
+            let note = spelled[index]
+            // An accidental once per step in a bar, and a natural for a step that had one.
+            var sign = note.accidental
+            if sign == nil, shown[note.step] != nil { sign = "♮" }
+            guard let sign, shown[note.step] != sign else { continue }
+            shown[note.step] = sign
+            let column = columns.firstIndex { $0.allSatisfy { abs($0 - note.step) > 5 } } ?? columns.count
+            if column == columns.count { columns.append([]) }
+            columns[column].append(note.step)
+            signs.append((index, sign, column))
+        }
+        for (index, note) in spelled.enumerated() {
+            let y = ys[index]
+            // Ledger lines under and over the staff, wide enough for a head moved to either side.
+            let from = x - 7 - left, to = x + 7 + right
             if note.step < clef.step - 1 {
                 for step in stride(from: clef.step - 2, through: note.step, by: -2) {
                     let ly = clef.bottom - CGFloat(step - clef.step) * gap / 2
-                    line(&context, from: CGPoint(x: x - 7, y: ly), to: CGPoint(x: x + 7, y: ly), color: ink.opacity(0.45 * alpha))
+                    line(&context, from: CGPoint(x: from, y: ly), to: CGPoint(x: to, y: ly), color: ink.opacity(0.45 * alpha))
                 }
             } else if note.step > clef.step + 9 {
                 for step in stride(from: clef.step + 10, through: note.step, by: 2) {
                     let ly = clef.bottom - CGFloat(step - clef.step) * gap / 2
-                    line(&context, from: CGPoint(x: x - 7, y: ly), to: CGPoint(x: x + 7, y: ly), color: ink.opacity(0.45 * alpha))
+                    line(&context, from: CGPoint(x: from, y: ly), to: CGPoint(x: to, y: ly), color: ink.opacity(0.45 * alpha))
                 }
             }
-            // An accidental once per step in a bar, and a natural for a step that had one.
-            var sign = note.accidental
-            if sign == nil, shown[note.step] != nil { sign = "♮" }
-            if let sign, shown[note.step] != sign {
-                shown[note.step] = sign
-                context.draw(Text(sign).font(.system(size: 11)).foregroundColor(color), at: CGPoint(x: x - 10, y: y))
-            }
+            let hx = x + side[index]
             let head = Path(ellipseIn: CGRect(x: -4.2, y: -3.1, width: 8.4, height: 6.2))
                 .applying(CGAffineTransform(rotationAngle: -0.35))
-                .applying(CGAffineTransform(translationX: x, y: y))
+                .applying(CGAffineTransform(translationX: hx, y: y))
             if length >= 2 { context.stroke(head, with: .color(color), lineWidth: 1.3) } else { context.fill(head, with: .color(color)) }
             if [0.75, 1.5, 3].contains(length) {
-                context.fill(Path(ellipseIn: CGRect(x: x + 6, y: y - 1.2, width: 2.4, height: 2.4)), with: .color(color))
+                context.fill(Path(ellipseIn: CGRect(x: x + 6 + right, y: y - 1.2, width: 2.4, height: 2.4)), with: .color(color))
             }
         }
+        for (index, sign, column) in signs {
+            let ax = x - 10 - left - CGFloat(column) * 7
+            context.draw(Text(sign).font(.system(size: 11)).foregroundColor(color), at: CGPoint(x: ax, y: ys[index]))
+        }
         guard length < 4, let low = ys.max(), let high = ys.min() else { return }
-        // Notes under the middle line take a stem up on their right, the others a stem down on their left.
-        let middle = clef.bottom - gap * 2
-        let up = (low + high) / 2 > middle
         let stemX = up ? x + 3.8 : x - 3.8
         let tip = up ? high - gap * 3.5 : low + gap * 3.5
         line(&context, from: CGPoint(x: stemX, y: up ? low : high), to: CGPoint(x: stemX, y: tip), color: color, width: 1.1)
