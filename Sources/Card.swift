@@ -485,8 +485,14 @@ struct HUDCard: View {
                             .font(.system(size: 11, weight: .medium, design: .rounded))
                             .foregroundStyle(palette.muted)
                     }
-                    SongTimeBar(track: track, ticking: model.shown && model.playing, palette: palette, width: 110)
-                        .padding(.top, 3)
+                    // The waveform takes the time bar's place on the card, and seeks the same way.
+                    if showsKeys, model.waveformShown, track.duration != nil {
+                        CardWaveform(wave: model.wave, track: track, width: ring - 30, ticking: model.shown && model.playing,
+                                     bpm: model.shownTempo?.bpm, muted: model.stemsMuted, palette: palette)
+                    } else {
+                        SongTimeBar(track: track, ticking: model.shown && model.playing, palette: palette, width: 110)
+                            .padding(.top, 3)
+                    }
                 }
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -534,6 +540,27 @@ struct HUDCard: View {
         .frame(width: ring + 84)
         .animation(.snappy(duration: 0.25), value: model.lyricsShown)
         .animation(.snappy(duration: 0.3), value: model.relativeKeys)
+    }
+}
+
+/// The waveform under the song on the card, or the time bar until the waveform of the song is known.
+private struct CardWaveform: View {
+    @ObservedObject var wave: WaveState
+    let track: NowPlaying.Track
+    let width: CGFloat
+    let ticking: Bool
+    let bpm: Double?
+    let muted: Set<Stem>
+    let palette: Palette
+
+    var body: some View {
+        if wave.waveform != nil {
+            WaveformHost(wave: wave, track: track, style: .ribbon, width: width, height: 30, ticking: ticking, bpm: bpm, muted: muted, palette: palette)
+                .padding(.top, 8)
+        } else {
+            SongTimeBar(track: track, ticking: ticking, palette: palette, width: 110)
+                .padding(.top, 3)
+        }
     }
 }
 

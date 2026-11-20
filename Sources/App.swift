@@ -353,6 +353,32 @@ final class HUDModel: ObservableObject {
     var onLink: (URL) -> Void = { _ in }
     /// A file or a link is dragged over the HUD.
     @Published var dropTargeted = false
+
+    /// The waveform of the song, with its zoom, its lanes and the region loop, in their own object so that the
+    /// waveform redraws without the rest of the HUD.
+    let wave = WaveState()
+    /// Settings > HUD > Waveform, and W over the HUD.
+    @Published var waveformShown = Preferences.shared.waveform
+    @Published var waveformStyle = Preferences.shared.waveformStyle
+}
+
+/// The waveform of the song that plays: whole for a file, and drawn while it plays for a song from another player.
+final class WaveState: ObservableObject {
+    @Published var waveform: SongWaveform?
+    /// 1 shows the whole song, and more shows a close-up of the moments around the playhead (⌘+ and ⌘−, a pinch, ⌘
+    /// with a scroll).
+    @Published var zoom = 1.0
+    /// ⌥W: one lane per stem, while the stems of the whole song are known.
+    @Published var lanes = false
+    @Published var loop: LoopRegion?
+
+    static let zoomLimit = 40.0
+
+    func zoom(by factor: Double) {
+        let next = min(Self.zoomLimit, max(1, zoom * factor))
+        // Close to 1 means the whole song, so the last step out lands on it exactly.
+        zoom = next < 1.08 ? 1 : next
+    }
 }
 
 /// The level of each stem, in the order of `Stem`, 20 times a second while the stems play and the HUD shows.
@@ -366,6 +392,11 @@ enum ScrollRegion: Hashable {
     case tempo
     case stem(Stem)
     case timeBar
+    /// The waveform, where a scroll moves the song as over the time bar, and ⌘ with a scroll zooms.
+    case waveform
+
+    /// A scroll here moves the song, sideways as well as up and down.
+    var seeks: Bool { self == .timeBar || self == .waveform }
 }
 
 /// The scroll that adjusts the tempo or a stem, in its own object so that the lift redraws only what it moves.
@@ -659,12 +690,37 @@ struct HUDView: View {
                     .allowsHitTesting(model.pending == nil)
                     .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
             }
+            if showsWaveform(.ribbon) {
+                waveform(palette, width: Self.keyRowWidth - 14, height: 40)
+                    .transition(.opacity)
+            }
             }
             // The key sits in the middle of the space above the stems.
             .frame(maxHeight: .infinity)
             // The stems stay at the bottom of this column, beside the record, so they don't make the glass taller.
             stems(palette)
         }
+        // The strip grows up from the hints bar across the whole column, behind the stems and their button.
+        .background(alignment: .bottom) {
+            if showsWaveform(.strip) {
+                GeometryReader { column in
+                    waveform(palette, width: column.size.width + 40, height: 30)
+                        .frame(width: column.size.width + 40, height: 30)
+                        .offset(x: -20, y: column.size.height - 30 + 16)
+                }
+                .transition(.opacity)
+            }
+        }
+    }
+
+    /// The waveform shows in `style` while a song with a length plays and the key row shows.
+    private func showsWaveform(_ style: WaveformStyle) -> Bool {
+        showsStrip && model.key != nil && model.waveformShown && model.waveformStyle == style && deckTrack?.duration != nil && model.phase != .idle
+    }
+
+    private func waveform(_ palette: Palette, width: CGFloat, height: CGFloat) -> some View {
+        WaveformHost(wave: model.wave, track: deckTrack, style: model.waveformStyle, width: width, height: height, ticking: model.shown && model.playing,
+                     bpm: model.shownTempo?.bpm, muted: model.stemsMuted, palette: palette)
     }
 
     /// Karaoke: the lyrics large in a glass as tall as the screen allows, with the key at the top and the record
@@ -1033,7 +1089,7 @@ final class HUDPanel: NSPanel {
         guard let view = contentView else { return false }
         let local = view.convert(event.locationInWindow, from: nil)
         let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
-        return model.scroll.frames.values.contains { $0.region == .timeBar && $0.frame.insetBy(dx: -2, dy: -4).contains(point) }
+        return model.scroll.frames.values.contains { $0.region.seeks && $0.frame.insetBy(dx: -2, dy: -4).contains(point) }
     }
 
     /// A drag that starts anywhere on the glass moves the panel once the pointer has moved a few points, also from
@@ -2029,6 +2085,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stayOpen = false
     private let keyLookup = KeyLookup()
     private var keyMonitor: Any?
+    private var magnifyMonitor: Any?
     /// Gets keyboard focus back when the key picker closes, if a click on the HUD made Muskey the active app.
     private var lastOtherApp = NSWorkspace.shared.frontmostApplication
     private var signalSources: [DispatchSourceSignal] = []
@@ -2067,6 +2124,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let spec = Self.stringOption("--lyrics-lookup") { return lookUpLyrics(spec) }
         if let spec = Self.stringOption("--key-lookup") { return lookUpKeyForTesting(spec) }
         if let path = Self.stringOption("--tempo") { return tempoForTesting(path) }
+        if let path = Self.waveformTest {
+            Task {
+                let start = Date()
+                guard let waveform = await WaveformReader.read(URL(fileURLWithPath: path)) else {
+                    print("waveform: can't read \(path)")
+                    exit(1)
+                }
+                let bars = waveform.bars(40)
+                print(String(format: "waveform: %.1f s, %d levels, %.0f%% heard, read in %.2f s", waveform.duration, waveform.levels.count, waveform.heard * 100, Date().timeIntervalSince(start)))
+                print(bars.map { $0 < 0 ? " " : String(" ▁▂▃▄▅▆▇█".map { $0 }[min(8, Int($0 * 8.99))]) }.joined())
+                exit(0)
+            }
+            return
+        }
         if let path = Self.stringOption("--splice-dump") {
             exit(SlowStream.searchDump(path, old: Self.option("--splice-old", 3), move: Self.option("--splice-move", 0)))
         }
@@ -2099,6 +2170,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.store(in: &prefChanges)
         prefs.$launchAtLogin.sink { [weak self] in self?.updateLoginItem($0) }.store(in: &prefChanges)
         prefs.$relativeKeys.sink { [weak self] in self?.model.relativeKeys = $0 }.store(in: &prefChanges)
+        prefs.$waveform.dropFirst().sink { [weak self] shown in
+            self?.model.waveformShown = shown
+            DispatchQueue.main.async { self?.syncWaveform() }
+        }.store(in: &prefChanges)
+        prefs.$waveformStyle.dropFirst().sink { [weak self] in self?.model.waveformStyle = $0 }.store(in: &prefChanges)
+        // The waveform of another player's song is drawn only while the HUD shows it.
+        model.$shown.dropFirst().removeDuplicates().sink { [weak self] _ in DispatchQueue.main.async { self?.syncWaveform() } }.store(in: &prefChanges)
         prefs.$rewindEffect.sink { [weak self] effect in
             guard let self else { return }
             pitch.fadeSteps = effect == .fade || fadeToStart
@@ -2241,6 +2319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         filePlayer.onChange = { [weak self] in
             self?.refreshStatus()
             self?.syncSpeed()
+            self?.syncWaveform()
         }
         filePlayer.onMove = { [weak self] in self?.playerMoved(to: $0) }
         stemsCache.log = { [weak self] in self?.log($0) }
@@ -2251,13 +2330,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !ok { stemsCacheFailed.insert(path) }
             stemsCacheLooked = nil
             syncStemsCache()
+            syncWaveformStems()
         }
         statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === panel else { return event }
             // A save in progress leaves the stems and the songs as they are, and so do the shortcuts, which hide them.
             if model.saving != nil || model.shortcuts { return nil }
+            // ⌘ with a scroll over the waveform zooms it, fingers up zooming in.
+            if event.modifierFlags.contains(.command), overWaveform(event) {
+                let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
+                zoomWaveform(exp(Double(sign * event.scrollingDeltaY) * (event.hasPreciseScrollingDeltas ? 0.01 : 0.08)))
+                return nil
+            }
             return adjust(event) || swipe(event) ? nil : event
+        }
+        magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
+            guard let self, event.window === panel, overWaveform(event) else { return event }
+            zoomWaveform(1 + Double(event.magnification))
+            return nil
         }
         nowPlaying.log = { [weak self] in self?.log($0) }
         nowPlaying.heard = { [weak self] report in self?.slow.heard(report) ?? report }
@@ -2281,6 +2372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.songChanged($0)
         }
         nowPlaying.onTrack = { [weak self] in
+            self?.syncWaveform()
             self?.listenWhenPlaying()
             self?.resumeListen()
             self?.syncPauseStop()
@@ -2555,7 +2647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if var candidate = adjustCandidate {
             // Over the time bar, a scroll sideways moves the song too, so it is never a swipe there.
-            candidate.travel.width += candidate.region == .timeBar ? 0 : abs(event.scrollingDeltaX)
+            candidate.travel.width += candidate.region.seeks ? 0 : abs(event.scrollingDeltaX)
             candidate.travel.height += scrollTravel(event, for: candidate.region)
             guard candidate.travel.width + abs(candidate.travel.height) > 6 else {
                 adjustCandidate = candidate
@@ -2597,7 +2689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func scrollTravel(_ event: NSEvent, for region: ScrollRegion) -> CGFloat {
         let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
         let up = sign * event.scrollingDeltaY
-        return region == .timeBar ? up - sign * event.scrollingDeltaX : up
+        return region.seeks ? up - sign * event.scrollingDeltaX : up
     }
 
     /// Sets the tempo, the volume or the place in the song from the travel so far, and the lift that goes with it.
@@ -2611,7 +2703,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case let .stem(stem):
             let volume = min(max(((current.start + Double(current.travel) / 300) * 100).rounded() / 100, 0), 1.5)
             if volume != model.stemVolumes[stem] ?? 1 { setStemVolume(stem, volume) }
-        case .timeBar:
+        case .timeBar, .waveform:
             // 400 points of travel cross the whole song. The bar shows the place, and the song moves there once the
             // fingers lift, so a player gets one seek per scroll.
             let fraction = min(max(current.start + Double(current.travel) / 400, 0), 1)
@@ -2639,7 +2731,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if case let .stem(stem) = adjusting?.region {
             log(String(format: "%@ at %.0f%%", stem.name.lowercased(), (model.stemVolumes[stem] ?? 1) * 100))
         }
-        if adjusting?.region == .timeBar, let fraction = model.scrub {
+        if adjusting?.region.seeks == true, let fraction = model.scrub {
             seek(toFraction: fraction)
             // The bar holds the place until the player reports the move.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
@@ -2665,7 +2757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch region {
         case .tempo: model.speedAdjustable ? currentSpeed : nil
         case let .stem(stem): model.stemsAvailable ? model.stemVolumes[stem] ?? 1 : nil
-        case .timeBar: model.seekable ? playedFraction : nil
+        case .timeBar, .waveform: model.seekable ? playedFraction : nil
         }
     }
 
@@ -3248,6 +3340,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Int(event.keyCode) == kVK_ANSI_O ? self.openFile() : self.openLocation()
                 return nil
             }
+            // ⌘+ and ⌘− zoom the waveform.
+            if let self, event.window === self.panel, flags.contains(.command), !flags.contains(.option),
+               [kVK_ANSI_Equal, kVK_ANSI_Minus, kVK_ANSI_KeypadPlus, kVK_ANSI_KeypadMinus].contains(Int(event.keyCode)) {
+                self.zoomWaveform([kVK_ANSI_Equal, kVK_ANSI_KeypadPlus].contains(Int(event.keyCode)) ? 1.5 : 1 / 1.5)
+                return nil
+            }
             // ⌘K opens karaoke, or closes it.
             if let self, self.model.picking, event.window === self.panel, flags.contains(.command), !flags.contains(.option),
                Int(event.keyCode) == kVK_ANSI_K {
@@ -3306,6 +3404,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if code == kVK_Space {
             playPause()
+            return true
+        }
+        // W shows or hides the waveform in every layout, and ⌥W splits it into the lanes of the stems.
+        if code == kVK_ANSI_W, !shift {
+            option ? toggleWaveformLanes() : toggleWaveform()
             return true
         }
         if model.lyricsShown {
@@ -4143,6 +4246,143 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncSeekable()
     }
 
+    // MARK: Waveform
+
+    /// Draws the waveform of a song from another player from what Muskey hears, while the HUD shows.
+    private var waveformRecorder: WaveformRecorder?
+    /// The cache key of the waveform that the HUD has, so the same song isn't read twice.
+    private var waveformKey: String?
+    private var waveformRead: Task<Void, Never>?
+    /// Copies what the recorder drew into the HUD four times a second.
+    private var waveformTimer: Timer?
+    /// `--waveform-file FILE` prints the waveform that Muskey reads from a file, for testing.
+    static let waveformTest = TestFlags.value("--waveform-file")
+
+    /// The waveform of the song that plays: a file's is read whole, and another player's comes from the cache and
+    /// from what Muskey hears while the HUD shows, until the whole song was heard.
+    private func syncWaveform() {
+        guard model.waveformShown, let track = nowPlaying.track, track.title?.isEmpty == false, let duration = track.duration, duration > 0 else {
+            stopWaveformRecorder()
+            if !model.waveformShown || nowPlaying.track?.title?.isEmpty != false {
+                waveformKey = nil
+                if model.wave.waveform != nil { model.wave.waveform = nil }
+            }
+            return
+        }
+        if playsInFilePlayer, let path = filePlayer.current?.path {
+            stopWaveformRecorder()
+            guard let key = WaveformStore.key(file: path), key != waveformKey else { return }
+            waveformKey = key
+            model.wave.waveform = nil
+            model.wave.lanes = false
+            waveformRead?.cancel()
+            waveformRead = Task { [weak self] in
+                var waveform = WaveformStore.load(key)
+                if waveform == nil {
+                    waveform = await WaveformReader.read(URL(fileURLWithPath: path))
+                    if let waveform { WaveformStore.save(waveform, as: key) }
+                }
+                guard !Task.isCancelled, let self, waveformKey == key else { return }
+                model.wave.waveform = waveform
+                log(waveform == nil ? "waveform: the file can't be read" : "waveform: read the whole file")
+                syncWaveformStems()
+            }
+            return
+        }
+        let key = WaveformStore.key(song: track.song, duration: duration)
+        if key != waveformKey {
+            stopWaveformRecorder()
+            waveformRead?.cancel()
+            waveformKey = key
+            let waveform = WaveformStore.load(key) ?? SongWaveform(duration: duration)
+            model.wave.waveform = waveform
+            model.wave.lanes = false
+            waveformRecorder = WaveformRecorder(song: track.song, key: key, waveform: waveform)
+        }
+        guard let recorder = waveformRecorder else { return }
+        if let player = nowPlaying.player { recorder.report(player) }
+        // A song heard whole needs no more listening, and a hidden HUD shows no waveform.
+        let wanted = model.shown && model.wave.waveform?.complete != true
+        if wanted, !recorder.running {
+            do {
+                try recorder.start(SystemAudioTap())
+                log("waveform: drawing the song while it plays")
+            } catch {
+                log("waveform: the tap failed: \(error)")
+            }
+            waveformTimer?.invalidate()
+            waveformTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.publishRecordedWaveform() }
+        } else if !wanted, recorder.running {
+            stopWaveformRecorder(keep: true)
+        }
+    }
+
+    private func publishRecordedWaveform() {
+        guard let recorder = waveformRecorder, recorder.key == waveformKey else { return }
+        let (waveform, changed) = recorder.take()
+        if changed { model.wave.waveform = waveform }
+        if waveform.complete { syncWaveform() }
+    }
+
+    /// Stops drawing from what Muskey hears and keeps what was drawn on disk. `keep` leaves the recorder for the same
+    /// song, which goes on drawing once the HUD shows again.
+    private func stopWaveformRecorder(keep: Bool = false) {
+        waveformTimer?.invalidate()
+        waveformTimer = nil
+        guard let recorder = waveformRecorder else { return }
+        recorder.stop()
+        let (waveform, _) = recorder.take()
+        if waveform.heard > 0 { WaveformStore.save(waveform, as: recorder.key) }
+        if !keep { waveformRecorder = nil }
+    }
+
+    /// The lanes of the stems, from the stems of the whole song once they are in the cache.
+    private func syncWaveformStems() {
+        guard playsInFilePlayer, let path = filePlayer.current?.path, let key = waveformKey, let waveform = model.wave.waveform, waveform.stems == nil,
+              let cache = StemsCache.open(for: path) else { return }
+        let base = waveform
+        Task { [weak self] in
+            let stems = await Task.detached(priority: .utility) { WaveformReader.stems(cache) }.value
+            guard let self, waveformKey == key else { return }
+            var waveform = model.wave.waveform ?? base
+            waveform.stems = stems
+            model.wave.waveform = waveform
+            WaveformStore.save(waveform, as: key)
+            log("waveform: lanes for the stems")
+        }
+    }
+
+    /// W shows or hides the waveform, and remembers it.
+    private func toggleWaveform() {
+        prefs.waveform.toggle()
+        log("waveform \(prefs.waveform ? "on" : "off")")
+    }
+
+    /// ⌥W: one lane per stem, or the whole song again. Without the stems of the whole song there are no lanes.
+    private func toggleWaveformLanes() {
+        guard model.wave.waveform?.stems != nil else {
+            log("waveform: no lanes until the stems of the whole song are separated")
+            return
+        }
+        model.wave.lanes.toggle()
+    }
+
+    /// Zooms the waveform by `factor`, from the whole song to a close-up of a few seconds.
+    private func zoomWaveform(_ factor: Double) {
+        guard model.waveformShown, model.waveformStyle == .ribbon, model.wave.waveform != nil else { return }
+        let before = model.wave.zoom
+        withAnimation(.snappy(duration: 0.2)) { model.wave.zoom(by: factor) }
+        if Self.logKeys, before != model.wave.zoom { log(String(format: "waveform zoom %.1f", model.wave.zoom)) }
+    }
+
+    /// The pointer of `event` is over the waveform.
+    private func overWaveform(_ event: NSEvent) -> Bool {
+        guard let view = panel.contentView else { return false }
+        let local = view.convert(event.locationInWindow, from: nil)
+        let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
+        return model.scroll.frames.values.contains { $0.region == .waveform && $0.frame.contains(point) }
+    }
+
     /// The Separate instruments and vocals button: separates the song with every stem playing, and shows the stems in
     /// place of the button. Like the keys, it pins the HUD open.
     private func separate() {
@@ -4732,7 +4972,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
         // ? shows the shortcuts.
         var keys: [(Int, Int)] = [kVK_Escape, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
-        if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } }
+        if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } + [(kVK_ANSI_W, 0), (kVK_ANSI_W, optionKey)] }
         if keyed, model.stemsAvailable {
             // V mutes the vocals or plays them again, in every layout.
             keys += Self.stemKeys.flatMap { code in [(code, 0), (code, optionKey)] } + [(kVK_ANSI_0, 0), (kVK_ANSI_V, 0)]
@@ -4763,6 +5003,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if keyed, let karaoke = try? HotKey(keyCode: kVK_ANSI_K, modifiers: cmdKey, action: { [weak self] in self?.toggleKaraoke() }) {
             hoverKeys.append(karaoke)
+        }
+        // ⌘+ and ⌘− zoom the waveform in and out, with or without Shift for the +.
+        if keyed {
+            for (code, modifiers, factor) in [(kVK_ANSI_Equal, cmdKey, 1.5), (kVK_ANSI_Equal, cmdKey | shiftKey, 1.5), (kVK_ANSI_Minus, cmdKey, 1 / 1.5)] {
+                if let zoom = try? HotKey(keyCode: code, modifiers: modifiers, action: { [weak self] in self?.zoomWaveform(factor) }) { hoverKeys.append(zoom) }
+            }
         }
         if model.savable, let save = try? HotKey(keyCode: kVK_ANSI_S, modifiers: cmdKey, action: { [weak self] in self?.saveSong() }) {
             hoverKeys.append(save)
@@ -5212,7 +5458,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -5293,6 +5539,29 @@ extension EnvironmentValues {
             model.keepKey = keep
             model.track = song
             model.artwork = artwork
+            // The made-up waveform, whole, zoomed in, in the lanes of the stems, or half heard as a song from another
+            // player is while it plays.
+            if song != nil {
+                var waveform = HUDSample.waveform
+                if variant == "-waveform-lanes" {
+                    waveform.stems = Dictionary(uniqueKeysWithValues: Stem.allCases.map { stem in
+                        (stem.rawValue, Data(waveform.levels.enumerated().map { i, level in
+                            UInt8(max(1, Double(level) * (0.35 + 0.65 * abs(sin(Double(i) / Double(180 + stem.rawValue * 47)))))) }))
+                    })
+                }
+                if variant == "-waveform-streamed" { for i in Int(Double(waveform.levels.count) * 0.46) ..< waveform.levels.count { waveform.levels[i] = 0 } }
+                model.wave.waveform = waveform
+            }
+            model.waveformShown = variant != "-waveform-off"
+            model.waveformStyle = variant == "-waveform-strip" ? .strip : .ribbon
+            model.wave.zoom = variant == "-waveform-zoom" ? 10 : 1
+            model.wave.lanes = variant == "-waveform-lanes"
+            if variant == "-waveform-stems" {
+                model.stemsAvailable = true
+                model.stemsEngaged = true
+                model.stemsMuted = [.vocals]
+                model.stemMeters.levels = [0.13, 0.2, 0.025, 0.16, 0.05, 0.07, 0.09]
+            }
             // A finished listen found the tempo of the song, and a listen still running hasn't yet.
             if phase == .done { model.tempo = SongTempo(song: song?.song, bpm: 124) }
             // A song in Muskey Player at 85 % of its speed.

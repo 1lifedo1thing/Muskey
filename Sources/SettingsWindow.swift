@@ -292,6 +292,22 @@ private struct HUDPane: View {
                 }
                 .padding(.vertical, 4)
             }
+            Section("Waveform") {
+                HStack(spacing: 14) {
+                    ChoiceTile(title: "Off", selected: !prefs.waveform, height: 130, wallpaper: true) { prefs.waveform = false } preview: {
+                        HUDSampleView(card: false, relative: prefs.relativeKeys, keysOnly: true, waveform: (false, .ribbon))
+                    }
+                    ForEach(WaveformStyle.allCases, id: \.self) { style in
+                        ChoiceTile(title: style.name, selected: prefs.waveform && prefs.waveformStyle == style, height: 130, wallpaper: true) {
+                            prefs.waveform = true
+                            prefs.waveformStyle = style
+                        } preview: {
+                            HUDSampleView(card: false, relative: prefs.relativeKeys, keysOnly: true, waveform: (true, style))
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
             Section("Behaviour") {
                 // The period and the switch sit on one row, as in General > Playback.
                 LabeledContent {

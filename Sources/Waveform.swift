@@ -1,0 +1,317 @@
+import Accelerate
+import AVFoundation
+import CryptoKit
+import Foundation
+
+/// How loud a song is over its whole length, for the waveform in the HUD.
+///
+/// The levels are kept 50 times a second, which is fine enough for the close-up that a zoom shows and small enough
+/// to keep on disk: four minutes take 12 KB. Each level is one byte: 0 for a moment that wasn't heard yet, and 1 to
+/// 255 for a heard one, from silence to loud. The scale is a square root of the RMS, which shows quiet parts better
+/// than a linear one.
+struct SongWaveform: Codable, Equatable {
+    static let rate = 50.0
+
+    var duration: Double
+    var levels: Data
+    /// One row of levels per stem, by the stem's raw value, from stems separated for the whole song.
+    var stems: [Int: Data]?
+
+    init(duration: Double, levels: Data, stems: [Int: Data]? = nil) {
+        self.duration = duration
+        self.levels = levels
+        self.stems = stems
+    }
+
+    init(duration: Double) {
+        self.init(duration: duration, levels: Data(count: Self.slots(for: duration)))
+    }
+
+    static func slots(for duration: Double) -> Int { max(1, Int((duration * rate).rounded(.up))) }
+
+    /// The byte for an RMS level: 1 for silence, 255 for a full-scale sine and louder.
+    static func byte(rms: Float) -> UInt8 {
+        UInt8(1 + (min(1, (rms / 0.7).squareRoot()) * 254).rounded())
+    }
+
+    /// The share of the song that was heard, from 0 to 1.
+    var heard: Double {
+        guard !levels.isEmpty else { return 0 }
+        return Double(levels.reduce(0) { $0 + ($1 > 0 ? 1 : 0) }) / Double(levels.count)
+    }
+
+    var complete: Bool { heard >= 0.97 }
+
+    /// `count` bars between `from` and `to` seconds, from 0 to 1, or -1 where nothing was heard. A bar is the average
+    /// level under it, stretched between the quiet and the loud parts of the song: songs are mastered loud, and
+    /// their loudest moments under each bar would make an even block.
+    func bars(_ count: Int, from: Double = 0, to: Double? = nil, stem: Stem? = nil) -> [Float] {
+        let data = stem.flatMap { stems?[$0.rawValue] } ?? levels
+        guard count > 0, !data.isEmpty else { return [] }
+        let to = to ?? duration
+        let (low, high) = Self.range(of: data)
+        return data.withUnsafeBytes { raw -> [Float] in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            return (0 ..< count).map { i in
+                let a = Int(((from + (to - from) * Double(i) / Double(count)) * Self.rate).rounded(.down))
+                let b = max(a + 1, Int(((from + (to - from) * Double(i + 1) / Double(count)) * Self.rate).rounded(.down)))
+                guard a < bytes.count, b > 0 else { return -1 }
+                var sum = 0, heard = 0, loudest: UInt8 = 0
+                for j in max(0, a) ..< min(b, bytes.count) where bytes[j] > 0 {
+                    sum += Int(bytes[j])
+                    heard += 1
+                    loudest = max(loudest, bytes[j])
+                }
+                guard heard > 0 else { return -1 }
+                // Mostly the average, with a little of the loudest moment, so a short hit still shows.
+                let level = 0.8 * Float(sum) / Float(heard) + 0.2 * Float(loudest)
+                let stretched = min(1, max(0, (level - low) / max(1, high - low)))
+                return 0.06 + 0.94 * pow(stretched, 1.25)
+            }
+        }
+    }
+
+    /// The quiet and the loud ends of the heard levels: the 3rd and the 99.5th percentile.
+    private static func range(of data: Data) -> (Float, Float) {
+        var histogram = [Int](repeating: 0, count: 256)
+        var heard = 0
+        for byte in data where byte > 0 {
+            histogram[Int(byte)] += 1
+            heard += 1
+        }
+        guard heard > 0 else { return (1, 255) }
+        func percentile(_ p: Double) -> Float {
+            let target = Int(Double(heard) * p)
+            var seen = 0
+            for (level, n) in histogram.enumerated() {
+                seen += n
+                if seen > target { return Float(level) }
+            }
+            return 255
+        }
+        let low = percentile(0.03), high = percentile(0.995)
+        // A song that is almost one level throughout keeps some height instead of a stretch of noise.
+        return (min(low, high - 24), high)
+    }
+}
+
+/// Reads the waveform of a file, and of its stems once they were separated for the whole song.
+enum WaveformReader {
+    /// The levels of the audio in `url`, read at 11 kHz mono, which is enough for 20 ms levels and quick: a
+    /// four-minute song reads in a fraction of a second.
+    static func read(_ url: URL) async -> SongWaveform? {
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .audio).first,
+              let length = try? await asset.load(.duration), length.seconds.isFinite, length.seconds > 0,
+              let reader = try? AVAssetReader(asset: asset)
+        else { return nil }
+        let rate = 11025.0
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: false, AVLinearPCMIsBigEndianKey: false, AVNumberOfChannelsKey: 1, AVSampleRateKey: rate,
+        ])
+        guard reader.canAdd(output) else { return nil }
+        reader.add(output)
+        guard reader.startReading() else { return nil }
+        var accumulator = LevelAccumulator(duration: length.seconds, sampleRate: rate)
+        while let buffer = output.copyNextSampleBuffer() {
+            guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+            var size = 0
+            var pointer: UnsafeMutablePointer<CChar>?
+            guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &size, dataPointerOut: &pointer) == noErr,
+                  let pointer else { continue }
+            pointer.withMemoryRebound(to: Float.self, capacity: size / 4) { accumulator.add($0, count: size / 4) }
+        }
+        guard reader.status == .completed else { return nil }
+        return accumulator.finish()
+    }
+
+    /// The levels of each stem in the stems of a whole song, from both channels.
+    static func stems(_ cache: StemsCache) -> [Int: Data] {
+        let per = Double(StemsCache.rate) / SongWaveform.rate
+        let slots = Int((Double(cache.frames) / per).rounded(.up))
+        var rows: [Int: Data] = [:]
+        var buffer = [Float](repeating: 0, count: Int(per.rounded(.up)) * 2 + 2)
+        for stem in Stem.allCases {
+            var row = Data(count: slots)
+            row.withUnsafeMutableBytes { raw in
+                let out = raw.bindMemory(to: UInt8.self)
+                for slot in 0 ..< slots {
+                    let a = Int(Double(slot) * per), b = min(cache.frames, Int(Double(slot + 1) * per))
+                    guard b > a else { out[slot] = 1; continue }
+                    let count = b - a
+                    buffer.withUnsafeMutableBufferPointer { cache.copy([stem.rawValue * 2, stem.rawValue * 2 + 1], from: a, count: count, into: $0.baseAddress!) }
+                    var squares: Float = 0
+                    vDSP_svesq(buffer, 1, &squares, vDSP_Length(count * 2))
+                    out[slot] = SongWaveform.byte(rms: (squares / Float(count * 2)).squareRoot())
+                }
+            }
+            rows[stem.rawValue] = row
+        }
+        return rows
+    }
+}
+
+/// Turns samples into 20 ms levels.
+struct LevelAccumulator {
+    private(set) var waveform: SongWaveform
+    private let perSlot: Double
+    private var slot = 0
+    private var filled = 0
+    private var squares: Float = 0
+
+    init(duration: Double, sampleRate: Double) {
+        waveform = SongWaveform(duration: duration)
+        perSlot = sampleRate / SongWaveform.rate
+    }
+
+    mutating func add(_ samples: UnsafePointer<Float>, count: Int) {
+        var offset = 0
+        let slots = waveform.levels.count
+        while offset < count, slot < slots {
+            let take = min(count - offset, Int(perSlot) - filled)
+            var sum: Float = 0
+            vDSP_svesq(samples + offset, 1, &sum, vDSP_Length(take))
+            squares += sum
+            filled += take
+            offset += take
+            if filled >= Int(perSlot) {
+                waveform.levels[slot] = SongWaveform.byte(rms: (squares / Float(filled)).squareRoot())
+                slot += 1
+                filled = 0
+                squares = 0
+            }
+        }
+    }
+
+    mutating func finish() -> SongWaveform {
+        if filled > 0, slot < waveform.levels.count { waveform.levels[slot] = SongWaveform.byte(rms: (squares / Float(filled)).squareRoot()) }
+        // The file can end a little before the length that its header gives: the slots after its end are silent.
+        for i in slot ..< waveform.levels.count where waveform.levels[i] == 0 { waveform.levels[i] = 1 }
+        return waveform
+    }
+}
+
+/// Draws the waveform of a song from another player while it plays, from the audio that Muskey hears. Each moment
+/// lands at the place that the player reports for it, so a seek or a pause leaves the rest of the song as it was.
+/// Thread safe: samples arrive on the tap's queue, and the main thread reads what was drawn.
+final class WaveformRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waveform: SongWaveform
+    private var position: (seconds: Double, at: Double, rate: Double, playing: Bool)?
+    private var tap: AudioTapping?
+    private var changed = false
+    let song: [String?]
+    /// Where the waveform is kept between plays.
+    let key: String
+    var running: Bool { tap != nil }
+
+    init(song: [String?], key: String, waveform: SongWaveform) {
+        self.song = song
+        self.key = key
+        self.waveform = waveform
+    }
+
+    /// The player's last report: where the song was at `at` (seconds since 1970), and how fast it moves.
+    func report(_ track: NowPlaying.Track) {
+        lock.withLock {
+            if let elapsed = track.elapsed {
+                position = (elapsed, track.timestamp ?? Date().timeIntervalSince1970, track.rate ?? 0, track.playing)
+            }
+        }
+    }
+
+    func start(_ tap: AudioTapping) throws {
+        try tap.prepare()
+        let rate = tap.sampleRate
+        try tap.start { [weak self] samples in self?.add(samples, sampleRate: rate) }
+        self.tap = tap
+    }
+
+    func stop() {
+        tap?.stop()
+        tap = nil
+    }
+
+    /// What was drawn so far, and whether anything changed since the last call.
+    func take() -> (waveform: SongWaveform, changed: Bool) {
+        lock.withLock {
+            defer { changed = false }
+            return (waveform, changed)
+        }
+    }
+
+    private func add(_ samples: [Float], sampleRate: Double) {
+        lock.withLock {
+            guard let position, position.playing, position.rate > 0, !samples.isEmpty else { return }
+            // The samples end now, so they started their length before now, at the song's rate.
+            let now = Date().timeIntervalSince1970
+            let end = position.seconds + (now - position.at) * position.rate
+            let start = end - Double(samples.count) / sampleRate * position.rate
+            let perSlot = sampleRate / SongWaveform.rate / position.rate
+            let slots = waveform.levels.count
+            var first = Int((max(0, start) * SongWaveform.rate).rounded(.down))
+            var offset = Int(((Double(first) / SongWaveform.rate - start) * sampleRate / position.rate).rounded())
+            samples.withUnsafeBufferPointer { buffer in
+                while first < slots, offset < buffer.count {
+                    let a = max(0, offset), b = min(buffer.count, offset + Int(perSlot))
+                    // A slot only partly in this buffer is drawn from what is here, which is close enough at 20 ms.
+                    if b - a >= Int(perSlot / 3) {
+                        var sum: Float = 0
+                        vDSP_svesq(buffer.baseAddress! + a, 1, &sum, vDSP_Length(b - a))
+                        let level = SongWaveform.byte(rms: (sum / Float(b - a)).squareRoot())
+                        if waveform.levels[first] != level {
+                            waveform.levels[first] = level
+                            changed = true
+                        }
+                    }
+                    first += 1
+                    offset += Int(perSlot)
+                }
+            }
+        }
+    }
+}
+
+/// Keeps waveforms between plays in `~/Library/Caches/Muskey/Waveforms`: a file's under its path, size and date,
+/// and a song from another player under its title, artist, album and length.
+enum WaveformStore {
+    static var folder: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "Muskey/Waveforms")
+    }
+
+    static func key(file path: String) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attributes[.size] as? Int, let date = attributes[.modificationDate] as? Date
+        else { return nil }
+        return digest(["file", path, "\(size)", "\(date.timeIntervalSince1970)"])
+    }
+
+    static func key(song: [String?], duration: Double) -> String {
+        digest(["song"] + song.map { $0 ?? "" } + ["\(Int(duration.rounded()))"])
+    }
+
+    private static func digest(_ parts: [String]) -> String {
+        SHA256.hash(data: Data(parts.joined(separator: "|").utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func load(_ key: String) -> SongWaveform? {
+        guard let data = try? Data(contentsOf: folder.appending(path: key + ".json")) else { return nil }
+        return try? JSONDecoder().decode(SongWaveform.self, from: data)
+    }
+
+    static func save(_ waveform: SongWaveform, as key: String) {
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(waveform) else { return }
+        try? data.write(to: folder.appending(path: key + ".json"), options: .atomic)
+        trim()
+    }
+
+    /// Keeps the 2000 waveforms used most recently, about 25 MB.
+    private static func trim() {
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)), files.count > 2000 else { return }
+        let dated = files.map { ($0, (try? $0.resourceValues(forKeys: keys))?.contentModificationDate ?? .distantPast) }.sorted { $0.1 > $1.1 }
+        for (file, _) in dated.dropFirst(2000) { try? FileManager.default.removeItem(at: file) }
+    }
+}

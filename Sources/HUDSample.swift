@@ -8,9 +8,27 @@ import SwiftUI
                                         timestamp: Date().timeIntervalSince1970, rate: 0, bundleID: nil)
     static let cover = sampleCover()
 
+    /// A made-up waveform for the sample song: verses, a louder chorus in the middle, and a beat at 124 BPM.
+    static let waveform: SongWaveform = {
+        var levels = Data(count: SongWaveform.slots(for: 238))
+        var seed: UInt64 = 7
+        for i in 0 ..< levels.count {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            let noise = Double(seed >> 33) / Double(1 << 31)
+            let t = Double(i) / SongWaveform.rate
+            let section = t < 8 ? t / 8 * 0.4 : 0.5 + 0.2 * sin(t / 17) + (t > 62 && t < 104 || t > 160 && t < 202 ? 0.25 : 0)
+            let beat = 0.72 + 0.28 * pow(max(0, cos(t * .pi * 2 * 124 / 60)), 8)
+            levels[i] = UInt8(min(255, max(1, section * beat * (0.78 + 0.22 * noise) * 250)))
+        }
+        return SongWaveform(duration: 238, levels: levels)
+    }()
+
     /// C♯ minor moved 3 semitones down, with the key picker open, as in the HUD after a listen.
-    static func model(card: Bool, relative: Bool) -> HUDModel {
+    static func model(card: Bool, relative: Bool, waveform: (shown: Bool, style: WaveformStyle)? = nil) -> HUDModel {
         let model = HUDModel()
+        model.wave.waveform = Self.waveform
+        model.waveformShown = waveform?.shown ?? Preferences.shared.waveform
+        model.waveformStyle = waveform?.style ?? Preferences.shared.waveformStyle
         model.card = card
         model.relativeKeys = relative
         model.phase = .done
@@ -29,7 +47,7 @@ import SwiftUI
     /// Where the glass sits in the panel, in points, from a render with a flat stand-in for the glass, which is
     /// opaque where the glass is and clear around it.
     static func glass(card: Bool, relative: Bool, scheme: ColorScheme) -> CGRect? {
-        let id = "\(card) \(relative) \(scheme)"
+        let id = "\(card) \(relative) \(scheme) \(Preferences.shared.waveform)"
         if let rect = glassRects[id] { return rect }
         let view = HUDView(model: model(card: card, relative: relative))
             .frame(width: HUDPanel.size.width, height: HUDPanel.size.height)
@@ -75,14 +93,17 @@ struct HUDSampleView: View {
     let card: Bool
     let relative: Bool
     var keysOnly = false
+    /// The waveform as a tile in Settings shows it, or nil for the waveform that Settings has.
+    var waveform: (shown: Bool, style: WaveformStyle)?
     @Environment(\.colorScheme) private var scheme
     @State private var model: HUDModel
 
-    init(card: Bool, relative: Bool, keysOnly: Bool = false) {
+    init(card: Bool, relative: Bool, keysOnly: Bool = false, waveform: (shown: Bool, style: WaveformStyle)? = nil) {
         self.card = card
         self.relative = relative
         self.keysOnly = keysOnly
-        _model = State(initialValue: HUDSample.model(card: card, relative: relative))
+        self.waveform = waveform
+        _model = State(initialValue: HUDSample.model(card: card, relative: relative, waveform: waveform))
     }
 
     var body: some View {
