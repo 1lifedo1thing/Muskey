@@ -22,6 +22,13 @@ typedef struct {
 // RhythmExtractor2013, or "percival" for PercivalBpmEstimator.
 EKTempo ek_tempo(const float *samples, unsigned int count, const char *method);
 
+// The beats that RhythmExtractor2013 ("multifeature") finds in mono samples at 44.1 kHz, in seconds from the first
+// sample, at most `capacity` of them. Returns how many it wrote, and sets `bpm`.
+int ek_beats(const float *samples, unsigned int count, float *ticks, int capacity, float *bpm);
+
+// The attacks that OnsetRate finds in mono samples at 44.1 kHz, in seconds from the first sample, at most `capacity`.
+int ek_onsets(const float *samples, unsigned int count, float *onsets, int capacity);
+
 #ifdef __cplusplus
 }
 #endif

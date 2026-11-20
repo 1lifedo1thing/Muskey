@@ -349,6 +349,7 @@ struct LyricsPanel: View {
     @State private var followingUntil = Date.distantPast
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.renderingPreview) private var renderingPreview
+    @Environment(\.songLoop) private var songLoop
 
     private static let pause: TimeInterval = 4
 
@@ -529,12 +530,26 @@ struct LyricsPanel: View {
         let past = timed && (self.line.map { index < $0 } ?? false)
         // The large lyrics keep the eye on the line sung now: the lines around it are fainter.
         let faded = large ? (past ? 0.35 : 0.65) : (past ? 0.55 : 0.9)
+        // The lines that the region loop repeats get a honey bar along their left edge, and every line moves right
+        // to make room for it while a loop is set.
+        let next = lyrics.lines.indices.contains(index + 1) ? lyrics.lines[index + 1].time : .infinity
+        let looped = songLoop.map { loop in timed && next > loop.start + 0.05 && line.time < (loop.end ?? .infinity) - 0.05 } ?? false
         Text(line.text.isEmpty ? (timed ? "♪" : " ") : line.text)
             .font(.system(size: large ? 36 : 18, weight: .bold, design: .rounded))
             .foregroundStyle(current ? palette.ink : palette.muted.opacity(faded))
             .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, songLoop == nil ? 0 : large ? 18 : 12)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .leading) {
+                if looped {
+                    Capsule().fill(StripColors.solid(.honey, colorScheme).fill)
+                        .frame(width: large ? 4 : 3)
+                        .padding(.vertical, 2)
+                        .transition(.opacity)
+                }
+            }
             .animation(.easeOut(duration: 0.25), value: current)
+            .animation(.snappy(duration: 0.2), value: looped)
     }
 }
 

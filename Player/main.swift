@@ -40,6 +40,9 @@ final class Player: NSObject, NSApplicationDelegate {
     private var rateObserver: NSKeyValueObservation?
     /// The rate that play starts the song at, from `speed`.
     private var speed: Float = 1
+    /// The region loop: where it starts, and the observer that moves the song back there at its end.
+    private var loopStart: Double?
+    private var loopObserver: Any?
 
     func applicationDidFinishLaunching(_: Notification) {
         player.actionAtItemEnd = .pause
@@ -103,6 +106,9 @@ final class Player: NSObject, NSApplicationDelegate {
             if parts.count == 2, let seconds = Double(parts[1]) { seek(to: seconds) }
         case "speed":
             if parts.count == 2, let rate = Float(parts[1]), (0.25 ... 4).contains(rate) { setSpeed(rate) }
+        case "loop":
+            // `loop A B` repeats the song from A to B seconds, and `loop off` lets it play on.
+            setLoop(parts.count == 2 ? parts[1].split(separator: " ").compactMap { Double($0) } : [])
         default: break
         }
     }
@@ -143,6 +149,7 @@ final class Player: NSObject, NSApplicationDelegate {
                         self?.say("ended")
                     }
                 }
+                setLoop([])
                 player.replaceCurrentItem(with: item)
                 player.play()
                 report()
@@ -208,6 +215,21 @@ final class Player: NSObject, NSApplicationDelegate {
         }
         report()
         return .success
+    }
+
+    /// The player says when the song reaches the end of the loop, at the exact time, and the song moves back to its
+    /// start without waiting for Muskey. Each move is reported like any seek, so the lyrics and the stems follow it.
+    private func setLoop(_ ends: [Double]) {
+        if let loopObserver { player.removeTimeObserver(loopObserver) }
+        loopObserver = nil
+        loopStart = nil
+        guard ends.count == 2, ends[1] > ends[0] + 0.05 else { return }
+        loopStart = ends[0]
+        let end = NSValue(time: CMTime(seconds: ends[1], preferredTimescale: 48000))
+        loopObserver = player.addBoundaryTimeObserver(forTimes: [end], queue: .main) { [weak self] in
+            guard let self, let start = loopStart else { return }
+            seek(to: start)
+        }
     }
 
     private func setSpeed(_ rate: Float) {

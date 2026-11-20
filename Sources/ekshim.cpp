@@ -82,3 +82,50 @@ EKTempo ek_tempo(const float *samples, unsigned int count, const char *method) {
     result.confidence = std::isfinite(confidence) ? confidence : 0;
     return result;
 }
+
+int ek_beats(const float *samples, unsigned int count, float *ticks, int capacity, float *bpm) {
+    initEssentia();
+    *bpm = 0;
+    std::vector<Real> audio(samples, samples + count), found, estimates, intervals;
+    Real tempo = 0, confidence = 0;
+    try {
+        std::unique_ptr<Algorithm> extractor(AlgorithmFactory::create("RhythmExtractor2013", "method", std::string("multifeature")));
+        extractor->input("signal").set(audio);
+        extractor->output("bpm").set(tempo);
+        extractor->output("ticks").set(found);
+        extractor->output("confidence").set(confidence);
+        extractor->output("estimates").set(estimates);
+        extractor->output("bpmIntervals").set(intervals);
+        extractor->compute();
+    } catch (const std::exception &) {
+        return 0;
+    }
+    if (std::isfinite(tempo)) *bpm = tempo;
+    int n = 0;
+    for (Real t : found) {
+        if (n >= capacity) break;
+        if (std::isfinite(t)) ticks[n++] = t;
+    }
+    return n;
+}
+
+int ek_onsets(const float *samples, unsigned int count, float *onsets, int capacity) {
+    initEssentia();
+    std::vector<Real> audio(samples, samples + count), found;
+    Real rate = 0;
+    try {
+        std::unique_ptr<Algorithm> detector(AlgorithmFactory::create("OnsetRate"));
+        detector->input("signal").set(audio);
+        detector->output("onsets").set(found);
+        detector->output("onsetRate").set(rate);
+        detector->compute();
+    } catch (const std::exception &) {
+        return 0;
+    }
+    int n = 0;
+    for (Real t : found) {
+        if (n >= capacity) break;
+        if (std::isfinite(t)) onsets[n++] = t;
+    }
+    return n;
+}

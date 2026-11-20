@@ -82,10 +82,12 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("⌘"), .key("O")], name: "open file"),
             Row(caps: [.key("⌘"), .key("L")], name: "open URL"),
         ])
-        let waveform = KeyGroup(name: "Waveform", symbol: "waveform", hue: 74, rows: [
+        let waveform = KeyGroup(name: "Waveform and loop", symbol: "waveform", hue: 74, rows: [
             Row(caps: [.key("W")], name: "waveform"),
             Row(caps: [.key("⌥"), .key("W")], name: "instrument lanes", condition: "once the whole song is separated"),
             Row(caps: [.key("⌘"), .key("+"), .key("−")], name: "zoom"),
+            Row(caps: [.key("R")], name: "region loop", condition: "start, end, clear"),
+            Row(caps: [.key("⌥"), .key("R")], name: "region loop end without snapping"),
         ])
         let pointer = KeyGroup(name: "Mouse and trackpad", symbol: "computermouse", hue: 58, rows: [
             Row(caps: [.gesture("click record", symbol: "cursorarrow.click")], name: "play or pause"),

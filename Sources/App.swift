@@ -360,6 +360,10 @@ final class HUDModel: ObservableObject {
     /// Settings > HUD > Waveform, and W over the HUD.
     @Published var waveformShown = Preferences.shared.waveform
     @Published var waveformStyle = Preferences.shared.waveformStyle
+    /// The region loop (R), on the waveform, the time bar and the lyrics.
+    @Published var loop: LoopRegion?
+    var onLoopSet: (LoopEnd, Double) -> Void = { _, _ in }
+    var onLoopTyping: (Bool) -> Void = { _ in }
 }
 
 /// The waveform of the song that plays: whole for a file, and drawn while it plays for a song from another player.
@@ -370,7 +374,6 @@ final class WaveState: ObservableObject {
     @Published var zoom = 1.0
     /// ⌥W: one lane per stem, while the stems of the whole song are known.
     @Published var lanes = false
-    @Published var loop: LoopRegion?
 
     static let zoomLimit = 40.0
 
@@ -564,6 +567,7 @@ struct HUDView: View {
         .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }, scroll: model.scroll, scrub: model.scrub,
                                                     seek: { model.onSeekFraction($0) }, seekable: model.seekable))
         .environment(\.recordPlaying, model.playing)
+        .environment(\.songLoop, model.loop)
         .environment(\.openURL, OpenURLAction { url in
             model.onLink(url)
             return .systemAction
@@ -720,7 +724,7 @@ struct HUDView: View {
 
     private func waveform(_ palette: Palette, width: CGFloat, height: CGFloat) -> some View {
         WaveformHost(wave: model.wave, track: deckTrack, style: model.waveformStyle, width: width, height: height, ticking: model.shown && model.playing,
-                     bpm: model.shownTempo?.bpm, muted: model.stemsMuted, palette: palette)
+                     bpm: model.shownTempo?.bpm, muted: model.stemsMuted, loop: model.loop, setLoop: model.onLoopSet, typing: model.onLoopTyping, palette: palette)
     }
 
     /// Karaoke: the lyrics large in a glass as tall as the screen allows, with the key at the top and the record
@@ -2124,6 +2128,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let spec = Self.stringOption("--lyrics-lookup") { return lookUpLyrics(spec) }
         if let spec = Self.stringOption("--key-lookup") { return lookUpKeyForTesting(spec) }
         if let path = Self.stringOption("--tempo") { return tempoForTesting(path) }
+        if let path = Self.stringOption("--loop-snap") {
+            // `--loop-snap FILE --at S --to S` prints where presses at those moments of the file would land.
+            Task {
+                let at = Self.option("--at", 30), to = Self.option("--to", at + 8)
+                let url = URL(fileURLWithPath: path)
+                for (name, time) in [("start", at), ("end", to)] {
+                    let from = max(0, time - 8)
+                    let samples = await LoopSnap.excerpt(url, from: from, to: time + 1.5)
+                    let started = Date()
+                    let grid = LoopSnap.grid(samples, start: from)
+                    let snapped = name == "start" ? LoopSnap.snap(time, grid: grid) : LoopSnap.snapEnd(time, start: LoopSnap.snap(at, grid: grid), grid: grid, bpm: nil)
+                    print(String(format: "%@: pressed %.3f s, snapped %.3f s (%+.0f ms), %d beats, %d attacks, %.1f BPM, %.0f ms", name, time, snapped,
+                                 (snapped - time) * 1000, grid.beats.count, grid.onsets.count, grid.bpm ?? 0, Date().timeIntervalSince(started) * 1000))
+                }
+                exit(0)
+            }
+            return
+        }
         if let path = Self.waveformTest {
             Task {
                 let start = Date()
@@ -2367,6 +2389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.slowFailed = wanted
         }
         model.onSlowRetry = { [weak self] in self?.retrySlowing() }
+        model.onLoopSet = { [weak self] in self?.setLoopEnd($0, $1) }
+        model.onLoopTyping = { [weak self] in self?.loopTyping($0) }
         nowPlaying.onSongChange = { [weak self] in
             // Another song during karaoke's countdown plays as it comes.
             if self?.karaokeRestart != nil { self?.endKaraokeRestart() }
@@ -2375,6 +2399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         nowPlaying.onTrack = { [weak self] in
             self?.syncWaveform()
+            self?.checkLoopSong()
             self?.listenWhenPlaying()
             self?.resumeListen()
             self?.syncPauseStop()
@@ -3360,7 +3385,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.saveSong()
                 return nil
             }
-            // Typing in the lyrics editor stays in the editor.
+            // Typing in the lyrics editor, or a time of the region loop, stays in the field.
+            if self?.loopTyping == true { return event }
             guard let self, self.model.picking, !flags.contains(.command), !flags.contains(.control),
                   event.window == nil || event.window === self.panel else { return event }
             return self.handleKey(Int(event.keyCode), shift: flags.contains(.shift), option: flags.contains(.option)) ? nil : event
@@ -3411,6 +3437,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // W shows or hides the waveform in every layout, and ⌥W splits it into the lanes of the stems.
         if code == kVK_ANSI_W, !shift {
             option ? toggleWaveformLanes() : toggleWaveform()
+            return true
+        }
+        // R starts the region loop, ends it and clears it, in every layout. ⌥R doesn't snap the end.
+        if code == kVK_ANSI_R, !shift {
+            pressLoop(snapping: !option)
             return true
         }
         if model.lyricsShown {
@@ -4248,6 +4279,171 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncSeekable()
     }
 
+    // MARK: Region loop
+
+    /// Moves the song back to the start of the loop for players other than Muskey Player, which loops by itself.
+    private var loopTimer: Timer?
+    /// The song that the loop belongs to: another song clears it.
+    private var loopSong: [String?]?
+    private var loopSnap: Task<Void, Never>?
+    /// A time of the loop is typed in, so the keys over the HUD go to the field.
+    private var loopTyping = false
+    /// The tempo that the beat grid found around the start of the loop, for rounding its length when the song's
+    /// tempo isn't known.
+    private var loopGridBPM: Double?
+
+    /// R starts the region loop where the song is, ends it, then clears it. With the lyrics showing, the loop takes
+    /// whole lines: from the start of the line sung now to the end of the line sung at the second press. ⌥R sets an
+    /// end exactly where it is pressed.
+    private func pressLoop(snapping: Bool) {
+        guard let track = nowPlaying.track, track.title?.isEmpty == false, let duration = track.duration, duration > 0,
+              let now = track.position(at: Date()) else { return log("region loop: the player gives no position for the song") }
+        guard model.seekable else { return log("region loop: the song can't move at once now") }
+        let lines = loopLines
+        if let loop = model.loop, loop.end != nil {
+            return clearLoop()
+        } else if let loop = model.loop {
+            var end = max(now, loop.start + 0.25)
+            if let lines, let line = model.lyricLine, lines.indices.contains(line) {
+                end = line + 1 < lines.count ? lines[line + 1].time : duration
+                end = max(end, loop.start + 0.25)
+            }
+            model.loop?.end = end
+            model.loop?.endPress = now
+            log(String(format: "region loop ends at %.2f s", end))
+            if snapping, lines == nil { snap(.end, at: end) } else { applyLoop() }
+        } else {
+            var start = now
+            if let lines, let line = model.lyricLine, lines.indices.contains(line) { start = lines[line].time }
+            model.loop = LoopRegion(start: start, end: nil, startPress: now)
+            loopSong = track.song
+            log(String(format: "region loop starts at %.2f s", start))
+            if snapping, lines == nil { snap(.start, at: start) }
+        }
+        forgetLoopPresses()
+    }
+
+    /// The timed lines of the lyrics, while they show in place of the key row or as karaoke.
+    private var loopLines: [Lyrics.Line]? {
+        guard model.lyricsShown, case let .found(lyrics) = model.lyrics, lyrics.timing != .estimated, !lyrics.lines.isEmpty else { return nil }
+        return lyrics.lines
+    }
+
+    /// Moves an end of the loop to the attack or the beat next to where it was pressed, once the audio around the press
+    /// is known: a file is read around it, and a song from another player needs the 0.15 seconds after the press first.
+    private func snap(_ end: LoopEnd, at time: Double) {
+        let path = playsInFilePlayer ? filePlayer.current?.path : nil
+        let recorder = waveformRecorder
+        let bpm = model.shownTempo?.bpm ?? (end == .end ? loopGridBPM : nil)
+        let song = loopSong
+        loopSnap?.cancel()
+        loopSnap = Task { [weak self] in
+            var excerpt: (samples: [Float], start: Double)?
+            if let path {
+                let from = max(0, time - 8)
+                excerpt = (await LoopSnap.excerpt(URL(fileURLWithPath: path), from: from, to: time + 1.5), from)
+            } else {
+                try? await Task.sleep(for: .milliseconds(300))
+                excerpt = recorder?.excerpt(from: time - 10, to: time + 0.3)
+            }
+            guard let excerpt, !excerpt.samples.isEmpty, !Task.isCancelled else {
+                self?.log("region loop: no audio around the press, the end stays where it was pressed")
+                self?.applyLoop()
+                return
+            }
+            let grid = await Task.detached(priority: .userInitiated) { LoopSnap.grid(excerpt.samples, start: excerpt.start) }.value
+            guard let self, !Task.isCancelled, loopSong == song, var loop = model.loop else { return }
+            if end == .start { loopGridBPM = grid.bpm }
+            let snapped = end == .start ? LoopSnap.snap(time, grid: grid) : LoopSnap.snapEnd(time, start: loop.start, grid: grid, bpm: bpm)
+            switch end {
+            case .start: loop.start = loop.end.map { min(snapped, $0 - 0.25) } ?? snapped
+            case .end: loop.end = max(snapped, loop.start + 0.25)
+            }
+            log(String(format: "region loop: %@ snapped from %.2f s to %.2f s (%d beats, %d attacks, %.0f BPM)", end == .start ? "start" : "end",
+                       time, end == .start ? loop.start : loop.end ?? 0, grid.beats.count, grid.onsets.count, grid.bpm ?? 0))
+            // The end slides to its snapped place with a small overshoot, which shows the snap without slowing anything.
+            withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .spring(duration: 0.32, bounce: 0.35)) { self.model.loop = loop }
+            applyLoop()
+        }
+    }
+
+    /// The dashed lines at the presses fade a moment after each press.
+    private func forgetLoopPresses() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+            guard let self, model.loop != nil else { return }
+            withAnimation(.easeOut(duration: 0.4)) {
+                self.model.loop?.startPress = nil
+                self.model.loop?.endPress = nil
+            }
+        }
+    }
+
+    /// An end moved by its arrows, a drag or a typed time.
+    private func setLoopEnd(_ end: LoopEnd, _ seconds: Double) {
+        guard var loop = model.loop else { return }
+        switch end {
+        case .start: loop.start = max(0, seconds)
+        case .end: loop.end = seconds
+        }
+        model.loop = loop
+        log(String(format: "region loop %@ set to %.2f s", end == .start ? "start" : "end", seconds))
+        applyLoop()
+    }
+
+    /// Repeats the part from the start to the end of the loop: Muskey Player at the exact end, other players with a
+    /// seek once the song reaches the end, which lands within a few hundredths of a second.
+    private func applyLoop() {
+        loopTimer?.invalidate()
+        loopTimer = nil
+        guard let loop = model.loop, let end = loop.end else {
+            if filePlayer.hasSong { filePlayer.loop(nil) }
+            return
+        }
+        if playsInFilePlayer {
+            filePlayer.loop((loop.start, end))
+            // A song that already played past the end goes back at once.
+            if let now = nowPlaying.track?.position(at: Date()), now > end || now < loop.start - 0.5 { seek(to: loop.start, flash: "repeat") }
+            return
+        }
+        loopTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in self?.checkLoopEnd() }
+    }
+
+    private func checkLoopEnd() {
+        guard let loop = model.loop, let end = loop.end, let track = nowPlaying.track, track.playing, model.seekable,
+              let now = track.position(at: Date()) else { return }
+        // A seek that the player hasn't reported yet.
+        if let target = seekTarget, Date().timeIntervalSince(target.at) < 1 { return }
+        guard now >= end - 0.03, now < end + 3 else { return }
+        seekTarget = (track.song, loop.start, Date())
+        moveSong(track, to: loop.start)
+    }
+
+    private func clearLoop() {
+        guard model.loop != nil else { return }
+        loopSnap?.cancel()
+        withAnimation(.easeOut(duration: 0.15)) { model.loop = nil }
+        loopSong = nil
+        applyLoop()
+        log("region loop cleared")
+    }
+
+    /// Another song clears the loop of the last one.
+    private func checkLoopSong() {
+        guard model.loop != nil, let song = nowPlaying.track?.song, nowPlaying.track?.title?.isEmpty == false, song != loopSong else { return }
+        clearLoop()
+    }
+
+    /// The keys over the HUD stay off while a loop time is typed, so digits and letters reach the field.
+    private func loopTyping(_ typing: Bool) {
+        loopTyping = typing
+        if typing {
+            panel.setInteraction(clickable: true, keyboard: true)
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKey()
+        }
+        updateHoverKeys()
+    }
+
     // MARK: Waveform
 
     /// Draws the waveform of a song from another player from what Muskey hears, while the HUD shows.
@@ -4303,8 +4499,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let recorder = waveformRecorder else { return }
         if let player = nowPlaying.player { recorder.report(player) }
-        // A song heard whole needs no more listening, and a hidden HUD shows no waveform.
-        let wanted = model.shown && model.wave.waveform?.complete != true
+        // A hidden HUD shows no waveform. A song heard whole is still heard while the HUD shows, for the ends of the
+        // region loop, which snap to the audio around them.
+        let wanted = model.shown
         if wanted, !recorder.running {
             do {
                 try recorder.start(SystemAudioTap())
@@ -4323,7 +4520,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let recorder = waveformRecorder, recorder.key == waveformKey else { return }
         let (waveform, changed) = recorder.take()
         if changed { model.wave.waveform = waveform }
-        if waveform.complete { syncWaveform() }
     }
 
     /// Stops drawing from what Muskey hears and keeps what was drawn on disk. `keep` leaves the recorder for the same
@@ -4937,7 +5133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let keyed = model.key != nil
         let pasteboard = NSPasteboard.general.changeCount
         let wanted = model.hovering && model.shown && (model.picking || [.done, .listening, .idle].contains(model.phase))
-            && lyricsEditor == nil && !dialogOpen
+            && lyricsEditor == nil && !dialogOpen && !loopTyping
         // The lyrics take fewer keys than the key row, so the keys change when the panel does.
         guard wanted == hoverKeys.isEmpty
             || (wanted && (hoverKeysForKey != keyed || hoverKeysPasteboard != pasteboard
@@ -4975,6 +5171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ? shows the shortcuts.
         var keys: [(Int, Int)] = [kVK_Escape, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
         if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } + [(kVK_ANSI_W, 0), (kVK_ANSI_W, optionKey)] }
+        if model.seekable || model.loop != nil { keys += [(kVK_ANSI_R, 0), (kVK_ANSI_R, optionKey)] }
         if keyed, model.stemsAvailable {
             // V mutes the vocals or plays them again, in every layout.
             keys += Self.stemKeys.flatMap { code in [(code, 0), (code, optionKey)] } + [(kVK_ANSI_0, 0), (kVK_ANSI_V, 0)]
@@ -5404,6 +5601,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension EnvironmentValues {
     @Entry var renderingPreview = false
+    /// The region loop of the song, for the time bar and the lyrics.
+    @Entry var songLoop: LoopRegion?
 }
 
 /// `--render <dir>` writes a PNG of each HUD state over a light and a dark backdrop, to check the design without the screen.
@@ -5460,7 +5659,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-loop", "-loop-armed", "-loop-zoom", "-lyrics-loop", "-lyrics-focus-loop"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -5483,7 +5682,7 @@ extension EnvironmentValues {
             if variant.hasPrefix("-lyrics") {
                 model.lyricsShown = true
                 let text = sampleLyrics.map { "[00:\(String(format: "%05.2f", $0.0))] \($0.1)" }.joined(separator: "\n")
-                var lyrics = variant == "-lyrics" ? Lyrics.parse(lrc: text) : Lyrics.estimate(plain: sampleLyrics.map(\.1).joined(separator: "\n"), duration: 238)
+                var lyrics = variant == "-lyrics" || variant.hasSuffix("-loop") ? Lyrics.parse(lrc: text) : Lyrics.estimate(plain: sampleLyrics.map(\.1).joined(separator: "\n"), duration: 238)
                 lyrics?.source = variant.hasPrefix("-lyrics-focus") ? .lrcRed(isrc: "USQX91300108") : .lrclib
                 model.lyrics = switch variant {
                 case "-lyrics-loading": .loading
@@ -5558,6 +5757,12 @@ extension EnvironmentValues {
             model.waveformStyle = variant == "-waveform-strip" ? .strip : .ribbon
             model.wave.zoom = variant == "-waveform-zoom" ? 10 : 1
             model.wave.lanes = variant == "-waveform-lanes"
+            // A region loop with the dashed lines of the presses, one still waiting for its end, and one over lyric lines.
+            if variant.hasSuffix("loop") || variant.hasPrefix("-loop") {
+                model.loop = variant.contains("lyrics") ? LoopRegion(start: 16.5, end: 30)
+                    : LoopRegion(start: 86.2, end: variant == "-loop-armed" ? nil : 110.4, startPress: 86.6, endPress: variant == "-loop-armed" ? nil : 110.1)
+                if variant == "-loop-zoom" { model.wave.zoom = 6 }
+            }
             if variant == "-waveform-stems" {
                 model.stemsAvailable = true
                 model.stemsEngaged = true

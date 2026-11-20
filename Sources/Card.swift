@@ -488,7 +488,8 @@ struct HUDCard: View {
                     // The waveform takes the time bar's place on the card, and seeks the same way.
                     if showsKeys, model.waveformShown, track.duration != nil {
                         CardWaveform(wave: model.wave, track: track, width: ring - 30, ticking: model.shown && model.playing,
-                                     bpm: model.shownTempo?.bpm, muted: model.stemsMuted, palette: palette)
+                                     bpm: model.shownTempo?.bpm, muted: model.stemsMuted, loop: model.loop, setLoop: model.onLoopSet,
+                                     typing: model.onLoopTyping, palette: palette)
                     } else {
                         SongTimeBar(track: track, ticking: model.shown && model.playing, palette: palette, width: 110)
                             .padding(.top, 3)
@@ -551,11 +552,15 @@ private struct CardWaveform: View {
     let ticking: Bool
     let bpm: Double?
     let muted: Set<Stem>
+    let loop: LoopRegion?
+    let setLoop: (LoopEnd, Double) -> Void
+    let typing: (Bool) -> Void
     let palette: Palette
 
     var body: some View {
         if wave.waveform != nil {
-            WaveformHost(wave: wave, track: track, style: .ribbon, width: width, height: 30, ticking: ticking, bpm: bpm, muted: muted, palette: palette)
+            WaveformHost(wave: wave, track: track, style: .ribbon, width: width, height: 30, ticking: ticking, bpm: bpm, muted: muted,
+                         loop: loop, setLoop: setLoop, typing: typing, palette: palette)
                 .padding(.top, 8)
         } else {
             SongTimeBar(track: track, ticking: ticking, palette: palette, width: 110)

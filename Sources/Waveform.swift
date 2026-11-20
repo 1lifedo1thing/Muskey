@@ -201,6 +201,11 @@ final class WaveformRecorder: @unchecked Sendable {
     private var position: (seconds: Double, at: Double, rate: Double, playing: Bool)?
     private var tap: AudioTapping?
     private var changed = false
+    /// The last 20 seconds heard, for snapping the ends of the region loop, and the song's place at its newest sample.
+    private var ring: [Float] = []
+    private var ringNext = 0
+    private var ringFilled = 0
+    private var ringEnd: (seconds: Double, rate: Double, sampleRate: Double)?
     let song: [String?]
     /// Where the waveform is kept between plays.
     let key: String
@@ -233,6 +238,36 @@ final class WaveformRecorder: @unchecked Sendable {
         tap = nil
     }
 
+    private func keep(_ samples: [Float], end: Double, rate: Double, sampleRate: Double) {
+        if ring.isEmpty { ring = [Float](repeating: 0, count: Int(sampleRate * 20)) }
+        // A jump in the song, from a seek or a skip, starts the excerpt over, so it never mixes two places.
+        if let last = ringEnd, abs(end - Double(samples.count) / sampleRate * rate - last.seconds) > 0.25 { ringFilled = 0 }
+        for sample in samples {
+            ring[ringNext] = sample
+            ringNext = (ringNext + 1) % ring.count
+        }
+        ringFilled = min(ring.count, ringFilled + samples.count)
+        ringEnd = (end, rate, sampleRate)
+    }
+
+    /// The audio heard from `from` to `to` seconds of the song, mono at 44.1 kHz, with the song time of its first
+    /// sample. What wasn't heard is left out, so the excerpt can start later and end sooner than asked.
+    func excerpt(from: Double, to: Double) -> (samples: [Float], start: Double)? {
+        let (copied, start, sampleRate) = lock.withLock { () -> ([Float], Double, Double)? in
+            guard let end = ringEnd, ringFilled > 0, end.rate > 0 else { return nil }
+            let first = end.seconds - Double(ringFilled) / end.sampleRate * end.rate
+            let a = max(from, first), b = min(to, end.seconds)
+            guard b > a else { return nil }
+            let count = Int((b - a) / end.rate * end.sampleRate)
+            let back = Int((end.seconds - a) / end.rate * end.sampleRate)
+            var out = [Float](repeating: 0, count: count)
+            for i in 0 ..< count { out[i] = ring[((ringNext - back + i) % ring.count + ring.count) % ring.count] }
+            return (out, a, end.sampleRate / end.rate)
+        } ?? ([], 0, 0)
+        guard !copied.isEmpty else { return nil }
+        return (TempoDetector.resample(copied, from: sampleRate, to: LoopSnap.rate), start)
+    }
+
     /// What was drawn so far, and whether anything changed since the last call.
     func take() -> (waveform: SongWaveform, changed: Bool) {
         lock.withLock {
@@ -248,6 +283,7 @@ final class WaveformRecorder: @unchecked Sendable {
             let now = Date().timeIntervalSince1970
             let end = position.seconds + (now - position.at) * position.rate
             let start = end - Double(samples.count) / sampleRate * position.rate
+            keep(samples, end: end, rate: position.rate, sampleRate: sampleRate)
             let perSlot = sampleRate / SongWaveform.rate / position.rate
             let slots = waveform.levels.count
             var first = Int((max(0, start) * SongWaveform.rate).rounded(.down))

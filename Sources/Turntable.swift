@@ -954,6 +954,8 @@ struct SongTimeBar: View {
     let palette: Palette
     var width: CGFloat = 84
     @Environment(\.recordActions) private var actions
+    @Environment(\.songLoop) private var loop
+    @Environment(\.colorScheme) private var scheme
     /// Where a drag along the bar is, from 0 to 1, until it ends.
     @State private var dragged: Double?
     @State private var hovering = false
@@ -981,6 +983,18 @@ struct SongTimeBar: View {
         return Capsule().fill(palette.ink.opacity(0.15))
             .overlay(alignment: .leading) {
                 GeometryReader { bar in Capsule().fill(grows ? palette.ink.opacity(0.7) : palette.muted).frame(width: bar.size.width * fraction) }
+            }
+            // The region loop as a honey band on the bar.
+            .overlay(alignment: .leading) {
+                if let loop, let duration = track.duration, duration > 0 {
+                    GeometryReader { bar in
+                        let a = loop.start / duration, b = (loop.end ?? max(loop.start, fraction * duration)) / duration
+                        Capsule().fill(StripColors.solid(.honey, scheme).fill.opacity(0.85))
+                            .frame(width: max(3, bar.size.width * (b - a)))
+                            .offset(x: bar.size.width * a)
+                    }
+                    .allowsHitTesting(false)
+                }
             }
             // Under the pointer it grows about as tall as the digits beside it, which is easier to drag along.
             .frame(width: width, height: grows ? 9 : 4)

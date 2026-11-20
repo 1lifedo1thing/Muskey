@@ -131,6 +131,12 @@ final class FilePlayer {
     /// Moves the song to `seconds` from its start.
     func seek(_ seconds: Double) { send(String(format: "seek %.3f", seconds)) }
 
+    /// Repeats the song from `region.start` to `region.end` seconds, or plays on with nil. Muskey Player moves the song
+    /// back at the exact end of the region, without waiting for Muskey.
+    func loop(_ region: (start: Double, end: Double)?) {
+        send(region.map { String(format: "loop %.3f %.3f", $0.start, $0.end) } ?? "loop off")
+    }
+
     /// Stop Playing: Muskey Player quits, with the songs opened together.
     func close() {
         log("stop playing")
