@@ -5914,7 +5914,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // work from the start, and the ones that change the key, the instruments or the tempo wait for the key.
         let keyed = model.key != nil
         let pasteboard = NSPasteboard.general.changeCount
-        let wanted = model.hovering && model.shown && (model.picking || [.done, .listening, .idle].contains(model.phase))
+        // A listen that heard silence or found no key still leaves the HUD to play, pause and skip the song.
+        let wanted = model.hovering && model.shown && (model.picking || [.done, .listening, .idle, .silent, .failed].contains(model.phase))
             && lyricsEditor == nil && !dialogOpen && !loopTyping
         // The lyrics take fewer keys than the key row, so the keys change when the panel does.
         guard wanted == hoverKeys.isEmpty
