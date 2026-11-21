@@ -733,11 +733,13 @@ struct NotesPainter {
     /// How far left of a note's centre the playhead touches it: about half a fret number or a note head.
     private var reach: CGFloat { staff.view == .roll ? 0 : 4 }
 
-    /// A note lights from its own colour to honey, and then towards warm white when it's brightest, less so on paper.
+    /// A note lights from ink to honey, and then towards warm white when it's brightest, less so on paper. A note of the
+    /// piano roll is honey already, so it goes towards warm white all the way.
     private func light(_ level: Double, colors: LightColors, base: Color) -> Light? {
         guard level > 0.01 else { return nil }
         let hot = min(1, level)
-        let tint = hot < 0.75 ? base.mix(with: honey, by: hot / 0.75)
+        let tint = base == honey ? honey.mix(with: colors.hot, by: hot * (colors.dark ? 0.75 : 0.5))
+            : hot < 0.75 ? base.mix(with: honey, by: hot / 0.75)
             : honey.mix(with: colors.hot, by: (hot - 0.75) / 0.25 * (colors.dark ? 0.7 : 0.35))
         return Light(tint: tint, glow: colors.glow, level: level, dark: colors.dark)
     }
@@ -747,7 +749,7 @@ struct NotesPainter {
         let alpha = (light.dark ? 0.34 : 0.3) * min(1.35, light.level)
         var glow = context
         if light.dark { glow.blendMode = .plusLighter }
-        // A bright core and a soft falloff, drawn as one gradient: a blur filter on every frame cost frames.
+        // A bright core and a soft falloff, drawn as one gradient, which is cheaper to draw on every frame than a blur.
         let gradient = Gradient(stops: [
             .init(color: light.glow.opacity(min(1, alpha * 1.8)), location: 0),
             .init(color: light.glow.opacity(alpha * 0.9), location: 0.22),
@@ -1280,7 +1282,7 @@ private struct NotesPlayhead: View {
                 let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
                 let rect = CGRect(x: spot.x - 1, y: top, width: 2, height: layout.staff.linesHeight + 14)
                 let honey = StripColors.text(.honey, colorScheme)
-                // The glow is a band of honey that fades out on both sides, which costs nothing like a shadow filter.
+                // The glow is a band of honey that fades out on both sides, cheaper on every frame than a shadow filter.
                 let band = rect.insetBy(dx: -6, dy: 0)
                 context.fill(Path(roundedRect: band, cornerRadius: 6), with: .linearGradient(
                     Gradient(stops: [.init(color: honey.opacity(0), location: 0), .init(color: honey.opacity(dark ? 0.32 : 0.24), location: 0.5),

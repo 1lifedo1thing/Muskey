@@ -1734,12 +1734,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         playGuess = (playing, Date())
         pitch.paused = !playing
         showPlaying(playing, flash: true)
+        syncNotesPlaying()
         // A player that ignored the command sends no change, so the guess is checked against what it reports.
         playGuessCheck?.cancel()
         let check = DispatchWorkItem { [weak self] in
             guard let self else { return }
             playGuess = nil
             syncPaused()
+            syncNotesPlaying()
             if model.shown, let track = nowPlaying.track, track.title?.isEmpty == false { showPlaying(track.playing, flash: false) }
         }
         playGuessCheck = check
@@ -3035,10 +3037,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The notes window takes the play state from the player's reports, because the HUD's state only changes while the
-    /// HUD shows. A window that took a playing song for paused held its line still between the redraws of other views.
+    /// HUD shows. A play or pause that Space asked for shows at once, and reports against it are ignored until the
+    /// player takes it or 1.5 seconds pass, as in the HUD.
     private func syncNotesPlaying() {
         guard let notes = notesWindow.model else { return }
-        let playing = notes.now() != nil && nowPlaying.track?.playing == true
+        let playing = notes.now() != nil && (playGuess?.playing ?? (nowPlaying.track?.playing == true))
         if notes.playing != playing { notes.playing = playing }
     }
 
