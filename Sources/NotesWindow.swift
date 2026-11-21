@@ -1045,7 +1045,7 @@ private struct NotesCapo: View {
         .padding(.horizontal, 3)
         .padding(.vertical, 2)
         .background(Capsule().fill(palette.ink.opacity(0.1)))
-        .help("Capo (⌥← ⌥→)")
+        .help("Capo (⌥↑ ⌥↓)")
         .animation(.snappy(duration: 0.2), value: model.capo)
     }
 
@@ -1758,11 +1758,11 @@ private struct NotesFooter: View {
             // A narrow window keeps the hints that it has room for.
             ViewThatFits(in: .horizontal) {
                 if model.view == .tab, model.hasTab {
-                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["↑", "↓"], "page"), (["←", "→"], "transpose"), (["⌥", "←", "→"], "capo"), (["esc"], "close")])
+                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["⌥", "↑", "↓"], "capo"), (["esc"], "close")])
                 }
-                hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["↑", "↓"], "page"), (["←", "→"], "transpose"), (["esc"], "close")])
-                hints([(["space"], "play or pause"), (["R"], "region loop"), (["↑", "↓"], "page"), (["←", "→"], "transpose")])
-                hints([(["space"], "play or pause"), (["R"], "region loop"), (["←", "→"], "transpose")])
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["esc"], "close")])
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["←", "→"], "page"), (["↑", "↓"], "transpose")])
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["↑", "↓"], "transpose")])
                 hints([(["R"], "region loop")])
                 Color.clear.frame(width: 0)
             }
@@ -1797,7 +1797,7 @@ private struct NotesPager: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            arrow("chevron.left", to: model.page - 1, help: "Previous page (↑)")
+            arrow("chevron.left", to: model.page - 1, help: "Previous page (←)")
             Text("Page \(model.page + 1) of \(model.pageCount)")
                 .font(.system(size: 11.5, weight: .bold, design: .rounded))
                 .monospacedDigit()
@@ -1805,7 +1805,7 @@ private struct NotesPager: View {
                 .contentTransition(.numericText(value: Double(model.page)))
                 .animation(.snappy(duration: 0.2), value: model.page)
                 .fixedSize()
-            arrow("chevron.right", to: model.page + 1, help: "Next page (↓)")
+            arrow("chevron.right", to: model.page + 1, help: "Next page (→)")
         }
         .padding(.horizontal, 3)
         .padding(.vertical, 2)
@@ -1973,13 +1973,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             let all = NotesView.allCases
             let index = all.firstIndex(of: model.view) ?? 0
             model.view = all[(index + (flags.contains(.shift) ? all.count - 1 : 1)) % all.count]
-        // With Option, the arrows move the capo of the tab, as they move the chords' capo over the lyrics.
-        case kVK_UpArrow, kVK_PageUp: model.goToPage(model.page - 1)
-        case kVK_DownArrow, kVK_PageDown: model.goToPage(model.page + 1)
-        case kVK_LeftArrow where flags.contains(.option): if model.hasTab { model.onCapo(-1) }
-        case kVK_RightArrow where flags.contains(.option): if model.hasTab { model.onCapo(1) }
-        case kVK_LeftArrow: model.onTranspose(-1)
-        case kVK_RightArrow: model.onTranspose(1)
+        // Left and right turn the pages, up and down transpose, and with Option, up and down move the capo of the tab.
+        case kVK_LeftArrow, kVK_PageUp: model.goToPage(model.page - 1)
+        case kVK_RightArrow, kVK_PageDown: model.goToPage(model.page + 1)
+        case kVK_UpArrow where flags.contains(.option): if model.hasTab { model.onCapo(1) }
+        case kVK_DownArrow where flags.contains(.option): if model.hasTab { model.onCapo(-1) }
+        case kVK_UpArrow: model.onTranspose(1)
+        case kVK_DownArrow: model.onTranspose(-1)
         default: return false
         }
         return true
