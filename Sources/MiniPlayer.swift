@@ -1231,6 +1231,8 @@ struct MiniLayoutEditor: View {
 /// Lays chips out in rows, wrapping to the next row when one is full.
 struct FlowRow: Layout {
     var spacing: CGFloat = 6
+    /// Each row sits in the middle of the width instead of at its start.
+    var centred = false
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
         let width = proposal.width ?? 400
@@ -1250,17 +1252,27 @@ struct FlowRow: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
-        var x = bounds.minX, y = bounds.minY, row: CGFloat = 0
+        // The subviews in rows first, so that a centred row knows its width.
+        var rows: [[(LayoutSubview, CGSize)]] = [[]]
+        var x: CGFloat = 0
         for subview in subviews {
             let size = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + size.width > bounds.maxX {
-                y += row + spacing
-                x = bounds.minX
-                row = 0
+            if x > 0, x + size.width > bounds.width {
+                rows.append([])
+                x = 0
             }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            rows[rows.count - 1].append((subview, size))
             x += size.width + spacing
-            row = max(row, size.height)
+        }
+        var y = bounds.minY
+        for row in rows {
+            let width = row.map(\.1.width).reduce(0, +) + spacing * CGFloat(max(0, row.count - 1))
+            var x = centred ? bounds.minX + max(0, (bounds.width - width) / 2) : bounds.minX
+            for (subview, size) in row {
+                subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += (row.map(\.1.height).max() ?? 0) + spacing
         }
     }
 }

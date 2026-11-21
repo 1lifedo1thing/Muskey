@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 /// Everything the notes window needs for a song, kept in one file so that the window can be opened and tested without
@@ -25,7 +26,64 @@ extension DetectedKey {
     }
 }
 
+/// How much of the music each stem plays in, and the seconds of music that it was measured over.
+struct StemActivity: Sendable {
+    var shares: [Stem: Double]
+    var seconds: Double
+}
+
 enum NotesPipeline {
+    /// How much of the music each stem plays in, from 0 to 1: of the half seconds where the stems together are louder
+    /// than −50 dB, the share where the stem is at most 20 dB below them. The parts of a capture that weren't heard
+    /// are silent, so they count neither way.
+    static func activity(_ cache: StemsCache) -> StemActivity {
+        let window = Int(StemsCache.rate / 2)
+        let stems = Stem.allCases.count
+        var buffer = [Float](repeating: 0, count: StemsCache.planes * window)
+        var mix = [Float](repeating: 0, count: window * 2)
+        var music = 0
+        var playing = [Int](repeating: 0, count: stems)
+        var power = [Float](repeating: 0, count: stems)
+        let floor = Float(window * 2) * 0.003 * 0.003
+        for start in stride(from: 0, to: cache.frames, by: window) {
+            buffer.withUnsafeMutableBufferPointer { cache.copy(Array(0 ..< StemsCache.planes), from: start, count: window, into: $0.baseAddress!) }
+            var mixPower: Float = 0
+            buffer.withUnsafeBufferPointer { planes in
+                mix.withUnsafeMutableBufferPointer { out in
+                    out.update(repeating: 0)
+                    for s in 0 ..< stems {
+                        var left: Float = 0, right: Float = 0
+                        for channel in 0 ..< 2 {
+                            let plane = planes.baseAddress! + (s * 2 + channel) * window
+                            let target = out.baseAddress! + channel * window
+                            vDSP_vadd(target, 1, plane, 1, target, 1, vDSP_Length(window))
+                        }
+                        vDSP_svesq(planes.baseAddress! + s * 2 * window, 1, &left, vDSP_Length(window))
+                        vDSP_svesq(planes.baseAddress! + (s * 2 + 1) * window, 1, &right, vDSP_Length(window))
+                        power[s] = left + right
+                    }
+                    vDSP_svesq(out.baseAddress!, 1, &mixPower, vDSP_Length(window * 2))
+                }
+            }
+            guard mixPower > floor else { continue }
+            music += 1
+            for s in 0 ..< stems where power[s] > mixPower * 0.01 { playing[s] += 1 }
+        }
+        let shares = Dictionary(uniqueKeysWithValues: Stem.allCases.map { ($0, music == 0 ? 0 : Double(playing[$0.rawValue]) / Double(music)) })
+        return StemActivity(shares: shares, seconds: Double(music * window) / StemsCache.rate)
+    }
+
+    /// A stem that plays in less than this share of the music is too quiet to transcribe without asking.
+    static let quiet = 0.1
+
+    /// `--stem-activity FILE.stems`: prints how much of the music each stem in a stems cache plays in.
+    static func printActivity(_ file: String) {
+        guard let cache = try? StemsCache(url: URL(fileURLWithPath: file)) else { return print("no stems in \(file)") }
+        let activity = activity(cache)
+        print(Stem.allCases.map { String(format: "%@ %.2f", $0.name, activity.shares[$0] ?? 0) }.joined(separator: "  ")
+            + String(format: "  (%.0f s of music)", activity.seconds))
+    }
+
     /// The left and right channels of one stem of a song whose stems are in the cache, mixed to mono.
     static func stemSamples(_ cache: StemsCache, stem: Stem) -> [Float] {
         let frames = cache.frames

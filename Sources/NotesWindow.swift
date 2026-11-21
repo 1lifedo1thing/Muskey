@@ -77,6 +77,10 @@ final class NotesModel: ObservableObject {
         case working(NotesStep, Double)
         case ready
         case failed
+        /// The stem hardly plays in the song, so the transcription waits for Transcribe Anyway or another stem.
+        case quiet
+        /// The transcription found too few notes to fill a page.
+        case empty
 
         var step: NotesStep? {
             if case let .working(step, _) = self { step } else { nil }
@@ -111,6 +115,29 @@ final class NotesModel: ObservableObject {
     @Published var shift = 0 { didSet { if shift != oldValue { rebuild() } } }
     /// The capo for the tab, the same one that the chords over the lyrics use.
     @Published var capo = 0 { didSet { if capo != oldValue { rebuild() } } }
+    /// The page that the song is on, counted from 0, and how many pages the notes take in this view and window size.
+    @Published var page = 0
+    @Published var pageCount = 1
+    /// The time of the first bar of each page, which the page buttons and the arrows move the song to.
+    var pageStarts: [Double] = []
+    /// A page that the buttons asked for, which the page number keeps showing while the player catches up with the seek.
+    var pageAsked: (page: Int, at: Date)?
+    /// The other stems that play in the song, the most present first, offered when this one hardly plays.
+    @Published var otherStems: [Stem] = []
+    /// Transcribe Anyway was pressed, so the transcription runs even though the stem hardly plays.
+    var forced = false
+    /// Part of a song from another app was heard, so the card speaks of the part heard instead of the song.
+    var partlyHeard = false
+    /// The song from another app that the window's notes belong to, or nil for a song of Muskey Player.
+    var song: [String?]?
+
+    /// Moves the song to the first bar of a page, which turns the pages to it.
+    func goToPage(_ target: Int) {
+        guard done, pageStarts.indices.contains(target), target != page else { return }
+        page = target
+        pageAsked = (target, Date())
+        onSeek(pageStarts[target])
+    }
     @Published var view: NotesView
     @Published var loop: LoopRegion?
     @Published var playing = false
@@ -125,6 +152,8 @@ final class NotesModel: ObservableObject {
     var onTranspose: (Int) -> Void = { _ in }
     var onCapo: (Int) -> Void = { _ in }
     var onRetry: () -> Void = {}
+    var onTranscribeAnyway: () -> Void = {}
+    var onPickStem: (Stem) -> Void = { _ in }
     var onClose: () -> Void = {}
     var onSave: (NotesFormat) -> Void = { _ in }
     var onCopyTab: () -> Void = {}
@@ -169,8 +198,8 @@ final class NotesModel: ObservableObject {
 
     private func rawProgress(at date: Date) -> Double {
         switch phase {
-        case .ready: return 1
-        case .failed: return reached
+        case .ready, .empty: return 1
+        case .failed, .quiet: return reached
         case let .working(step, fraction):
             let weights = weights, total = weights.reduce(0, +)
             guard total > 0, let index = steps.firstIndex(of: step) else { return reached }
@@ -240,9 +269,16 @@ final class NotesModel: ObservableObject {
         rebuild()
     }
 
+    /// The seconds of music in the song, without its silent parts and the parts of a capture that weren't heard.
+    var musicSeconds: Double?
+
+    /// The fewest notes that are worth showing: 4 for each minute of music, so that a few notes scattered over a song
+    /// don't fill pages of empty bars. With fewer, the window says that there are no notes to transcribe.
+    var fewest: Int { max(4, Int((musicSeconds ?? duration) / 60 * 4)) }
+
     func finish(_ notes: [TranscribedNote]) {
         self.notes = notes
-        phase = .ready
+        phase = notes.count < fewest ? .empty : .ready
         rebuild()
     }
 
@@ -1096,7 +1132,9 @@ private struct NotesProgressCard: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            if model.phase == .failed {
+            if model.phase == .quiet || model.phase == .empty {
+                choice
+            } else if model.phase == .failed {
                 HStack(spacing: 8) {
                     let red = Color(red: 1, green: 0.42, blue: 0.4)
                     Text("Transcription failed")
@@ -1147,6 +1185,53 @@ private struct NotesProgressCard: View {
                 .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.14), radius: 18, y: 6)
         )
         .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(palette.ink.opacity(0.07), lineWidth: 1))
+    }
+
+    /// A stem that hardly plays: Transcribe Anyway while the transcription waits, and the other stems that play.
+    private var choice: some View {
+        VStack(spacing: 14) {
+            Text(choiceTitle)
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundStyle(palette.ink)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.phase == .quiet { anyway }
+            if !model.otherStems.isEmpty {
+                FlowRow(spacing: 6, centred: true) {
+                    ForEach(model.otherStems, id: \.self) { stem in
+                        HUDButton(title: LocalizedStringKey(stem.name), symbol: stem.symbol, palette: palette, small: true) { model.onPickStem(stem) }
+                            .help("Transcribe the \(stem.name.lowercased())")
+                    }
+                }
+            }
+        }
+    }
+
+    private var choiceTitle: String {
+        if model.phase == .empty { return "No notes to transcribe" }
+        let stem = model.stem.name.lowercased()
+        return model.partlyHeard ? "Hardly any \(stem) in the part heard" : "Hardly any \(stem) in this song"
+    }
+
+    /// Transcribe Anyway in the accent colour, with the key that presses it.
+    private var anyway: some View {
+        let dark = colorScheme == .dark
+        return Button(action: model.onTranscribeAnyway) {
+            HStack(spacing: 6) {
+                Text("Transcribe Anyway")
+                Keycap(text: "↩", palette: .of(dark ? .light : .dark), small: true)
+            }
+            .font(.system(size: 12, weight: .heavy, design: .rounded))
+            .fixedSize()
+            .foregroundStyle(dark ? Color(red: 0.18, green: 0.11, blue: 0.02) : .white)
+            .padding(.leading, 12)
+            .padding(.trailing, 6)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(honey))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
     }
 
     private var title: String {
@@ -1221,14 +1306,19 @@ private struct NotesPageView: View {
                     half(painter, top: true, page: pages.top)
                     half(painter, top: false, page: pages.bottom)
                 }
-                .opacity(model.done ? 1 : 0.3)
+                .opacity(model.done ? 1 : model.phase == .empty ? 0 : 0.3)
                 Rectangle()
-                    .fill(palette.ink.opacity(0.08))
+                    .fill(palette.ink.opacity(model.phase == .empty ? 0 : 0.08))
                     .frame(height: 1)
                     .padding(.horizontal, 12)
                     .offset(y: layout.middle)
                 if model.done {
                     NotesPlayhead(model: model, painter: painter, shown: pages, turning: turning)
+                }
+                // While the top half already shows the next page, each half says which page it is.
+                if model.done, pages.top != pages.bottom {
+                    pageLabel(pages.top).offset(y: 4)
+                    pageLabel(pages.bottom).offset(y: layout.middle + 6)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
@@ -1242,8 +1332,16 @@ private struct NotesPageView: View {
             }
             .animation(.easeOut(duration: 0.25), value: model.done)
             .onReceive(model.playing ? Self.tick : Self.slowTick) { _ in turn(layout) }
-            .onChange(of: layout) { turn(layout, animated: false) }
-            .onAppear { turn(layout, animated: false) }
+            .onChange(of: layout) {
+                syncPages(layout)
+                turn(layout, animated: false)
+            }
+            .onChange(of: model.page) { turn(layout) }
+            .onChange(of: model.done) { syncPages(layout) }
+            .onAppear {
+                syncPages(layout)
+                turn(layout, animated: false)
+            }
         }
         .background(RoundedRectangle(cornerRadius: 14).fill(paper))
         .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -1322,11 +1420,39 @@ private struct NotesPageView: View {
         // The first notes show at once, on the pages of the moment they arrive.
         guard model.done else { return placed = false }
         let pages = layout.pagesShown(at: model.now(), in: model.score)
+        // A page that the buttons asked for waits up to a second and a half for the player to report the seek, so the
+        // pages and the number don't flick back to where the song was.
+        if let asked = model.pageAsked {
+            if pages.bottom != asked.page, Date().timeIntervalSince(asked.at) < 1.5 { return }
+            model.pageAsked = nil
+        }
         // State is only written when it changes, since this runs 10 times a second.
         defer { if !placed { placed = true } }
+        if model.page != pages.bottom { model.page = pages.bottom }
         guard pages != shown else { return }
         animateTurns = animated && placed
         shown = pages
+    }
+
+    private func pageLabel(_ page: Int) -> some View {
+        Text("Page \(page + 1)")
+            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+            .foregroundStyle(palette.muted)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(paper.opacity(0.9)))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 10)
+            .allowsHitTesting(false)
+            .transition(.opacity)
+    }
+
+    /// The number of pages and where each one starts, for the page buttons in the footer.
+    private func syncPages(_ layout: NotesLayout) {
+        let count = layout.pages
+        if model.pageCount != count { model.pageCount = count }
+        let barsPerPage = layout.linesPerPage * layout.barsPerLine
+        model.pageStarts = (0 ..< count).map { model.score.time(at: Double($0 * barsPerPage * Score.beatsPerBar)) }
     }
 }
 
@@ -1630,13 +1756,16 @@ private struct NotesFooter: View {
     var body: some View {
         HStack(spacing: 14) {
             NotesTime(model: model, palette: palette)
+            // A stem without notes has no pages to move through.
+            if model.phase != .quiet, model.phase != .empty { NotesPager(model: model, palette: palette) }
             Spacer(minLength: 0)
             // A narrow window keeps the hints that it has room for.
             ViewThatFits(in: .horizontal) {
                 if model.view == .tab, model.hasTab {
-                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "transpose"), (["⌥", "←", "→"], "capo"), (["esc"], "close")])
+                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["↑", "↓"], "page"), (["←", "→"], "transpose"), (["⌥", "←", "→"], "capo"), (["esc"], "close")])
                 }
-                hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "transpose"), (["esc"], "close")])
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["↑", "↓"], "page"), (["←", "→"], "transpose"), (["esc"], "close")])
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["↑", "↓"], "page"), (["←", "→"], "transpose")])
                 hints([(["space"], "play or pause"), (["R"], "region loop"), (["←", "→"], "transpose")])
                 hints([(["R"], "region loop")])
                 Color.clear.frame(width: 0)
@@ -1662,6 +1791,45 @@ private struct NotesFooter: View {
                 .foregroundStyle(palette.muted)
                 .fixedSize()
         }
+    }
+}
+
+/// The page that the song is on, of all the pages, with the previous and the next page beside it.
+private struct NotesPager: View {
+    @ObservedObject var model: NotesModel
+    let palette: Palette
+
+    var body: some View {
+        HStack(spacing: 2) {
+            arrow("chevron.left", to: model.page - 1, help: "Previous page (↑)")
+            Text("Page \(model.page + 1) of \(model.pageCount)")
+                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(palette.ink)
+                .contentTransition(.numericText(value: Double(model.page)))
+                .animation(.snappy(duration: 0.2), value: model.page)
+                .fixedSize()
+            arrow("chevron.right", to: model.page + 1, help: "Next page (↓)")
+        }
+        .padding(.horizontal, 3)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(palette.ink.opacity(0.08)))
+        .opacity(model.done ? 1 : 0.4)
+        .disabled(!model.done)
+    }
+
+    private func arrow(_ symbol: String, to page: Int, help: String) -> some View {
+        Button { model.goToPage(page) } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .heavy))
+                .foregroundStyle(palette.ink)
+                .frame(width: 22, height: 22)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .disabled(page < 0 || page >= model.pageCount)
+        .help(help)
     }
 }
 
@@ -1802,6 +1970,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         }
         switch code {
         case kVK_Escape: close()
+        case kVK_Return where model.phase == .quiet, kVK_ANSI_KeypadEnter where model.phase == .quiet: model.onTranscribeAnyway()
         case kVK_Space: model.onPlayPause()
         case kVK_ANSI_R: onLoopKey(!flags.contains(.option))
         case kVK_Tab:
@@ -1809,6 +1978,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             let index = all.firstIndex(of: model.view) ?? 0
             model.view = all[(index + (flags.contains(.shift) ? all.count - 1 : 1)) % all.count]
         // With Option, the arrows move the capo of the tab, as they move the chords' capo over the lyrics.
+        case kVK_UpArrow, kVK_PageUp: model.goToPage(model.page - 1)
+        case kVK_DownArrow, kVK_PageDown: model.goToPage(model.page + 1)
         case kVK_LeftArrow where flags.contains(.option): if model.hasTab { model.onCapo(-1) }
         case kVK_RightArrow where flags.contains(.option): if model.hasTab { model.onCapo(1) }
         case kVK_LeftArrow: model.onTranspose(-1)
@@ -2109,6 +2280,18 @@ extension NotesModel {
     if TestFlags.has("--notes-failed") {
         model.begin([.beats, .stems, .notes])
         model.phase = .failed
+    }
+    // `--notes-quiet` shows the card of a stem that hardly plays, `--notes-empty` the card of a transcription that
+    // found no notes, and `--notes-partly` makes them speak of the part heard of a song from another app.
+    if TestFlags.has("--notes-quiet") || TestFlags.has("--notes-empty") {
+        model.otherStems = [Stem.guitar, .vocals, .piano, .winds, .other, .bass].filter { $0 != model.stem }
+        model.partlyHeard = TestFlags.has("--notes-partly")
+        if TestFlags.has("--notes-empty") {
+            model.finish([])
+        } else {
+            model.begin([.beats, .stems, .notes])
+            model.phase = .quiet
+        }
     }
     for view in NotesView.allCases {
         for (shape, size) in [("tall", CGSize(width: 680, height: 960)), ("wide", CGSize(width: 1180, height: 680))] {

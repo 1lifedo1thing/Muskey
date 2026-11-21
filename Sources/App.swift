@@ -2261,6 +2261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             renderNotesWindow(fixture: path, to: Self.stringOption("--render") ?? Self.stringOption("--notes-out") ?? "/tmp")
             return NSApp.terminate(nil)
         }
+        if let file = Self.stringOption("--stem-activity") {
+            NotesPipeline.printActivity(file)
+            return NSApp.terminate(nil)
+        }
         if let path = Self.stringOption("--notes-headless") {
             NotesPipeline.headless(path)
             return
@@ -2762,6 +2766,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launched = true
         // `--open PATH_OR_LINK` plays a file or a link, as a drop on the HUD does.
         if let text = Self.stringOption("--open"), let url = FilePlayer.url(from: text) { open([url]) }
+        // `--notes-open STEM` opens the notes window on that stem of the song that `--open` plays, once it plays.
+        if let name = Self.stringOption("--notes-open"), let stem = Stem.allCases.first(where: { $0.name.lowercased() == name.lowercased() }) {
+            Task { @MainActor [weak self] in
+                for _ in 0 ..< 40 {
+                    try? await Task.sleep(for: .seconds(0.5))
+                    guard let self else { return }
+                    if playsInFilePlayer, let path = filePlayer.current?.path, let track = nowPlaying.track {
+                        return openNotes(path: path, track: track, stem: stem)
+                    }
+                }
+                self?.log("notes: no song played for --notes-open")
+            }
+        }
         // `--notes-file FIXTURE` opens the notes window on the notes that `--notes-headless` wrote, without a song.
         if let path = Self.stringOption("--notes-file"), let notes = NotesModel.fixture(path) {
             wireNotes(notes)
@@ -3039,6 +3056,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Writes what was heard to the file of the notes, and transcribes it like a file of Muskey Player.
     private func transcribeCapture(_ recorder: WaveformRecorder, notes: NotesModel) {
+        notes.partlyHeard = recorder.firstGap != nil
         do {
             try recorder.writeCapture(to: URL(fileURLWithPath: notes.path))
         } catch {
@@ -3122,18 +3140,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The window's play state can only be set once the window holds the notes.
         syncNotesPlaying()
         log("notes: \(stem.name.lowercased()) of \(title)")
-        if let cached = NotesStore.load(path: path, stem: stem) {
-            if grids[path] == nil { notes.setGrid(beats: cached.beats, bpm: cached.bpm) }
-            notes.finish(cached.notes)
-            log("notes: \(cached.notes.count) notes from the cache")
+        fillNotes(notes)
+    }
+
+    /// Shows the notes from the cache, or transcribes them.
+    private func fillNotes(_ notes: NotesModel) {
+        guard let cached = NotesStore.load(path: notes.path, stem: notes.stem) else { return runNotes(notes) }
+        if grids[notes.path] == nil { notes.setGrid(beats: cached.beats, bpm: cached.bpm) }
+        if cached.notes.count < notes.fewest { offerOtherStems(notes) }
+        notes.finish(cached.notes)
+        log("notes: \(cached.notes.count) notes from the cache")
+    }
+
+    /// Opens the window's song on another stem, from the card of a stem that hardly plays.
+    private func switchNotesStem(_ notes: NotesModel, to stem: Stem) {
+        notesTask?.cancel()
+        notesWork?.cancel()
+        let next = NotesModel(path: notes.path, title: notes.title, artist: notes.artist, stem: stem, duration: notes.duration)
+        next.key = notes.key
+        next.partlyHeard = notes.partlyHeard
+        if let grid = grids[notes.path] { next.setGrid(beats: grid.beats, bpm: grid.bpm) }
+        wireNotes(next, song: notes.song)
+        notesWindow.show(next)
+        syncNotesPlaying()
+        lastNotesStem = stem
+        log("notes: the \(stem.name.lowercased()) instead of the \(notes.stem.name.lowercased())")
+        fillNotes(next)
+    }
+
+    /// The other stems that play in the song, the most present first, for a stem that hardly plays. Until the stems of
+    /// the song are measured, and when none of the others plays either, every other stem is offered.
+    private func offerOtherStems(_ notes: NotesModel, activity: StemActivity? = nil) {
+        let others = notesStems.filter { $0 != notes.stem }
+        if let activity = activity?.shares {
+            let playing = others.filter { (activity[$0] ?? 0) >= NotesPipeline.quiet }.sorted { (activity[$0] ?? 0) > (activity[$1] ?? 0) }
+            notes.otherStems = playing.isEmpty ? others : playing
             return
         }
-        runNotes(notes)
+        notes.otherStems = others
+        guard let cache = StemsCache.open(for: notes.path) else { return }
+        Task { @MainActor [weak self, weak notes] in
+            let activity = await Task.detached(priority: .userInitiated) { NotesPipeline.activity(cache) }.value
+            guard let self, let notes else { return }
+            offerOtherStems(notes, activity: activity)
+        }
     }
 
     /// The window's actions go to the song, and the pitch change, the loop and the play state come back from it. A
     /// song from another app (`song`) is the window's while that app plays it.
     private func wireNotes(_ notes: NotesModel, song: [String?]? = nil) {
+        notes.song = song
         notes.now = { [weak self, weak notes] in
             guard let self, let notes else { return nil }
             if let song {
@@ -3154,6 +3210,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.onRetry = { [weak self, weak notes] in
             guard let notes else { return }
             self?.runNotes(notes)
+        }
+        notes.onTranscribeAnyway = { [weak self, weak notes] in
+            guard let notes, notes.phase == .quiet else { return }
+            notes.forced = true
+            self?.log("notes: transcribe anyway")
+            self?.runNotes(notes)
+        }
+        notes.onPickStem = { [weak self, weak notes] stem in
+            guard let notes else { return }
+            self?.switchNotesStem(notes, to: stem)
         }
         notes.onClose = { [weak self] in self?.notesWindow.close() }
         notes.onSave = { [weak self, weak notes] format in
@@ -3263,6 +3329,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return
             }
+            // A stem that hardly plays waits for Transcribe Anyway or another stem, which the card offers.
+            let activity = await Task.detached(priority: .userInitiated) { NotesPipeline.activity(cache) }.value
+            guard !Task.isCancelled else { return }
+            let share = activity.shares[stem] ?? 0
+            notes.musicSeconds = activity.seconds
+            log(String(format: "notes: the %@ plays in %.0f%% of the %.0f s of music", stem.name.lowercased(), share * 100, activity.seconds))
+            offerOtherStems(notes, activity: activity)
+            if share < NotesPipeline.quiet, !notes.forced {
+                notes.phase = .quiet
+                return
+            }
             notes.phase = .working(.notes, 0)
             let started = Date()
             let work = Task.detached(priority: .userInitiated) { () throws -> [TranscribedNote] in
@@ -3279,8 +3356,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let found = try await work.value
                 guard !Task.isCancelled else { return }
                 notes.finish(found)
+                if notes.phase == .empty { log("notes: \(found.count) notes are too few for \(Int(activity.seconds)) s of music") }
                 NotesStore.save(notes.fixture, path: path, stem: stem)
-                deleteCapture(path)
+                // Without notes, the capture stays for another stem until the window closes.
+                if notes.phase == .ready { deleteCapture(path) }
                 NotesTiming.learn(.notes, seconds: Date().timeIntervalSince(started), song: song)
                 log(String(format: "notes: %d notes of the %@ in %.1f s", found.count, stem.name.lowercased(), Date().timeIntervalSince(started)))
             } catch is CancellationError {
