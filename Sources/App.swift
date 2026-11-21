@@ -360,6 +360,9 @@ final class HUDModel: ObservableObject {
     @Published var queue: [QueueItem] = []
     @Published var queueCurrent: UUID?
     @Published var queueShown = false
+    /// The song plays in another app. The queue belongs to Muskey Player, so Q, the queue's menu items and the Add to
+    /// Queue zone are left out, and songs added from the keys or a drop play now.
+    @Published var otherPlayer = false
     @Published var queueSelection: Set<UUID> = []
     /// Where the list of the queue is, in the coordinates of the HUD's window from its top left. Scrolls and drags
     /// there stay in the list, instead of skipping songs and moving the panel.
@@ -587,11 +590,10 @@ struct HUDView: View {
                     RoundButton(symbol: "music.microphone", help: focus ? "Close karaoke (↩)" : model.lyricsShown ? "Open karaoke (↩)" : "Open karaoke (⌘K)",
                                 label: "Karaoke", key: model.lyricsShown ? "↩" : "⌘K", isOn: focus, size: focus ? 26 : 20, palette: palette,
                                 action: model.onKaraoke)
+                    // The layout is in the ⋯ menu, with S.
                     if !focus {
-                        RoundButton(symbol: model.card ? "rectangle" : "rectangle.portrait", help: model.card ? "Switch to the wide layout (S)" : "Switch to the card layout (S)",
-                                    label: model.card ? "Wide style" : "Card style", key: "S", palette: palette, action: model.onLayout)
-                            .transition(.opacity)
-                        RoundButton(symbol: "ellipsis", help: "Queue, waveform and more", palette: palette, action: model.onMore)
+                        RoundButton(symbol: "ellipsis", help: model.otherPlayer ? "Waveform, layout and more" : "Queue, waveform and more", palette: palette,
+                                    action: model.onMore)
                             .transition(.opacity)
                     }
                 }
@@ -601,22 +603,14 @@ struct HUDView: View {
             }
         }
         // Songs dragged over the HUD blur it, and the zones where they can go show over it.
-        .blur(radius: model.dropTargeted && model.dropZone != nil ? 8 : 0)
+        .blur(radius: model.dropTargeted ? 8 : 0)
         // In light mode the dark record would show through the pale zones and under their text, so the HUD fades too.
-        .opacity(model.dropTargeted && model.dropZone != nil && colorScheme == .light ? 0.45 : 1)
+        .opacity(model.dropTargeted && colorScheme == .light ? 0.45 : 1)
         .overlay {
-            if model.dropTargeted, model.dropZone != nil {
-                // While the queue has songs, a drag shows where the songs can go.
+            if model.dropTargeted {
+                // While the queue has songs, a drag shows where the songs can go. With no queue to add to (an empty
+                // one, or a song from another app), Play Now covers the whole HUD.
                 DropZones(zone: model.dropZone, palette: Palette.of(colorScheme))
-                    .transition(.opacity)
-            } else if model.dropTargeted {
-                // A file or a link dragged over the HUD plays once dropped.
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 44, weight: .regular))
-                    .foregroundStyle(.tint)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Palette.of(colorScheme).ink.opacity(0.08))
-                    .allowsHitTesting(false)
                     .transition(.opacity)
             }
         }
@@ -2165,6 +2159,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // that Space asked for already shows, and a report against it is from before the player took it.
         let sameSong = model.track?.song == nowPlaying.track?.song
         if model.track != nowPlaying.track { model.track = nowPlaying.track }
+        let otherPlayer = nowPlaying.track?.title?.isEmpty == false && nowPlaying.player?.bundleID != FilePlayer.bundleID
+        if model.otherPlayer != otherPlayer {
+            model.otherPlayer = otherPlayer
+            if otherPlayer, model.queueShown { toggleQueue() }
+            updateHoverKeys()
+        }
         showTempo()
         if model.artwork !== nowPlaying.artwork { model.artwork = nowPlaying.artwork }
         if let track = nowPlaying.track, playGuess == nil || playGuess?.playing == track.playing {
@@ -3215,6 +3215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Adds files or links to the queue: dropped on Add to Queue, pasted with ⇧⌘V, or picked with Add Files to Queue…
     /// and Add URL to Queue…. With `next`, they play right after the song that plays.
     private func add(_ urls: [URL], next: Bool) {
+        guard !model.otherPlayer else { return open(urls) }
         filePlayer.add(urls, next: next)
     }
 
@@ -3289,6 +3290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Q: the record turns over to the queue, and back.
     private func toggleQueue() {
+        guard model.queueShown || !model.otherPlayer else { return }
         if !model.picking, model.shown { pickKey() }
         model.queueShown.toggle()
         log(model.queueShown ? "queue shown" : "queue hidden")
@@ -3328,6 +3330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var addingLocation = false
 
     @objc private func addFiles() {
+        guard !model.otherPlayer else { return openFile() }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .movie]
         panel.allowsMultipleSelection = true
@@ -3338,6 +3341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func addLocation() {
+        guard !model.otherPlayer else { return openLocation() }
         addingLocation = true
         dialogOpen = true
         locationPanel.show()
@@ -3353,6 +3357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleQueueFromMenu() { toggleQueue() }
     @objc private func toggleWaveformFromMenu() { toggleWaveform() }
+    @objc private func toggleLayoutFromMenu() { toggleLayout() }
 
     /// The ⋯ button in the corner of the HUD: the queue and the other things that have a key but no button.
     private func showMoreMenu() {
@@ -3365,13 +3370,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.state = on ? .on : .off
             menu.addItem(item)
         }
-        item("Queue", #selector(toggleQueueFromMenu), key: "q", on: model.queueShown)
-        item("Add Files to Queue…", #selector(addFiles), key: "o", modifiers: [.command, .shift])
-        item("Add URL to Queue…", #selector(addLocation), key: "l", modifiers: [.command, .shift])
-        item("Add Copied Songs", #selector(addCopied), key: "v", modifiers: [.command, .shift], enabled: !Self.pastedURLs().isEmpty)
-        menu.addItem(.separator())
+        // The queue belongs to Muskey Player, so a song from another app has none.
+        if !model.otherPlayer {
+            item("Queue", #selector(toggleQueueFromMenu), key: "q", on: model.queueShown)
+            item("Add Files to Queue…", #selector(addFiles), key: "o", modifiers: [.command, .shift])
+            item("Add URL to Queue…", #selector(addLocation), key: "l", modifiers: [.command, .shift])
+            item("Add Copied Songs", #selector(addCopied), key: "v", modifiers: [.command, .shift], enabled: !Self.pastedURLs().isEmpty)
+            menu.addItem(.separator())
+        }
         item("Waveform", #selector(toggleWaveformFromMenu), key: "w", on: model.waveformShown)
         item("Mini Player", #selector(toggleMiniPlayer), key: "m", on: prefs.miniPlayer)
+        item("Card Layout", #selector(toggleLayoutFromMenu), key: "s", on: model.card)
         menu.addItem(.separator())
         item("Open File…", #selector(openFile), key: "o", modifiers: .command)
         item("Open URL…", #selector(openLocation), key: "l", modifiers: .command)
@@ -4247,7 +4256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
         // Q turns the record over to the queue, in both layouts.
-        if code == kVK_ANSI_Q, !shift, !option, !model.lyricsFocus {
+        if code == kVK_ANSI_Q, !shift, !option, !model.lyricsFocus, !model.otherPlayer {
             toggleQueue()
             return true
         }
@@ -6099,7 +6108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Over the tab of an end of the region loop, the arrows nudge it.
         if model.loop != nil, model.wave.loopEnd != nil { keys += [kVK_LeftArrow, kVK_RightArrow].flatMap { [($0, 0), ($0, optionKey)] } }
         // Q shows the queue, which takes the arrows, Return and Delete while it shows, and M the mini player.
-        if !model.lyricsFocus { keys += [(kVK_ANSI_Q, 0), (kVK_ANSI_T, 0)] }
+        if !model.lyricsFocus { keys += (model.otherPlayer ? [] : [(kVK_ANSI_Q, 0)]) + [(kVK_ANSI_T, 0)] }
         keys.append((kVK_ANSI_M, 0))
         if model.queueShown {
             keys += [kVK_UpArrow, kVK_DownArrow].flatMap { [($0, 0), ($0, shiftKey)] }
@@ -6671,7 +6680,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-notes-picker", "-notes-download", "-notes-outside"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -6819,6 +6828,9 @@ extension EnvironmentValues {
                     model.dropZone = variant == "-queue-drop-next" ? .addNext : variant == "-queue-drop-now" ? .playNow : .add
                 }
             }
+            // A drag of songs over a song from another app, which has no queue: Play Now alone.
+            model.otherPlayer = variant == "-drop-live"
+            if variant == "-drop-live" { model.dropTargeted = true }
             // T's stem picker, with both models installed, with a model to download, and for a song outside Muskey
             // Player.
             if variant.hasPrefix("-notes") {

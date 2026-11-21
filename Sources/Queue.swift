@@ -328,7 +328,8 @@ enum DropZone: Equatable {
 }
 
 /// The two zones that cover the HUD while songs are dragged over it: Play Now on the left, which replaces the queue,
-/// and Add to Queue on the right, which adds them at its end, or after the song that plays with ⌥ held.
+/// and Add to Queue on the right, which adds them at its end, or after the song that plays with ⌥ held. With no queue
+/// to add to (`zone` nil), Play Now alone covers the HUD.
 struct DropZones: View {
     let zone: DropZone?
     let palette: Palette
@@ -336,9 +337,13 @@ struct DropZones: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            tile("Play Now", symbol: "play.fill", detail: "replaces the queue", hot: zone == .playNow)
-            tile(zone == .addNext ? "Play Next" : "Add to Queue", symbol: zone == .addNext ? "text.line.first.and.arrowtriangle.forward" : "plus",
-                 hot: zone == .add || zone == .addNext, hint: true)
+            if let zone {
+                tile("Play Now", symbol: "play.fill", detail: "replaces the queue", hot: zone == .playNow)
+                tile(zone == .addNext ? "Play Next" : "Add to Queue", symbol: zone == .addNext ? "text.line.first.and.arrowtriangle.forward" : "plus",
+                     hot: zone == .add || zone == .addNext, hint: true)
+            } else {
+                tile("Play Now", symbol: "play.fill", hot: true)
+            }
         }
         .padding(16)
         .allowsHitTesting(false)
@@ -430,7 +435,7 @@ struct SongDrop: DropDelegate {
     }
 
     private func place(_ info: DropInfo) {
-        guard !model.queue.isEmpty else { return model.dropZone = nil }
+        guard !model.queue.isEmpty, !model.otherPlayer else { return model.dropZone = nil }
         let width = model.glassFrame.width
         model.dropZone = info.location.x < width / 2 ? .playNow : NSEvent.modifierFlags.contains(.option) ? .addNext : .add
     }
