@@ -3512,8 +3512,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleQueueFromMenu() { toggleQueue() }
     @objc private func toggleWaveformFromMenu() { toggleWaveform() }
     @objc private func toggleLayoutFromMenu() { toggleLayout() }
+    @objc private func notesFromMenu() { toggleNotesPicker() }
+    @objc private func karaokeFromMenu() { toggleKaraoke() }
+    @objc private func lanesFromMenu() { toggleWaveformLanes() }
+    @objc private func loopFromMenu() { pressLoop(snapping: true) }
+    @objc private func zoomInFromMenu() { zoomWaveform(1.5) }
+    @objc private func zoomOutFromMenu() { zoomWaveform(1 / 1.5) }
+    @objc private func wholeSongFromMenu() { zoomWaveform(0) }
+    @objc private func resetFromMenu() { resetAll() }
+    @objc private func pasteFromMenu() { pasteSongs() }
+    @objc private func homeFromMenu() { panel.returnHome() }
 
-    /// The ⋯ button in the corner of the HUD: the queue and the other things that have a key but no button.
+    /// The ⋯ button in the corner of the HUD: every action that has a key and no button in the HUD, so each one can be
+    /// found, with its key beside it.
     private func showMoreMenu() {
         if !model.picking, model.shown { pickKey() }
         let menu = NSMenu()
@@ -3524,6 +3535,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.state = on ? .on : .off
             menu.addItem(item)
         }
+        let keyed = model.key != nil
+        let hasSong = nowPlaying.track?.title?.isEmpty == false
         // The queue belongs to Muskey Player, so a song from another app has none.
         if !model.otherPlayer {
             item("Queue", #selector(toggleQueueFromMenu), key: "q", on: model.queueShown)
@@ -3532,13 +3545,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("Add Copied Songs", #selector(addCopied), key: "v", modifiers: [.command, .shift], enabled: !Self.pastedURLs().isEmpty)
             menu.addItem(.separator())
         }
+        if hasSong {
+            if !model.lyricsFocus { item("Transcribe Notes…", #selector(notesFromMenu), key: "t", on: model.notesPicking != nil) }
+            if keyed { item("Karaoke", #selector(karaokeFromMenu), key: "k", modifiers: .command, on: model.lyricsFocus) }
+            menu.addItem(.separator())
+        }
         item("Waveform", #selector(toggleWaveformFromMenu), key: "w", on: model.waveformShown)
+        if keyed, model.waveformShown, model.waveformStyle == .ribbon {
+            item("Instrument Lanes", #selector(lanesFromMenu), key: "w", modifiers: .option, on: model.wave.lanes, enabled: model.wave.waveform?.stems != nil)
+        }
+        if model.seekable || model.loop != nil {
+            let title = model.loop == nil ? "Start Region Loop" : model.loop?.end == nil ? "End Region Loop" : "Clear Region Loop"
+            item(title, #selector(loopFromMenu), key: "r")
+        }
+        if keyed, model.waveformShown, model.waveformStyle == .ribbon, model.wave.waveform != nil {
+            item("Zoom In", #selector(zoomInFromMenu), key: "+", modifiers: .command)
+            item("Zoom Out", #selector(zoomOutFromMenu), key: "-", modifiers: .command)
+            item("Whole Song", #selector(wholeSongFromMenu), key: "0", modifiers: .command, enabled: model.wave.zoom > 1)
+        }
+        menu.addItem(.separator())
         item("Mini Player", #selector(toggleMiniPlayer), key: "m", on: prefs.miniPlayer)
         item("Card Layout", #selector(toggleLayoutFromMenu), key: "s", on: model.card)
+        item("Move to Bottom Centre", #selector(homeFromMenu), key: "c", modifiers: [.command, .option])
         menu.addItem(.separator())
         item("Open File…", #selector(openFile), key: "o", modifiers: .command)
         item("Open URL…", #selector(openLocation), key: "l", modifiers: .command)
+        item("Play Copied Songs", #selector(pasteFromMenu), key: "v", modifiers: .command, enabled: !Self.pastedURLs().isEmpty)
+        if keyed {
+            let changed = model.shift != 0 || currentSpeed != 1 || !model.stemsMuted.isEmpty || !model.stemVolumes.isEmpty
+            item("Original Song", #selector(resetFromMenu), key: String(UnicodeScalar(UInt8(8))), modifiers: .command, enabled: changed)
+        }
         if filePlayer.hasSong { item("Stop Playing", #selector(stopPlaying)) }
+        menu.addItem(.separator())
+        item("Settings…", #selector(showSettings), key: ",", modifiers: .command)
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
