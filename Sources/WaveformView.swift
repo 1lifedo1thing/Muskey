@@ -17,8 +17,10 @@ enum WaveformStyle: String, CaseIterable {
 
 /// The waveform of the whole song, with the played part filled in and a playhead that moves with the song. A click
 /// or a drag moves the song, as the time bar does. Zoomed in, a close-up of the moments around the playhead scrolls
-/// past a fixed playhead, over a thin strip of the whole song. With the stems of the whole song, ⌥W splits it into
-/// a lane for each stem.
+/// past a fixed playhead, over a thin strip of the whole song, and a region loop that fits in it holds still while
+/// the playhead moves through it. With the stems of the whole song, ⌥W splits it into
+/// a lane for each stem picked in the chips under the lanes, and the lanes zoom, move the song and carry the region
+/// loop like the waveform of the whole song.
 struct WaveformView: View {
     let waveform: SongWaveform
     let track: NowPlaying.Track
@@ -30,8 +32,11 @@ struct WaveformView: View {
     var bpm: Double?
     /// 1 shows the whole song, and more shows a close-up that spans the song's length divided by it.
     var zoom: Double = 1
-    /// One lane per stem, when the stems of the whole song are known.
+    /// One lane per picked stem, when the stems of the whole song are known.
     var lanes = false
+    /// The stems that get a lane.
+    var laneStems: Set<Stem> = []
+    var toggleLane: (Stem) -> Void = { _ in }
     var muted: Set<Stem> = []
     var loop: LoopRegion?
     /// Moves an end of the region loop to a time, from its arrows, a drag or a typed time.
@@ -67,50 +72,80 @@ struct WaveformView: View {
 
     private var duration: Double { track.duration.flatMap { $0 > 0 ? $0 : nil } ?? waveform.duration }
     private var zoomed: Bool { zoom > 1.05 && style == .ribbon }
-    private var shownLanes: [Stem] { lanes && waveform.stems != nil ? Stem.shown : [] }
+    /// The lanes and their chips show: ⌥W with the stems of the whole song, in the ribbon style.
+    private var lanesOn: Bool { lanes && waveform.stems != nil && style == .ribbon }
+    private var shownLanes: [Stem] { lanesOn ? Stem.shown.filter(laneStems.contains) : [] }
+
+    // MARK: Sizes, shared by the drawing, the drag and the ends of the region loop
+
+    static let laneGap: CGFloat = 3
+    static let overviewHeight: CGFloat = 8
+
+    /// The height of the lanes together: one lane as tall as the waveform, and more lanes that share a little more.
+    static func lanesHeight(_ count: Int) -> CGFloat {
+        switch count {
+        case ...1: 40
+        case 2: 64
+        case 3: 84
+        default: 100
+        }
+    }
+
+    /// The bars, the lanes or the close-up, without the strip of the whole song under a close-up.
+    private var mainHeight: CGFloat { !shownLanes.isEmpty ? Self.lanesHeight(shownLanes.count) : zoomed ? height - 12 : height }
+    /// The part that takes clicks and drags: the main part, and the strip of the whole song under a close-up.
+    private var areaHeight: CGFloat { mainHeight + (zoomed ? Self.overviewHeight + 4 : 0) }
 
     var body: some View {
         let count = max(8, Int(width / Self.barStep))
         // The bars of the whole song only change when more of it is heard, so they are worked out once per change and
         // not on every frame.
         let overview = waveform.bars(count)
-        let laneBars = shownLanes.map { ($0, waveform.bars(count, stem: $0)) }
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !ticking || renderingPreview)) { context in
-            let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
-            let fraction = min(1, max(0, seconds / max(duration, 0.001)))
-            let _ = Self.traced(seconds, at: context.date)
-            Group {
-                if zoomed {
-                    VStack(spacing: 4) {
-                        closeUp(seconds: seconds, count: count, height: height - 12)
-                        strip(overview, fraction: fraction, height: 8)
-                            .overlay { window(fraction: fraction) }
+        let ranges = lanesOn ? waveform.stemRanges() : [:]
+        let laneBars = zoomed ? [] : shownLanes.map { ($0, waveform.bars(count, stem: $0, range: ranges[$0])) }
+        VStack(spacing: 6) {
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !ticking || renderingPreview)) { context in
+                let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
+                let fraction = min(1, max(0, seconds / max(duration, 0.001)))
+                let _ = Self.traced(seconds, at: context.date)
+                Group {
+                    if zoomed {
+                        let from = closeUpStart(seconds, at: context.date)
+                        VStack(spacing: 4) {
+                            closeUp(seconds: seconds, from: from, count: count, ranges: ranges)
+                            strip(overview, fraction: fraction, height: Self.overviewHeight)
+                                .overlay { window(from: from) }
+                        }
+                    } else if !laneBars.isEmpty {
+                        lanesView(laneBars, fraction: fraction, seconds: seconds)
+                    } else {
+                        bars(overview, fraction: fraction, seconds: seconds, height: mainHeight)
                     }
-                } else if !laneBars.isEmpty {
-                    lanesView(laneBars, fraction: fraction, seconds: seconds)
-                } else {
-                    bars(overview, fraction: fraction, seconds: seconds, height: height)
                 }
             }
+            .frame(width: width, height: areaHeight)
+            .contentShape(Rectangle())
+            // A scroll over the waveform moves the song as one over the time bar does, and a press on it seeks instead
+            // of dragging the HUD.
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { actions.scroll?.place(.waveform, at: $0, by: token) }
+            .onDisappear { actions.scroll?.remove(by: token) }
+            .gesture(drag, isEnabled: actions.seekable)
+            .opacity(actions.seekable || !ticking ? 1 : 0.8)
+            .help(actions.seekable ? "Move the song (drag, scroll, ⌘ scroll to zoom)" : "Seeking is off while instruments and vocals are separated as the song plays")
+            // The ends of the region loop sit over the waveform's edges, outside the shape that takes its clicks and
+            // its drag, so that their tabs, arrows and times get the pointer.
+            .overlay(alignment: .topLeading) { loopFlags }
+            if lanesOn {
+                laneChips
+                    .transition(.opacity)
+            }
         }
-        .frame(width: width, height: height)
         .contentShape(Rectangle())
         .onHover { hovered($0) }
-        // A scroll over the waveform moves the song as one over the time bar does, and a press on it seeks instead of
-        // dragging the HUD.
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { actions.scroll?.place(.waveform, at: $0, by: token) }
-        .onDisappear {
-            actions.scroll?.remove(by: token)
-            hovered(false)
-        }
-        .gesture(drag, isEnabled: actions.seekable)
-        .opacity(actions.seekable || !ticking ? 1 : 0.8)
-        .help(actions.seekable ? "Move the song (drag, scroll, ⌘ scroll to zoom)" : "Seeking is off while instruments and vocals are separated as the song plays")
-        // The ends of the region loop sit over the waveform's edges, outside the shape that takes its clicks and its
-        // drag, so that their tabs, arrows and times get the pointer.
-        .overlay(alignment: .topLeading) { loopFlags }
+        .onDisappear { hovered(false) }
         .animation(.snappy(duration: 0.25), value: zoomed)
         .animation(.snappy(duration: 0.25), value: shownLanes)
+        .animation(.snappy(duration: 0.25), value: lanesOn)
     }
 
     private var played: Color { StripColors.solid(.honey, scheme).fill }
@@ -170,36 +205,94 @@ struct WaveformView: View {
     /// The region loop as a honey band over the bars, with a line at each end.
     private func drawLoop(_ context: inout GraphicsContext, size: CGSize, from: Double, span: Double, now: Double? = nil) {
         guard let loop, span > 0 else { return }
-        let a = (loop.start - from) / span * size.width
-        let b = ((loop.end ?? max(loop.start, now ?? loop.start)) - from) / span * size.width
-        guard b >= -2, a <= size.width + 2 else { return }
+        // An end outside the close-up stops the band at the waveform's edge.
+        let a = max(-1, (loop.start - from) / span * size.width)
+        let b = min(size.width + 1, ((loop.end ?? max(loop.start, now ?? loop.start)) - from) / span * size.width)
+        guard b >= -1, a <= size.width + 1 else { return }
         let band = CGRect(x: a, y: -4, width: max(0, b - a), height: size.height + 8)
         context.fill(Path(roundedRect: band, cornerRadius: 4), with: .color(played.opacity(loop.end == nil ? 0.12 : 0.2)))
     }
 
-    /// Every stem in a lane of its own, as a strip of cells as tall as the lane, whose colour gets stronger where the
-    /// stem is louder. Six or seven lanes leave each one a few points, where bars would read as dots, and the strength
-    /// of a colour still reads at that height. The played part takes the stem's colour, and a muted stem stays grey.
+    /// The rows of the lanes, from the top, in an area `height` points tall.
+    private static func laneRects(_ count: Int, width: CGFloat, height: CGFloat) -> [CGRect] {
+        guard count > 0 else { return [] }
+        let lane = (height - laneGap * CGFloat(count - 1)) / CGFloat(count)
+        return (0 ..< count).map { CGRect(x: 0, y: CGFloat($0) * (lane + laneGap), width: width, height: lane) }
+    }
+
+    /// One stem as mirrored bars in its lane, in the stem's colour where the song has played and grey where it hasn't.
+    /// A muted stem stays grey, and a moment where the stem is silent is a thin line. The stem's name sits at the top
+    /// left of the lane.
+    private func drawLane(_ context: inout GraphicsContext, stem: Stem, values: [Float], in lane: CGRect, isPlayed: (Int) -> Bool) {
+        let step = lane.width / CGFloat(max(1, values.count))
+        let mid = lane.midY
+        let isMuted = muted.contains(stem)
+        context.fill(Path(roundedRect: lane, cornerRadius: 3), with: .color(palette.ink.opacity(0.035)))
+        for (i, value) in values.enumerated() {
+            let x = lane.minX + CGFloat(i) * step + (step - Self.barWidth) / 2
+            let color = isMuted ? palette.ink.opacity(isPlayed(i) ? 0.3 : 0.14) : isPlayed(i) ? stem.color(scheme) : unplayed
+            guard value > 0.02 else {
+                context.fill(Path(CGRect(x: x, y: mid - 0.5, width: Self.barWidth, height: 1)), with: .color(color.opacity(0.6)))
+                continue
+            }
+            let h = max(1.5, CGFloat(value) * (lane.height - 3))
+            context.fill(Path(roundedRect: CGRect(x: x, y: mid - h / 2, width: Self.barWidth, height: h), cornerRadius: 1), with: .color(color))
+        }
+        var label = context
+        label.addFilter(.shadow(color: (scheme == .dark ? Color.black : .white).opacity(0.9), radius: 1.5))
+        label.draw(Text(stem.name).font(.system(size: 8.5, weight: .bold, design: .rounded))
+            .foregroundStyle(isMuted ? palette.ink.opacity(0.45) : stem.color(scheme)),
+            at: CGPoint(x: lane.minX + 4, y: lane.minY + 1), anchor: .topLeading)
+    }
+
+    /// Every picked stem in a lane of its own, over the whole song.
     private func lanesView(_ rows: [(Stem, [Float])], fraction: Double, seconds: Double) -> some View {
         Canvas { context, size in
-            let gap: CGFloat = 1.5
-            let laneHeight = (size.height - gap * CGFloat(rows.count - 1)) / CGFloat(rows.count)
-            for (row, (stem, values)) in rows.enumerated() {
-                let top = CGFloat(row) * (laneHeight + gap)
-                let step = size.width / CGFloat(max(1, values.count))
+            let lanes = Self.laneRects(rows.count, width: size.width, height: size.height)
+            for ((stem, values), lane) in zip(rows, lanes) {
                 let head = fraction * Double(values.count)
-                let isMuted = muted.contains(stem)
-                let lane = CGRect(x: 0, y: top, width: size.width, height: laneHeight)
-                context.fill(Path(roundedRect: lane, cornerRadius: 1.5), with: .color(palette.ink.opacity(0.04)))
-                for (i, value) in values.enumerated() where value > 0.02 {
-                    let strength = Double(value * value)
-                    let color = isMuted ? palette.ink.opacity(0.12 + 0.2 * strength)
-                        : Double(i) + 0.5 <= head ? stem.color(scheme, opacity: 0.15 + 0.85 * strength) : palette.ink.opacity(0.06 + 0.3 * strength)
-                    context.fill(Path(CGRect(x: CGFloat(i) * step, y: top, width: step + 0.3, height: laneHeight)), with: .color(color))
-                }
+                drawLane(&context, stem: stem, values: values, in: lane) { Double($0) + 0.5 <= head }
             }
             drawLoop(&context, size: size, from: 0, span: duration, now: seconds)
             drawHead(&context, x: fraction * size.width, height: size.height, seconds: seconds)
+        }
+        .frame(height: mainHeight)
+    }
+
+    /// The stems that can get a lane, as chips in their colours, filled for the ones shown. Names fit in the key
+    /// column, and a narrower waveform shows the stems' symbols.
+    private var laneChips: some View {
+        ViewThatFits(in: .horizontal) {
+            chipRow(names: true)
+            chipRow(names: false)
+        }
+        .frame(width: width)
+    }
+
+    private func chipRow(names: Bool) -> some View {
+        HStack(spacing: 5) {
+            ForEach(Stem.shown, id: \.self) { stem in
+                let on = laneStems.contains(stem)
+                Button { toggleLane(stem) } label: {
+                    Group {
+                        if names {
+                            Text(stem.name).font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        } else {
+                            Image(systemName: stem.symbol).font(.system(size: 9.5, weight: .semibold))
+                        }
+                    }
+                    .foregroundStyle(on ? stem.color(scheme) : palette.muted)
+                    .padding(.horizontal, names ? 8 : 7)
+                    .frame(height: 18)
+                    .background(Capsule().fill(stem.color(scheme, opacity: on ? 0.18 : 0)))
+                    .overlay(Capsule().strokeBorder(on ? stem.color(scheme, opacity: 0.55) : palette.ink.opacity(0.14), lineWidth: 1))
+                    .contentShape(Capsule())
+                    .fixedSize()
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help(on ? "Hide the \(stem.name.lowercased()) lane" : "Show the \(stem.name.lowercased()) lane")
+            }
         }
     }
 
@@ -207,8 +300,8 @@ struct WaveformView: View {
         if let loop {
             TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !ticking || renderingPreview)) { context in
                 let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
-                LoopFlags(loop: loop, from: zoomed ? seconds - span / 2 : 0, span: zoomed ? span : duration, width: width,
-                          height: zoomed ? height - 12 : height, now: seconds, duration: duration, beat: bpm.map { 60 / $0 },
+                LoopFlags(loop: loop, from: zoomed ? closeUpStart(seconds, at: context.date) : 0, span: zoomed ? span : duration, width: width,
+                          height: mainHeight, now: seconds, duration: duration, beat: bpm.map { 60 / $0 },
                           color: played, palette: palette, set: setLoop, typing: typing)
             }
         }
@@ -217,13 +310,25 @@ struct WaveformView: View {
     /// The seconds that the close-up spans: the song divided by the zoom, and never under 4 seconds.
     private var span: Double { max(4, duration / zoom) }
 
-    /// The moments around the playhead, which scroll past it while it stays in the middle.
-    private func closeUp(seconds: Double, count: Int, height: CGFloat) -> some View {
-        let from = seconds - span / 2
-        let values = waveform.bars(count, from: from, to: from + span)
+    /// The region loop that the close-up holds still, centred, while the song plays inside it: a loop that fits in the
+    /// close-up. The song's place decides it, not a drag, so the close-up stays still under the pointer during a drag.
+    private func heldLoop(at date: Date) -> (start: Double, end: Double)? {
+        guard zoomed, let loop, let end = loop.end, end - loop.start <= span * 0.9, let now = track.position(at: date),
+              now >= loop.start - 0.05, now <= end + 0.3 else { return nil }
+        return (loop.start, end)
+    }
+
+    /// Where the close-up starts: the playhead in the middle, or the region loop in the middle while it is held.
+    private func closeUpStart(_ seconds: Double, at date: Date) -> Double {
+        heldLoop(at: date).map { ($0.start + $0.end) / 2 - span / 2 } ?? seconds - span / 2
+    }
+
+    /// The moments around the playhead, which scroll past it while it stays in the middle: the whole song as bars, or
+    /// each picked stem in its lane.
+    private func closeUp(seconds: Double, from: Double, count: Int, ranges: [Stem: (low: Float, high: Float)]) -> some View {
+        let rows: [(Stem?, [Float])] = shownLanes.isEmpty ? [(nil, waveform.bars(count, from: from, to: from + span))]
+            : shownLanes.map { ($0, waveform.bars(count, from: from, to: from + span, stem: $0, range: ranges[$0])) }
         return Canvas { context, size in
-            let step = size.width / CGFloat(max(1, values.count))
-            let mid = size.height / 2
             if let bpm, bpm > 0 {
                 // Faint lines a beat apart, counted from the song's start, which the loop's snapping lines up later.
                 let beat = 60 / bpm
@@ -234,23 +339,36 @@ struct WaveformView: View {
                     t += beat
                 }
             }
-            for (i, value) in values.enumerated() {
-                let x = CGFloat(i) * step + (step - Self.barWidth) / 2
-                let time = from + span * (Double(i) + 0.5) / Double(values.count)
-                guard time >= 0, time <= duration else { continue }
-                if value < 0 {
-                    context.fill(Path(ellipseIn: CGRect(x: x, y: mid - 0.9, width: 1.8, height: 1.8)), with: .color(palette.ink.opacity(0.3)))
-                    continue
+            let time = { (i: Int, n: Int) in from + span * (Double(i) + 0.5) / Double(n) }
+            if let (_, values) = rows.first, rows.first?.0 == nil {
+                let step = size.width / CGFloat(max(1, values.count))
+                let mid = size.height / 2
+                for (i, value) in values.enumerated() {
+                    let x = CGFloat(i) * step + (step - Self.barWidth) / 2
+                    let t = time(i, values.count)
+                    guard t >= 0, t <= duration else { continue }
+                    if value < 0 {
+                        context.fill(Path(ellipseIn: CGRect(x: x, y: mid - 0.9, width: 1.8, height: 1.8)), with: .color(palette.ink.opacity(0.3)))
+                        continue
+                    }
+                    let h = max(1.5, CGFloat(value) * (size.height - 2))
+                    context.fill(Path(roundedRect: CGRect(x: x, y: mid - h / 2, width: Self.barWidth, height: h), cornerRadius: 1),
+                                 with: .color(t <= seconds ? played : unplayed))
                 }
-                let h = max(1.5, CGFloat(value) * (size.height - 2))
-                context.fill(Path(roundedRect: CGRect(x: x, y: mid - h / 2, width: Self.barWidth, height: h), cornerRadius: 1),
-                             with: .color(time <= seconds ? played : unplayed))
+            } else {
+                let lanes = Self.laneRects(rows.count, width: size.width, height: size.height)
+                for ((stem, values), lane) in zip(rows, lanes) {
+                    guard let stem else { continue }
+                    // Moments before the song's start or after its end stay empty.
+                    let shown = values.enumerated().map { i, value in (0 ... duration).contains(time(i, values.count)) ? value : 0 }
+                    drawLane(&context, stem: stem, values: shown, in: lane) { time($0, values.count) <= seconds }
+                }
             }
             drawLoop(&context, size: size, from: from, span: span, now: seconds)
-            drawHead(&context, x: size.width / 2, height: size.height, seconds: seconds)
+            drawHead(&context, x: (seconds - from) / span * size.width, height: size.height, seconds: seconds)
         }
-        .frame(height: height)
-        .background(palette.ink.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+        .frame(height: mainHeight)
+        .background(palette.ink.opacity(shownLanes.isEmpty ? 0.035 : 0), in: RoundedRectangle(cornerRadius: 6))
     }
 
     /// The whole song as a thin strip, under the close-up.
@@ -269,24 +387,29 @@ struct WaveformView: View {
     }
 
     /// The box on the strip that shows which part of the song the close-up shows.
-    private func window(fraction: Double) -> some View {
+    private func window(from: Double) -> some View {
         GeometryReader { geo in
             let w = max(6, geo.size.width * span / max(duration, 0.001))
             RoundedRectangle(cornerRadius: 3)
                 .strokeBorder(palette.ink.opacity(0.7), lineWidth: 1.2)
                 .frame(width: w, height: geo.size.height + 4)
-                .offset(x: fraction * geo.size.width - w / 2, y: -2)
+                .offset(x: (from + span / 2) / max(duration, 0.001) * geo.size.width - w / 2, y: -2)
         }
         .allowsHitTesting(false)
     }
 
     /// A press seeks. On the whole song a drag moves the place under the pointer; on the close-up it pulls the song
-    /// under the playhead like a tape, and a click without a drag moves the song to the moment clicked.
+    /// under the playhead like a tape, and a click without a drag moves the song to the moment clicked. The lanes
+    /// move the song the same way as the waveform of the whole song.
     private var drag: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 HUDPanel.controlTracksDrag = true
-                if zoomed, value.startLocation.y < height - 12 {
+                if let held = heldLoop(at: Date()), value.startLocation.y < mainHeight {
+                    // A held close-up stays still, so the song moves to the moment under the pointer.
+                    let from = (held.start + held.end) / 2 - span / 2
+                    dragged = min(1, max(0, (from + Double(value.location.x / width) * span) / duration))
+                } else if zoomed, value.startLocation.y < mainHeight {
                     let start = tapeStart ?? (dragged.map { $0 * duration } ?? track.position(at: Date()) ?? 0)
                     if tapeStart == nil { tapeStart = start }
                     let moved = start - Double(value.translation.width / width) * span
@@ -298,8 +421,8 @@ struct WaveformView: View {
             .onEnded { value in
                 HUDPanel.controlTracksDrag = false
                 var target = dragged ?? 0
-                if zoomed, value.startLocation.y < height - 12, abs(value.translation.width) < 3, let now = track.position(at: Date()) {
-                    target = min(1, max(0, (now + (Double(value.location.x / width) - 0.5) * span) / duration))
+                if zoomed, value.startLocation.y < mainHeight, abs(value.translation.width) < 3, let now = track.position(at: Date()) {
+                    target = min(1, max(0, (closeUpStart(now, at: Date()) + Double(value.location.x / width) * span) / duration))
                     dragged = target
                 }
                 tapeStart = nil
@@ -330,7 +453,8 @@ struct WaveformHost: View {
     var body: some View {
         if let waveform = wave.waveform, let track {
             WaveformView(waveform: waveform, track: track, style: style, width: width, height: height, ticking: ticking, bpm: bpm,
-                         zoom: wave.zoom, lanes: wave.lanes, muted: muted, loop: loop, setLoop: setLoop, typing: typing,
+                         zoom: wave.zoom, lanes: wave.lanes, laneStems: wave.laneStems, toggleLane: { [wave] in wave.toggleLane($0) },
+                         muted: muted, loop: loop, setLoop: setLoop, typing: typing,
                          hovered: { [wave] inside in if wave.hovered != inside { wave.hovered = inside } }, palette: palette)
         } else {
             // The place stays while the waveform is read, so the key row doesn't move when it arrives.

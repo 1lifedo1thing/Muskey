@@ -199,6 +199,10 @@ final class Preferences: ObservableObject {
     @Published var waveformStyle: WaveformStyle {
         didSet { defaults.set(waveformStyle.rawValue, forKey: "waveformStyle") }
     }
+    /// The stems that get a lane in the waveform (⌥W), from the chips under the lanes.
+    @Published var waveformLanes: Set<Stem> {
+        didSet { defaults.set(waveformLanes.map(\.rawValue).sorted(), forKey: "waveformLanes") }
+    }
     /// The floating mini player (M over the HUD, Settings > Mini player).
     @Published var miniPlayer: Bool {
         didSet { defaults.set(miniPlayer, forKey: "miniPlayer") }
@@ -232,6 +236,7 @@ final class Preferences: ObservableObject {
         cacheCleanup = CacheCleanup(rawValue: defaults.double(forKey: "cacheCleanup")) ?? .weekly
         waveform = defaults.bool(forKey: "waveform")
         waveformStyle = defaults.string(forKey: "waveformStyle").flatMap(WaveformStyle.init) ?? .ribbon
+        waveformLanes = (defaults.array(forKey: "waveformLanes") as? [Int]).map { Set($0.compactMap(Stem.init)) } ?? [.vocals, .guitar]
         miniPlayer = defaults.bool(forKey: "miniPlayer")
         miniLayout = defaults.data(forKey: "miniLayout").flatMap { try? JSONDecoder().decode(MiniLayout.self, from: $0) } ?? MiniLayout()
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a

@@ -42,14 +42,33 @@ struct SongWaveform: Codable, Equatable {
 
     var complete: Bool { heard >= 0.97 }
 
+    /// The levels that each stem's bars stretch between. A stem stretches over its own loud parts, but never over less
+    /// than half of the loudest stem's, so a stem that is barely in the song stays low instead of filling its lane.
+    /// The bleed of other instruments that separation leaves under a stem stays under the quiet end and reads as
+    /// silence.
+    func stemRanges() -> [Stem: (low: Float, high: Float)] {
+        guard let stems else { return [:] }
+        let own = stems.compactMap { raw, data in Stem(rawValue: raw).map { ($0, Self.range(of: data)) } }
+        let loudest = own.map(\.1.1).max() ?? 255
+        return Dictionary(uniqueKeysWithValues: own.map { stem, range in
+            let low = max(range.0, Self.bleed)
+            return (stem, (low, max(range.1, loudest * 0.5, low + 24)))
+        })
+    }
+
+    /// The level under which a stem counts as silent: separation leaves a little of the other instruments in each stem.
+    static let bleed: Float = 18
+
     /// `count` bars between `from` and `to` seconds, from 0 to 1, or -1 where nothing was heard. A bar is the average
     /// level under it, stretched between the quiet and the loud parts of the song: songs are mastered loud, and
     /// their loudest moments under each bar would make an even block.
-    func bars(_ count: Int, from: Double = 0, to: Double? = nil, stem: Stem? = nil) -> [Float] {
+    func bars(_ count: Int, from: Double = 0, to: Double? = nil, stem: Stem? = nil, range: (low: Float, high: Float)? = nil) -> [Float] {
         let data = stem.flatMap { stems?[$0.rawValue] } ?? levels
         guard count > 0, !data.isEmpty else { return [] }
         let to = to ?? duration
-        let (low, high) = Self.range(of: data)
+        let (low, high) = range ?? (stem == nil ? Self.range(of: data) : stemRanges()[stem!] ?? Self.range(of: data))
+        // A stem goes down to nothing where it is silent, and the whole song keeps a little height everywhere.
+        let floor: Float = stem == nil ? 0.06 : 0
         return data.withUnsafeBytes { raw -> [Float] in
             let bytes = raw.bindMemory(to: UInt8.self)
             return (0 ..< count).map { i in
@@ -66,7 +85,7 @@ struct SongWaveform: Codable, Equatable {
                 // Mostly the average, with a little of the loudest moment, so a short hit still shows.
                 let level = 0.8 * Float(sum) / Float(heard) + 0.2 * Float(loudest)
                 let stretched = min(1, max(0, (level - low) / max(1, high - low)))
-                return 0.06 + 0.94 * pow(stretched, 1.25)
+                return floor + (1 - floor) * pow(stretched, 1.25)
             }
         }
     }

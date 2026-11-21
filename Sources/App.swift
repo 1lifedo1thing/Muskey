@@ -401,12 +401,19 @@ final class WaveState: ObservableObject {
     /// 1 shows the whole song, and more shows a close-up of the moments around the playhead (⌘+ and ⌘−, a pinch, ⌘
     /// with a scroll).
     @Published var zoom = 1.0
-    /// ⌥W: one lane per stem, while the stems of the whole song are known.
+    /// ⌥W: one lane per picked stem, while the stems of the whole song are known.
     @Published var lanes = false
+    /// The stems that get a lane, picked with the chips under the lanes and kept for the next songs.
+    @Published var laneStems = Preferences.shared.waveformLanes
     /// The pointer is over the waveform, and its keys take the place of the hints row, or of the song's lines on the card.
     @Published var hovered = false
 
     static let zoomLimit = 40.0
+
+    func toggleLane(_ stem: Stem) {
+        if laneStems.contains(stem) { laneStems.remove(stem) } else { laneStems.insert(stem) }
+        Preferences.shared.waveformLanes = laneStems
+    }
 
     func zoom(by factor: Double) {
         let next = min(Self.zoomLimit, max(1, zoom * factor))
@@ -5356,6 +5363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// ⌥W: one lane per stem, or the whole song again. Without the stems of the whole song there are no lanes.
     private func toggleWaveformLanes() {
+        guard model.waveformStyle == .ribbon else { return log("waveform: lanes only in the ribbon style") }
         guard model.wave.waveform?.stems != nil else {
             log("waveform: no lanes until the stems of the whole song are separated")
             return
@@ -6555,7 +6563,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-stems", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-notes-picker", "-notes-download", "-notes-outside"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-notes-picker", "-notes-download", "-notes-outside"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -6640,10 +6648,16 @@ extension EnvironmentValues {
             // player is while it plays.
             if song != nil {
                 var waveform = HUDSample.waveform
-                if variant == "-waveform-lanes" || variant == "-waveform-hover-stems" {
+                if variant == "-waveform-lanes" || variant == "-waveform-hover-stems" || variant.hasPrefix("-lanes") {
+                    // The guitar is silent for the first third of the song, and the winds are only the bleed of the
+                    // other instruments, which the lanes draw as silence.
+                    let count = waveform.levels.count
                     waveform.stems = Dictionary(uniqueKeysWithValues: Stem.allCases.map { stem in
                         (stem.rawValue, Data(waveform.levels.enumerated().map { i, level in
-                            UInt8(max(1, Double(level) * (0.35 + 0.65 * abs(sin(Double(i) / Double(180 + stem.rawValue * 47)))))) }))
+                            if stem == .winds { return UInt8(4 + i % 9) }
+                            if stem == .guitar, i < count / 3 { return UInt8(3 + i % 7) }
+                            return UInt8(max(1, Double(level) * (0.35 + 0.65 * abs(sin(Double(i) / Double(180 + stem.rawValue * 47))))))
+                        }))
                     })
                 }
                 if variant == "-waveform-streamed" { for i in Int(Double(waveform.levels.count) * 0.46) ..< waveform.levels.count { waveform.levels[i] = 0 } }
@@ -6651,8 +6665,13 @@ extension EnvironmentValues {
             }
             model.waveformShown = variant != "-waveform-off"
             model.waveformStyle = variant == "-waveform-strip" ? .strip : .ribbon
-            model.wave.zoom = variant == "-waveform-zoom" ? 10 : 1
-            model.wave.lanes = variant == "-waveform-lanes"
+            model.wave.zoom = variant == "-waveform-zoom" || variant.hasSuffix("-zoom") && variant.hasPrefix("-lanes") ? 10 : 1
+            model.wave.lanes = variant == "-waveform-lanes" || variant.hasPrefix("-lanes")
+            model.wave.laneStems = switch variant {
+            case "-lanes-one": [.guitar]
+            case "-lanes-four": [.vocals, .bass, .guitar, .winds]
+            default: [.vocals, .guitar]
+            }
             // A song from Muskey Player, which can seek, so the lyrics list ← → for 5 s.
             if variant.hasSuffix("-seek") { model.seekable = true }
             // The keys of the waveform, which show while the pointer is over it.
@@ -6660,7 +6679,7 @@ extension EnvironmentValues {
             // The B end of the region loop under the pointer: its arrows, its time and the thicker line.
             LoopFlags.hoveredInRenders = variant.hasSuffix("-loop-hover") ? .end : nil
             // A region loop with the dashed lines of the presses, one still waiting for its end, and one over lyric lines.
-            if variant.hasSuffix("loop") || variant.hasPrefix("-loop") || variant.hasSuffix("-loop-hover") {
+            if variant.hasSuffix("loop") || variant.hasPrefix("-loop") || variant.hasSuffix("-loop-hover") || variant.hasPrefix("-lanes-loop") {
                 model.loop = variant.contains("lyrics") ? LoopRegion(start: 16.5, end: 30)
                     : LoopRegion(start: 86.2, end: variant == "-loop-armed" ? nil : 110.4, startPress: 86.6, endPress: variant == "-loop-armed" ? nil : 110.1)
                 if variant == "-loop-zoom" { model.wave.zoom = 6 }
