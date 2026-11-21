@@ -37,12 +37,47 @@ enum NotesFormat: String, CaseIterable, Identifiable {
 }
 
 /// One notes window: the song, the stem, how far the transcription got, and the notes placed on the song's beats.
+/// A step of a transcription, in the order that they run.
+enum NotesStep: Int, CaseIterable, Comparable {
+    case beats, stems, notes
+
+    var name: String { ["Beats", "Stems", "Notes"][rawValue] }
+
+    /// The part of the work that the step takes until this Mac has timed it: separating every stem takes longest.
+    var share: Double { [0.05, 0.55, 0.4][rawValue] }
+
+    static func < (a: NotesStep, b: NotesStep) -> Bool { a.rawValue < b.rawValue }
+}
+
+/// How long each step took on this Mac, per second of song, for the bar and the time left of the next transcription.
+enum NotesTiming {
+    private static let key = "notesStepSeconds"
+
+    static func rate(_ step: NotesStep) -> Double? {
+        (UserDefaults.standard.dictionary(forKey: key)?[step.name] as? Double).flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    /// A step that ran from its start took `seconds` for `song` seconds of song. The rate moves halfway to it, so one
+    /// slow run doesn't decide the next estimate.
+    static func learn(_ step: NotesStep, seconds: Double, song: Double) {
+        guard seconds > 0.5, song > 10 else { return }
+        var rates = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+        let measured = seconds / song
+        rates[step.name] = rate(step).map { ($0 + measured) / 2 } ?? measured
+        UserDefaults.standard.set(rates, forKey: key)
+    }
+}
+
 final class NotesModel: ObservableObject {
     enum Phase: Equatable {
-        case separating(Double)
-        case transcribing(Double)
+        /// A step runs, and the fraction of it that is done, from 0 to 1.
+        case working(NotesStep, Double)
         case ready
         case failed
+
+        var step: NotesStep? {
+            if case let .working(step, _) = self { step } else { nil }
+        }
     }
 
     let path: String
@@ -51,11 +86,18 @@ final class NotesModel: ObservableObject {
     let stem: Stem
     let duration: Double
 
-    @Published var phase: Phase
+    @Published var phase: Phase {
+        didSet {
+            guard phase != oldValue else { return }
+            if case let .working(step, _) = phase, step != oldValue.step { stepStarted = Date() }
+            reached = max(reached, rawProgress(at: Date()))
+            estimate()
+        }
+    }
+    /// The steps that this transcription runs, which the bar covers from start to finish.
+    @Published private(set) var steps: [NotesStep] = [.notes]
     /// The notes as Dettato heard them, before the transpose.
     @Published private(set) var notes: [TranscribedNote] = []
-    /// The time up to which the stem is transcribed: the bars after it are drawn faint.
-    @Published private(set) var transcribedUntil: Double = 0
     @Published private(set) var beats: [Double] = []
     @Published private(set) var bpm: Double = 120
     @Published var key: DetectedKey? { didSet { if key != oldValue { rebuild() } } }
@@ -86,8 +128,84 @@ final class NotesModel: ObservableObject {
         self.stem = stem
         self.duration = duration
         view = .preferred(for: stem)
-        phase = .transcribing(0)
+        phase = .working(.notes, 0)
         score = Score(notes: [], stem: stem, beats: [], bpm: 120, key: nil, duration: duration)
+    }
+
+    // MARK: Progress
+
+    private var started = Date()
+    private var stepStarted = Date()
+    /// The furthest the bar went, which it never goes back from.
+    private var reached = 0.0
+    /// Where the bar was when this transcription started: a separation that was already running starts it further on.
+    private var startedAt: Double?
+    /// The seconds left at the last estimate, and when it was made. The time left counts down between estimates.
+    private var left: (seconds: Double, at: Date)?
+
+    /// The weight of each step in the bar: the seconds it takes on this Mac when every step was timed, or its share.
+    private var weights: [Double] {
+        let rates = steps.map(NotesTiming.rate)
+        if rates.allSatisfy({ $0 != nil }) { return rates.map { $0! * max(duration, 1) } }
+        return steps.map(\.share)
+    }
+
+    private func rawProgress(at date: Date) -> Double {
+        switch phase {
+        case .ready: return 1
+        case .failed: return reached
+        case let .working(step, fraction):
+            let weights = weights, total = weights.reduce(0, +)
+            guard total > 0, let index = steps.firstIndex(of: step) else { return reached }
+            var fraction = fraction
+            // Finding the beats tells nothing about how far it got, so its part of the bar fills with the time it takes.
+            if step == .beats, let rate = NotesTiming.rate(.beats) {
+                fraction = max(fraction, min(0.9, date.timeIntervalSince(stepStarted) / max(0.5, rate * duration)))
+            }
+            return (weights.prefix(index).reduce(0, +) + min(1, fraction) * weights[index]) / total
+        }
+    }
+
+    /// The part of the transcription that is done, from 0 to 1, which only goes forward.
+    func progress(at date: Date) -> Double { max(reached, rawProgress(at: date)) }
+
+    /// The seconds until the notes are done, once there is an estimate.
+    func secondsLeft(at date: Date) -> Double? {
+        guard case .working = phase, let left else { return nil }
+        return max(0, left.seconds - date.timeIntervalSince(left.at))
+    }
+
+    /// The time left from how fast the bar moved since this transcription started, or from the timings of this Mac
+    /// before it moved. A new estimate moves the countdown only part of the way, so it counts down instead of jumping.
+    private func estimate() {
+        guard case .working = phase else { return left = nil }
+        let now = Date(), done = rawProgress(at: now)
+        if startedAt == nil { startedAt = done }
+        let elapsed = now.timeIntervalSince(started), moved = done - (startedAt ?? 0)
+        var seconds: Double?
+        if elapsed >= 3, moved >= 0.04 {
+            seconds = elapsed / moved * (1 - done)
+        } else if steps.allSatisfy({ NotesTiming.rate($0) != nil }) {
+            seconds = weights.reduce(0, +) * (1 - done)
+        }
+        guard let seconds else { return }
+        let counted = secondsLeft(at: now)
+        left = (counted.map { $0 * 0.6 + seconds * 0.4 } ?? seconds, now)
+    }
+
+    /// Shows `seconds` left, for renders.
+    func showLeft(_ seconds: Double) { left = (seconds, Date()) }
+
+    /// Starts a transcription that runs `steps`.
+    func begin(_ steps: [NotesStep]) {
+        self.steps = steps.isEmpty ? [.notes] : steps
+        notes = []
+        started = Date()
+        reached = 0
+        startedAt = nil
+        left = nil
+        phase = .working(self.steps[0], 0)
+        rebuild()
     }
 
     var done: Bool { phase == .ready }
@@ -99,24 +217,9 @@ final class NotesModel: ObservableObject {
         rebuild()
     }
 
-    /// Notes found so far, up to `until` seconds.
-    func show(_ notes: [TranscribedNote], until: Double) {
-        self.notes = notes
-        transcribedUntil = until
-        rebuild()
-    }
-
     func finish(_ notes: [TranscribedNote]) {
         self.notes = notes
-        transcribedUntil = duration + 10
         phase = .ready
-        rebuild()
-    }
-
-    func restart() {
-        notes = []
-        transcribedUntil = 0
-        phase = .transcribing(0)
         rebuild()
     }
 
@@ -717,7 +820,7 @@ private struct NotesViewSwitch: View {
     }
 }
 
-/// The key and the tempo once the notes are done, the progress before that, and Retry after a failure.
+/// The key and the tempo once the notes are done. The progress and a failure show on the page.
 private struct NotesStatus: View {
     @ObservedObject var model: NotesModel
     let palette: Palette
@@ -727,39 +830,12 @@ private struct NotesStatus: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            switch model.phase {
-            case let .separating(fraction):
-                progress("Separating stems", fraction)
-            case let .transcribing(fraction):
-                progress("Transcribing \(model.stem.name.lowercased())", fraction)
-            case .failed:
-                pill("Transcription failed", color: Color(red: 1, green: 0.42, blue: 0.4))
-                HUDButton(title: "Retry", symbol: "arrow.clockwise", palette: palette, small: true, action: model.onRetry)
-            case .ready:
+            if model.done {
                 if model.shift != 0 { pill(Shift.text(model.shift), color: StripColors.text(.honey, colorScheme)) }
                 if key, let shown = model.key?.transposed(by: model.shift) { pill(shown.name, color: palette.ink) }
                 if tempo { pill("\(Int(model.bpm.rounded())) BPM", color: palette.ink) }
             }
         }
-    }
-
-    private func progress(_ label: String, _ fraction: Double) -> some View {
-        HStack(spacing: 7) {
-            Circle()
-                .trim(from: 0, to: max(0.02, fraction))
-                .stroke(StripColors.text(.honey, colorScheme), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .background(Circle().stroke(palette.ink.opacity(0.18), lineWidth: 2.5))
-                .frame(width: 11, height: 11)
-            Text("\(label) \(Int((fraction * 100).rounded()))%")
-                .font(.system(size: 11.5, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(palette.ink)
-                .fixedSize()
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(Capsule().fill(palette.ink.opacity(0.08)))
     }
 
     private func pill(_ text: String, color: Color) -> some View {
@@ -770,6 +846,103 @@ private struct NotesStatus: View {
             .padding(.vertical, 4)
             .background(Capsule().fill(color.opacity(0.12)))
             .fixedSize()
+    }
+}
+
+/// The transcription in the middle of the blank page until the notes are done: the steps that it runs, the step that
+/// runs now, one bar from start to finish and the time left. A failure shows here too, with Retry.
+private struct NotesProgressCard: View {
+    @ObservedObject var model: NotesModel
+    let palette: Palette
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var honey: Color { StripColors.text(.honey, colorScheme) }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            if model.phase == .failed {
+                HStack(spacing: 8) {
+                    let red = Color(red: 1, green: 0.42, blue: 0.4)
+                    Text("Transcription failed")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundStyle(red)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(red.opacity(0.12)))
+                        .fixedSize()
+                    HUDButton(title: "Retry", symbol: "arrow.clockwise", palette: palette, small: true, action: model.onRetry)
+                }
+            } else {
+                if model.steps.count > 1 { stepsRow }
+                Text(title)
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .foregroundStyle(palette.ink)
+                    .lineLimit(1)
+                TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                    let done = model.progress(at: context.date)
+                    VStack(spacing: 8) {
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(palette.ink.opacity(0.1))
+                                Capsule().fill(honey).frame(width: max(6, geo.size.width * done))
+                            }
+                        }
+                        .frame(height: 6)
+                        .animation(.linear(duration: 0.25), value: done)
+                        HStack {
+                            // Rounded down, so 100% shows only with the notes.
+                            Text("\(Int((done * 100).rounded(.down)))%")
+                            Spacer()
+                            if let left = model.secondsLeft(at: context.date) { Text("\(Self.time(left)) left") }
+                        }
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(palette.muted)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 26)
+        .padding(.vertical, 22)
+        .frame(width: 340)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(colorScheme == .dark ? Color(white: 0.15) : .white)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.14), radius: 18, y: 6)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(palette.ink.opacity(0.07), lineWidth: 1))
+    }
+
+    private var title: String {
+        switch model.phase.step ?? .notes {
+        case .beats: "Finding the beats"
+        case .stems: "Separating stems"
+        case .notes: "Transcribing \(model.stem.name.lowercased())"
+        }
+    }
+
+    /// The steps that run, the done ones ticked and the one that runs now in honey.
+    private var stepsRow: some View {
+        let current = model.phase.step ?? .notes
+        return HStack(spacing: 10) {
+            ForEach(Array(model.steps.enumerated()), id: \.element) { index, step in
+                if index > 0 { Capsule().fill(palette.ink.opacity(0.15)).frame(width: 14, height: 1.5) }
+                HStack(spacing: 4) {
+                    Image(systemName: step < current ? "checkmark.circle.fill" : step == current ? "circle.inset.filled" : "circle")
+                        .font(.system(size: 11, weight: .bold))
+                    Text(step.name)
+                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(step == current ? honey : step < current ? palette.ink.opacity(0.75) : palette.muted.opacity(0.7))
+                .fixedSize()
+            }
+        }
+    }
+
+    /// Minutes and seconds, in steps of five seconds above a minute, so the count doesn't flicker.
+    static func time(_ seconds: Double) -> String {
+        let whole = seconds > 60 ? Int((seconds / 5).rounded(.up)) * 5 : Int(seconds.rounded(.up))
+        return String(format: "%d:%02d", whole / 60, whole % 60)
     }
 }
 
@@ -798,22 +971,37 @@ private struct NotesPageView: View {
     var body: some View {
         GeometryReader { geometry in
             let layout = NotesLayout(score: model.score, view: model.view, size: geometry.size)
-            // A render has no timer to turn the pages, so it shows the pages of the moment it renders.
-            let pages = renderingPreview ? layout.pagesShown(at: model.now(), in: model.score) : shown
+            // A render has no timer to turn the pages, so it shows the pages of the moment it renders. Until the notes
+            // are done, the first page stays, with faint lines under the progress.
+            let pages = !model.done ? layout.pagesShown(at: nil, in: model.score)
+                : renderingPreview ? layout.pagesShown(at: model.now(), in: model.score) : shown
             let painter = NotesPainter(score: model.score, layout: layout, byBar: model.score.notesByBar, ink: palette.ink, paper: paper,
-                                       honey: StripColors.text(.honey, colorScheme), until: model.transcribedUntil)
+                                       honey: StripColors.text(.honey, colorScheme), until: model.done ? .infinity : -1)
             ZStack(alignment: .topLeading) {
-                half(painter, top: true, page: pages.top)
-                half(painter, top: false, page: pages.bottom)
+                Group {
+                    half(painter, top: true, page: pages.top)
+                    half(painter, top: false, page: pages.bottom)
+                }
+                .opacity(model.done ? 1 : 0.3)
                 Rectangle()
                     .fill(palette.ink.opacity(0.08))
                     .frame(height: 1)
                     .padding(.horizontal, 12)
                     .offset(y: layout.middle)
-                NotesPlayhead(model: model, layout: layout, shown: pages, turning: turning)
+                if model.done {
+                    NotesPlayhead(model: model, layout: layout, shown: pages, turning: turning)
+                }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             .contentShape(Rectangle())
-            .gesture(pointer(layout))
+            .gesture(pointer(layout), isEnabled: model.done)
+            .overlay {
+                if !model.done {
+                    NotesProgressCard(model: model, palette: palette)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.25), value: model.done)
             .onReceive(Self.tick) { _ in turn(layout) }
             .onChange(of: layout) { turn(layout, animated: false) }
             .onAppear { turn(layout, animated: false) }
@@ -890,6 +1078,8 @@ private struct NotesPageView: View {
     }
 
     private func turn(_ layout: NotesLayout, animated: Bool = true) {
+        // The first notes show at once, on the pages of the moment they arrive.
+        guard model.done else { return placed = false }
         let pages = layout.pagesShown(at: model.now(), in: model.score)
         defer { placed = true }
         guard pages != shown else { return }
@@ -1524,6 +1714,19 @@ extension NotesModel {
     if let shift = TestFlags.value("--notes-shift").flatMap(Int.init) { model.shift = shift }
     if let loop = TestFlags.value("--notes-loop")?.split(separator: "-").compactMap({ Double($0) }), loop.count == 2 {
         model.loop = LoopRegion(start: loop[0], end: loop[1], startPress: nil)
+    }
+    // `--notes-progress STEP:F` shows the transcription at F of a step (beats, stems or notes), with `--notes-left S`
+    // seconds left, and `--notes-failed` shows a failed one.
+    if let spec = TestFlags.value("--notes-progress") {
+        let parts = spec.split(separator: ":")
+        let step = NotesStep.allCases.first { $0.name.lowercased() == parts.first?.lowercased() } ?? .notes
+        model.begin(NotesStep.allCases)
+        model.phase = .working(step, parts.count > 1 ? Double(parts[1]) ?? 0 : 0)
+        if let left = TestFlags.value("--notes-left").flatMap(Double.init) { model.showLeft(left) }
+    }
+    if TestFlags.has("--notes-failed") {
+        model.begin(NotesStep.allCases)
+        model.phase = .failed
     }
     for view in NotesView.allCases {
         for (shape, size) in [("tall", CGSize(width: 680, height: 960)), ("wide", CGSize(width: 1180, height: 680))] {

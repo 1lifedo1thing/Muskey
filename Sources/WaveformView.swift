@@ -54,6 +54,16 @@ struct WaveformView: View {
 
     static let barStep: CGFloat = 3.4
     static let barWidth: CGFloat = 2
+    /// `--log-playhead` logs the time that the playhead is drawn at, ten times a second, for testing.
+    nonisolated(unsafe) static var trace: ((Double) -> Void)?
+    nonisolated(unsafe) private static var tracedAt = Date.distantPast
+
+    private static func traced(_ seconds: Double, at date: Date) -> Bool {
+        guard let trace, date.timeIntervalSince(tracedAt) >= 0.1 else { return true }
+        tracedAt = date
+        trace(seconds)
+        return true
+    }
 
     private var duration: Double { track.duration.flatMap { $0 > 0 ? $0 : nil } ?? waveform.duration }
     private var zoomed: Bool { zoom > 1.05 && style == .ribbon }
@@ -68,6 +78,7 @@ struct WaveformView: View {
         TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !ticking || renderingPreview)) { context in
             let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
             let fraction = min(1, max(0, seconds / max(duration, 0.001)))
+            let _ = Self.traced(seconds, at: context.date)
             Group {
                 if zoomed {
                     VStack(spacing: 4) {

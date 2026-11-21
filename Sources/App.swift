@@ -2226,6 +2226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_: Notification) {
         if let dir = Self.stringOption("--render") { return renderPreviews(to: dir) }
+        if TestFlags.has("--log-playhead") { WaveformView.trace = { [weak self] in self?.log(String(format: "playhead %.3f", $0)) } }
         if let path = Self.stringOption("--render-menubar") {
             StatusItem.renderSheet(to: path)
             return NSApp.terminate(nil)
@@ -3044,44 +3045,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Finds the beats if they aren't known yet, separates the stems if the cache doesn't have them, and transcribes
-    /// the stem off the main thread, showing the notes found so far as it goes.
+    /// the stem off the main thread. The window shows the notes once they are all found, and one bar for the steps
+    /// before that.
     private func runNotes(_ notes: NotesModel) {
         notesTask?.cancel()
         notesWork?.cancel()
-        notes.restart()
         let path = notes.path, stem = notes.stem
         stemsCacheFailed.remove(path)
+        let steps = (grids[path] == nil ? [NotesStep.beats] : []) + (StemsCache.open(for: path) == nil ? [.stems] : []) + [.notes]
+        notes.begin(steps)
         notesTask = Task { @MainActor [weak self, weak notes] in
             guard let self, let notes else { return }
             let url = URL(fileURLWithPath: path)
+            let song = notes.duration > 0 ? notes.duration : await ChordDetector.duration(url)
             if grids[path] == nil {
-                let duration = notes.duration > 0 ? notes.duration : await ChordDetector.duration(url)
-                let grid = await Task.detached(priority: .utility) { await ChordDetector.analyse(url, duration: duration) }.value
+                let started = Date()
+                let grid = await Task.detached(priority: .utility) { await ChordDetector.analyse(url, duration: song) }.value
                 guard !Task.isCancelled else { return }
                 if let grid {
                     grids[path] = grid
                     fitChords()
+                    NotesTiming.learn(.beats, seconds: Date().timeIntervalSince(started), song: song)
                 }
             }
             if let grid = grids[path] { notes.setGrid(beats: grid.beats, bpm: grid.bpm) }
-            guard let cache = await notesStems(path, notes: notes) else {
+            guard let cache = await notesStems(path, notes: notes, song: song) else {
                 if !Task.isCancelled {
                     notes.phase = .failed
                     log("notes: the stems couldn't be separated")
                 }
                 return
             }
-            notes.phase = .transcribing(0)
+            notes.phase = .working(.notes, 0)
             let started = Date()
             let work = Task.detached(priority: .userInitiated) { () throws -> [TranscribedNote] in
                 let audio = Dettato.resample(NotesPipeline.stemSamples(cache, stem: stem), from: StemsCache.rate)
                 return try Dettato.transcribe(audio, program: stem.program, progress: { fraction in
+                    // The notes are decoded from the maps after the last window, so the windows fill most of the step.
                     Task { @MainActor in
-                        if case .transcribing = notes.phase { notes.phase = .transcribing(fraction) }
-                    }
-                }, partial: { found, until in
-                    Task { @MainActor in
-                        if !notes.done { notes.show(found, until: until) }
+                        if notes.phase.step == .notes { notes.phase = .working(.notes, fraction * 0.96) }
                     }
                 })
             }
@@ -3091,6 +3093,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !Task.isCancelled else { return }
                 notes.finish(found)
                 NotesStore.save(notes.fixture, path: path, stem: stem)
+                NotesTiming.learn(.notes, seconds: Date().timeIntervalSince(started), song: song)
                 log(String(format: "notes: %d notes of the %@ in %.1f s", found.count, stem.name.lowercased(), Date().timeIntervalSince(started)))
             } catch is CancellationError {
                 log("notes: transcription stopped")
@@ -3102,13 +3105,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The stems of the whole song from the cache, separating them first with the separation that the stems of Muskey
-    /// Player use.
-    private func notesStems(_ path: String, notes: NotesModel) async -> StemsCache? {
+    /// Player use. A separation that ran from its start times the step for the next estimate.
+    private func notesStems(_ path: String, notes: NotesModel, song: Double) async -> StemsCache? {
         if let cache = StemsCache.open(for: path) { return cache }
-        notes.phase = .separating(0)
+        notes.phase = .working(.stems, 0)
         notesStemsPath = path
+        let started = Date()
+        var from: Double?
         stemsCache.progress = { [weak notes] fraction in
-            if case .separating = notes?.phase { notes?.phase = .separating(fraction) }
+            if from == nil { from = fraction }
+            if notes?.phase.step == .stems { notes?.phase = .working(.stems, fraction) }
         }
         defer {
             notesStemsPath = nil
@@ -3119,7 +3125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if stemsCache.path != path, !stemsCacheFailed.contains(path) { stemsCache.start(path) }
             try? await Task.sleep(for: .seconds(1))
             if Task.isCancelled { return nil }
-            if let cache = StemsCache.open(for: path) { return cache }
+            if let cache = StemsCache.open(for: path) {
+                if (from ?? 1) < 0.05 { NotesTiming.learn(.stems, seconds: Date().timeIntervalSince(started), song: song) }
+                return cache
+            }
             if stemsCacheFailed.contains(path) { return nil }
         }
         log("notes: the stems weren't separated after 30 minutes")
