@@ -140,7 +140,9 @@ struct WaveformView: View {
                     .transition(.opacity)
             }
         }
-        .contentShape(Rectangle())
+        // A clear background keeps the hover across the gap above the chips. A content shape on the stack would cut
+        // off the tabs of the region loop, which stand above it.
+        .background(Color.clear.contentShape(Rectangle()))
         .onHover { hovered($0) }
         .onDisappear { hovered(false) }
         .animation(.snappy(duration: 0.25), value: zoomed)
