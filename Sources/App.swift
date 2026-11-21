@@ -5859,6 +5859,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var hoverKeys: [HotKey] = []
+    /// ⌘, opens Settings while the pointer is over the HUD, in every state of the HUD, so it lives apart from the
+    /// hover keys that come and go with the phase, the picker and the lyrics editor.
+    private var settingsKey: HotKey?
     private var optionWatch: Timer?
 
     private let lyricsFinder = LyricsFinder()
@@ -6213,6 +6216,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateHoverKeys() {
+        let settingsWanted = model.hovering && model.shown && !dialogOpen
+        if settingsWanted != (settingsKey != nil) {
+            settingsKey = settingsWanted ? try? HotKey(keyCode: kVK_ANSI_Comma, modifiers: cmdKey, action: { [weak self] in self?.showSettings() }) : nil
+        }
         let lock: HoverKeysLock = model.saving != nil ? .saving : model.shortcuts ? .shortcuts : .none
         // A listen that has no estimate yet leaves the HUD without a key. The keys that play, skip and move the song
         // work from the start, and the ones that change the key, the instruments or the tempo wait for the key.
