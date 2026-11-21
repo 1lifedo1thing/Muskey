@@ -3124,7 +3124,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Player use. A separation that ran from its start times the step for the next estimate.
     private func notesStems(_ path: String, notes: NotesModel, song: Double) async -> StemsCache? {
         if let cache = StemsCache.open(for: path) { return cache }
-        notes.phase = .working(.stems, 0)
+        // A separation that already runs for the stems of the HUD starts the step where it is.
+        notes.phase = .working(.stems, stemsCache.path == path ? stemsCache.fraction : 0)
         notesStemsPath = path
         let started = Date()
         var from: Double?

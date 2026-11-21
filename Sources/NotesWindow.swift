@@ -89,7 +89,10 @@ final class NotesModel: ObservableObject {
     @Published var phase: Phase {
         didSet {
             guard phase != oldValue else { return }
-            if case let .working(step, _) = phase, step != oldValue.step { stepStarted = Date() }
+            if case let .working(step, fraction) = phase, step != oldValue.step || stepFrom == nil {
+                stepStarted = Date()
+                stepFrom = fraction
+            }
             reached = max(reached, rawProgress(at: Date()))
             estimate()
         }
@@ -134,12 +137,11 @@ final class NotesModel: ObservableObject {
 
     // MARK: Progress
 
-    private var started = Date()
     private var stepStarted = Date()
+    /// Where the step that runs was when it started: a separation that was already running starts further on.
+    private var stepFrom: Double?
     /// The furthest the bar went, which it never goes back from.
     private var reached = 0.0
-    /// Where the bar was when this transcription started: a separation that was already running starts it further on.
-    private var startedAt: Double?
     /// The seconds left at the last estimate, and when it was made. The time left counts down between estimates.
     private var left: (seconds: Double, at: Date)?
 
@@ -175,18 +177,19 @@ final class NotesModel: ObservableObject {
         return max(0, left.seconds - date.timeIntervalSince(left.at))
     }
 
-    /// The time left from how fast the bar moved since this transcription started, or from the timings of this Mac
-    /// before it moved. A new estimate moves the countdown only part of the way, so it counts down instead of jumping.
+    /// The time left from how fast the step that runs moves: the rest of that step, and the steps after it at the
+    /// same speed for their weight. Before the step has moved, the timings of this Mac give it when every step was
+    /// timed. A new estimate moves the countdown only part of the way, so it counts down instead of jumping.
     private func estimate() {
-        guard case .working = phase else { return left = nil }
-        let now = Date(), done = rawProgress(at: now)
-        if startedAt == nil { startedAt = done }
-        let elapsed = now.timeIntervalSince(started), moved = done - (startedAt ?? 0)
+        guard case let .working(step, fraction) = phase, let index = steps.firstIndex(of: step) else { return left = nil }
+        let now = Date(), weights = weights
+        let elapsed = now.timeIntervalSince(stepStarted), moved = fraction - (stepFrom ?? fraction)
+        let rest = (1 - fraction) * weights[index] + weights.suffix(from: index + 1).reduce(0, +)
         var seconds: Double?
-        if elapsed >= 3, moved >= 0.04 {
-            seconds = elapsed / moved * (1 - done)
+        if elapsed >= 3, moved >= 0.03 {
+            seconds = elapsed / (moved * weights[index]) * rest
         } else if steps.allSatisfy({ NotesTiming.rate($0) != nil }) {
-            seconds = weights.reduce(0, +) * (1 - done)
+            seconds = rest
         }
         guard let seconds else { return }
         let counted = secondsLeft(at: now)
@@ -200,9 +203,8 @@ final class NotesModel: ObservableObject {
     func begin(_ steps: [NotesStep]) {
         self.steps = steps.isEmpty ? [.notes] : steps
         notes = []
-        started = Date()
         reached = 0
-        startedAt = nil
+        stepFrom = nil
         left = nil
         phase = .working(self.steps[0], 0)
         rebuild()
