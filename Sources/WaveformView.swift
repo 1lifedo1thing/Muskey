@@ -51,6 +51,7 @@ struct WaveformView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.renderingPreview) private var renderingPreview
+    @Environment(\.displayScale) private var displayScale
     /// Where a drag along the waveform is, from 0 to 1, until the player reports the move.
     @State private var dragged: Double?
     /// The song's place when a drag on the close-up began, which the drag moves like a tape under the playhead.
@@ -104,7 +105,7 @@ struct WaveformView: View {
         let ranges = lanesOn ? waveform.stemRanges() : [:]
         let laneBars = zoomed ? [] : shownLanes.map { ($0, waveform.bars(count, stem: $0, range: ranges[$0])) }
         VStack(spacing: 6) {
-            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !ticking || renderingPreview)) { context in
+            TimelineView(.animation(minimumInterval: step, paused: !ticking || renderingPreview)) { context in
                 let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
                 let fraction = min(1, max(0, seconds / max(duration, 0.001)))
                 let _ = Self.traced(seconds, at: context.date)
@@ -321,7 +322,7 @@ struct WaveformView: View {
 
     @ViewBuilder private var loopFlags: some View {
         if let loop {
-            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !ticking || renderingPreview)) { context in
+            TimelineView(.animation(minimumInterval: step, paused: !ticking || renderingPreview)) { context in
                 let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
                 LoopFlags(loop: loop, from: zoomed ? closeUpStart(seconds, at: context.date) : 0, span: zoomed ? span : duration, width: width,
                           height: mainHeight, now: seconds, duration: duration, beat: bpm.map { 60 / $0 },
@@ -332,6 +333,13 @@ struct WaveformView: View {
 
     /// The seconds that the close-up spans: the song divided by the zoom, and never under 4 seconds.
     private var span: Double { max(4, duration / zoom) }
+
+    /// The seconds in which the playhead moves a pixel, so the waveform draws only when something on it moved: for a
+    /// song of 4 minutes, about 4 times a second instead of 60, and more often in a close-up.
+    private var step: Double {
+        let pixels = Double(width * max(1, displayScale))
+        return min(0.5, max(1.0 / 60, (zoomed ? span : duration) / max(1, pixels)))
+    }
 
     /// The region loop that the close-up holds still, centred, while the song plays inside it: a loop that fits in the
     /// close-up. The song's place decides it, not a drag, so the close-up stays still under the pointer during a drag.

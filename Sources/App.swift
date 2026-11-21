@@ -2749,6 +2749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let path = Self.stringOption("--notes-file"), let notes = NotesModel.fixture(path) {
             wireNotes(notes)
             notesWindow.show(notes)
+            syncNotesPlaying()
         }
         // `--install-yt-dlp` presses Install yt-dlp on the pill.
         if TestFlags.has("--install-yt-dlp") { filePlayer.installDownloader() }
@@ -2987,6 +2988,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let grid = grids[path] { notes.setGrid(beats: grid.beats, bpm: grid.bpm) }
         wireNotes(notes)
         notesWindow.show(notes)
+        // The window's play state can only be set once the window holds the notes.
+        syncNotesPlaying()
         log("notes: \(stem.name.lowercased()) of \(title)")
         if let cached = NotesStore.load(path: path, stem: stem) {
             if grids[path] == nil { notes.setGrid(beats: cached.beats, bpm: cached.bpm) }
@@ -3033,7 +3036,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notesSinks = []
         model.$shift.sink { [weak notes] in notes?.shift = $0 }.store(in: &notesSinks)
         model.$loop.sink { [weak notes] in notes?.loop = $0 }.store(in: &notesSinks)
-        syncNotesPlaying()
     }
 
     /// The notes window takes the play state from the player's reports, because the HUD's state only changes while the
@@ -5488,7 +5490,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The model warms up once the pointer is on the HUD or the picker opens, so a chip pressed a moment later doesn't
     /// wait 3 seconds for Core ML. A HUD that only shows a key loads nothing.
     private func warmUpStems() {
-        guard model.stemsAvailable, model.hovering || model.picking else { return }
+        // A song whose stems are all in the cache plays them from there, so the model stays out of memory.
+        guard model.stemsAvailable, pitch.stemsFeed == nil, model.hovering || model.picking else { return }
         StemModel.warmUp()
     }
 
@@ -5577,7 +5580,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if karaokeRestart == .waitingForModel, StemModel.prepared { beginKaraokeRestart() }
             let countdown = karaokeCountdown(progress)
             if model.karaokeCountdown != countdown { model.karaokeCountdown = countdown }
-            model.stemMeters.levels = Stem.allCases.map { self.pitch.stemLevel($0) }
+            let levels = Stem.allCases.map { self.pitch.stemLevel($0) }
+            if model.stemMeters.levels != levels { model.stemMeters.levels = levels }
             checkSpins()
         }
         RunLoop.main.add(timer, forMode: .common)

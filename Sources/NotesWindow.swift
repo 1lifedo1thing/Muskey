@@ -1141,6 +1141,8 @@ private struct NotesPageView: View {
     @Environment(\.renderingPreview) private var renderingPreview
 
     private static let tick = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+    /// While the song is paused, a seek is the only thing that can change the pages, so they are checked once a second.
+    private static let slowTick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var paper: Color {
         colorScheme == .dark ? Color(red: 0.11, green: 0.094, blue: 0.098) : Color(red: 0.99, green: 0.975, blue: 0.955)
@@ -1180,7 +1182,7 @@ private struct NotesPageView: View {
                 }
             }
             .animation(.easeOut(duration: 0.25), value: model.done)
-            .onReceive(Self.tick) { _ in turn(layout) }
+            .onReceive(model.playing ? Self.tick : Self.slowTick) { _ in turn(layout) }
             .onChange(of: layout) { turn(layout, animated: false) }
             .onAppear { turn(layout, animated: false) }
         }
@@ -1261,7 +1263,8 @@ private struct NotesPageView: View {
         // The first notes show at once, on the pages of the moment they arrive.
         guard model.done else { return placed = false }
         let pages = layout.pagesShown(at: model.now(), in: model.score)
-        defer { placed = true }
+        // State is only written when it changes, since this runs 10 times a second.
+        defer { if !placed { placed = true } }
         guard pages != shown else { return }
         animateTurns = animated && placed
         shown = pages
@@ -1301,39 +1304,60 @@ private struct NotesPlayhead: View {
             // The frame's date goes into the drawing, so that the canvas draws again on every frame: with nothing in it
             // that changed, the canvas only drew when another view made it.
             let frame = timeline.date
-            Canvas { context, _ in
-                _ = frame
-                if let notesFrameLog { countNotesFrame(notesFrameLog) }
-                let layout = painter.layout
-                guard let time = model.now(), let spot = layout.spot(at: time, in: model.score) else { return }
-                let dark = colorScheme == .dark
-                let colors = NotesPainter.LightColors(glow: NotesAccent.glow(colorScheme), hot: NotesAccent.hot(colorScheme), dark: dark)
-                let line = spot.page * layout.linesPerPage + spot.row
-                let score = model.score
-                for top in [true, false] where !turning.contains(top) {
-                    painter.drawLight(&context, page: top ? shown.top : shown.bottom, rows: layout.rows(top: top), colors: colors) { onset in
-                        Self.phosphor(onset, time: time, line: line, x: spot.x, layout: layout, score: score)
-                    }
+            ZStack(alignment: .topLeading) {
+                // The bar that plays gets a faint wash of the accent. It is a view of its own, whose shape only changes
+                // from one bar to the next, so it isn't filled again on every frame with the canvas.
+                if let bar = playingBar() {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(NotesAccent.color(colorScheme).opacity(colorScheme == .dark ? 0.06 : 0.05))
+                        .frame(width: bar.width, height: bar.height)
+                        .offset(x: bar.minX, y: bar.minY)
                 }
-                let inTop = spot.row < layout.topLines
-                guard spot.page == (inTop ? shown.top : shown.bottom), !turning.contains(inTop) else { return }
-                let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
-                let rect = CGRect(x: spot.x - 1, y: top, width: 2, height: layout.staff.linesHeight + 14)
-                let honey = NotesAccent.color(colorScheme)
-                // The bar that plays gets a faint wash of the accent.
-                let bar = min(max(0, ((spot.x - layout.x0) / layout.barWidth).rounded(.down)), CGFloat(layout.barsPerLine - 1))
-                let barRect = CGRect(x: layout.x0 + bar * layout.barWidth, y: top, width: layout.barWidth, height: rect.height)
-                context.fill(Path(roundedRect: barRect, cornerRadius: 5), with: .color(honey.opacity(dark ? 0.06 : 0.05)))
-                // The glow is a band of the accent that fades out on both sides, cheaper on every frame than a shadow filter.
-                let band = rect.insetBy(dx: -6, dy: 0)
-                context.fill(Path(roundedRect: band, cornerRadius: 6), with: .linearGradient(
-                    Gradient(stops: [.init(color: honey.opacity(0), location: 0), .init(color: honey.opacity(dark ? 0.32 : 0.24), location: 0.5),
-                                     .init(color: honey.opacity(0), location: 1)]),
-                    startPoint: CGPoint(x: band.minX, y: band.midY), endPoint: CGPoint(x: band.maxX, y: band.midY)))
-                context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(honey))
+                line(frame)
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// The bar under the line, on a page that lies flat.
+    private func playingBar() -> CGRect? {
+        let layout = painter.layout
+        guard let time = model.now(), let spot = layout.spot(at: time, in: model.score) else { return nil }
+        let inTop = spot.row < layout.topLines
+        guard spot.page == (inTop ? shown.top : shown.bottom), !turning.contains(inTop) else { return nil }
+        let bar = min(max(0, ((spot.x - layout.x0) / layout.barWidth).rounded(.down)), CGFloat(layout.barsPerLine - 1))
+        return CGRect(x: layout.x0 + bar * layout.barWidth, y: layout.top(ofRow: spot.row) + layout.staff.linesTop - 7,
+                      width: layout.barWidth, height: layout.staff.linesHeight + 14)
+    }
+
+    private func line(_ frame: Date) -> some View {
+        Canvas { context, _ in
+            _ = frame
+            if let notesFrameLog { countNotesFrame(notesFrameLog) }
+            let layout = painter.layout
+            guard let time = model.now(), let spot = layout.spot(at: time, in: model.score) else { return }
+            let dark = colorScheme == .dark
+            let colors = NotesPainter.LightColors(glow: NotesAccent.glow(colorScheme), hot: NotesAccent.hot(colorScheme), dark: dark)
+            let line = spot.page * layout.linesPerPage + spot.row
+            let score = model.score
+            for top in [true, false] where !turning.contains(top) {
+                painter.drawLight(&context, page: top ? shown.top : shown.bottom, rows: layout.rows(top: top), colors: colors) { onset in
+                    Self.phosphor(onset, time: time, line: line, x: spot.x, layout: layout, score: score)
+                }
+            }
+            let inTop = spot.row < layout.topLines
+            guard spot.page == (inTop ? shown.top : shown.bottom), !turning.contains(inTop) else { return }
+            let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
+            let rect = CGRect(x: spot.x - 1, y: top, width: 2, height: layout.staff.linesHeight + 14)
+            let honey = NotesAccent.color(colorScheme)
+            // The glow is a band of the accent that fades out on both sides, cheaper on every frame than a shadow filter.
+            let band = rect.insetBy(dx: -6, dy: 0)
+            context.fill(Path(roundedRect: band, cornerRadius: 6), with: .linearGradient(
+                Gradient(stops: [.init(color: honey.opacity(0), location: 0), .init(color: honey.opacity(dark ? 0.32 : 0.24), location: 0.5),
+                                 .init(color: honey.opacity(0), location: 1)]),
+                startPoint: CGPoint(x: band.minX, y: band.midY), endPoint: CGPoint(x: band.maxX, y: band.midY)))
+            context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(honey))
+        }
     }
 
     /// How lit an onset is with the playhead at `x` on `line`: a faint warm-up over the last seventh of a bar before
@@ -1583,6 +1607,7 @@ private struct NotesTime: View {
     let palette: Palette
 
     var body: some View {
+        // A quarter of a second while the song plays, and once a second while it's paused, to show a seek.
         TimelineView(.periodic(from: .now, by: 0.25)) { _ in
             let now = model.now() ?? 0
             let fraction = model.duration > 0 ? min(1, max(0, now / model.duration)) : 0

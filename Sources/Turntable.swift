@@ -111,9 +111,7 @@ struct TurntableDeck: View {
 
     var body: some View {
         VStack(spacing: 11) {
-            TimelineView(.animation(minimumInterval: 1, paused: !spinning)) { context in
-                let progress = track.duration.flatMap { duration in track.position(at: context.date).map { duration > 0 ? $0 / duration : 0 } } ?? 0
-                ZStack {
+            ZStack {
                     Platter()
                     ZStack {
                         if renderingPreview {
@@ -134,19 +132,21 @@ struct TurntableDeck: View {
                         insertion: .modifier(active: Slide(x: Self.size * 0.6), identity: Slide(x: 0)),
                         removal: .modifier(active: Slide(x: -Self.size * 0.6), identity: Slide(x: 0))
                     ))
-                    // The innermost animation whose value changed wins: a swap, then a play or a pause, then the
-                    // slow move along the grooves.
-                    Tonearm(angle: swapping || !playing || arriving != nil ? Tonearm.rest : 10 * min(1, max(0, progress)))
-                        .animation(.linear(duration: 1), value: progress)
-                        .animation(.smooth(duration: 0.45), value: playing)
-                        .animation(.smooth(duration: 0.45), value: arriving == nil)
-                        .animation(.smooth(duration: Self.swap / 2), value: swapping)
+                    // The arm moves 10° over the whole song, a step too small to see every 2 seconds, so the slow move
+                    // along the grooves isn't animated: an animation there kept the HUD drawing on every frame. The
+                    // innermost animation whose value changed wins: a swap, then a play or a pause.
+                    TimelineView(.animation(minimumInterval: 2, paused: !spinning)) { context in
+                        let progress = track.duration.flatMap { duration in track.position(at: context.date).map { duration > 0 ? $0 / duration : 0 } } ?? 0
+                        Tonearm(angle: swapping || !playing || arriving != nil ? Tonearm.rest : 10 * min(1, max(0, progress)))
+                            .animation(.smooth(duration: 0.45), value: playing)
+                            .animation(.smooth(duration: 0.45), value: arriving == nil)
+                            .animation(.smooth(duration: Self.swap / 2), value: swapping)
+                    }
                     PlayFlashView(flash: flash, size: 58)
                 }
                 .frame(width: Self.size, height: Self.size)
                 // On the rims, where the tonearm never passes.
                 .modifier(RecordControls(diameter: Self.size * 0.9, label: 0.66))
-            }
             ZStack {
                 Details(track: track, ticking: spinning, palette: palette)
                     .id(song)
@@ -724,6 +724,9 @@ private struct SpinningRecord: NSViewRepresentable {
             turn.duration = period
             turn.repeatCount = .infinity
             turn.isRemovedOnCompletion = false
+            // At most 60 frames a second, as on most Mac displays, since the window server composites the turning
+            // record on every frame.
+            turn.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
             for layer in turning { layer.add(turn, forKey: "turn") }
             pause()
         }
@@ -1138,6 +1141,12 @@ struct KaraokeRecord<Footer: View>: View {
     /// The width of the label against the record's.
     static var label: CGFloat { 0.36 }
     static func height(side: CGFloat) -> CGFloat { above + side / 2 + below }
+
+    /// The seconds in which the end of the rim's line moves about a pixel: the line runs a little more than half way
+    /// around the record, on a screen with 2 pixels to a point.
+    static func rimStep(duration: Double, side: CGFloat) -> Double {
+        min(1, max(1.0 / 30, duration / Double((side + 7) * 1.75 * 2)))
+    }
     /// The room around the record for the line and its glow.
     private static var margin: CGFloat { 15 }
 
@@ -1150,8 +1159,13 @@ struct KaraokeRecord<Footer: View>: View {
             let position = min(duration, max(0, track.position(at: context.date) ?? 0))
             ZStack {
                 if duration > 0 {
-                    RimLine(progress: position / duration, below: Self.below, palette: palette, glow: Self.honey)
-                        .frame(width: side + 7, height: side + 7)
+                    // The line has a timeline of its own that moves its end about a pixel at a time, instead of
+                    // animating a jump each second, which redrew the line and its glow on every frame.
+                    TimelineView(.animation(minimumInterval: Self.rimStep(duration: duration, side: side), paused: !spinning)) { rim in
+                        let played = min(duration, max(0, track.position(at: rim.date) ?? 0))
+                        RimLine(progress: played / duration, below: Self.below, palette: palette, glow: Self.honey)
+                    }
+                    .frame(width: side + 7, height: side + 7)
                 }
                 ZStack {
                     ZStack {
@@ -1223,7 +1237,6 @@ private struct RimLine: View {
                 .shadow(color: glow.opacity(0.9), radius: 3)
                 .shadow(color: glow.opacity(0.5), radius: 7)
         }
-        .animation(.linear(duration: 1), value: progress)
     }
 
     private struct Rim: Shape {
