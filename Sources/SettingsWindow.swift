@@ -320,9 +320,9 @@ struct MiniDirectionTiles: View {
     @Binding var direction: MiniDirection
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 8) {
             ForEach(MiniDirection.allCases, id: \.self) { choice in
-                ChoiceTile(title: choice.title, selected: direction == choice, height: 96, wallpaper: true) {
+                ChoiceTile(title: choice.title, selected: direction == choice, height: 72, wallpaper: true) {
                     direction = choice
                 } preview: {
                     MiniDirectionPreview(direction: choice)
@@ -340,20 +340,24 @@ private struct MiniDirectionPreview: View {
 
     var body: some View {
         switch direction {
-        case .horizontal:
-            HStack(spacing: 8) { record(34); lines(.leading, 38) }
-        case .vertical:
-            VStack(spacing: 6) { record(34); lines(.center, 44) }
+        case .below:
+            VStack(spacing: 4) { record(26); lines(.center, 32) }
+        case .above:
+            VStack(spacing: 4) { lines(.center, 32); record(26) }
+        case .left:
+            HStack(spacing: 5) { lines(.trailing, 26); record(26) }
+        case .right:
+            HStack(spacing: 5) { record(26); lines(.leading, 26) }
         case .automatic:
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .strokeBorder(.white.opacity(0.7), lineWidth: 1.5)
-                .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(.black.opacity(0.18)))
-                .frame(width: 118, height: 74)
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .strokeBorder(.white.opacity(0.7), lineWidth: 1.2)
+                .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(.black.opacity(0.18)))
+                .frame(width: 72, height: 50)
                 .overlay(alignment: .topLeading) {
-                    HStack(spacing: 4) { record(18); lines(.leading, 22, small: true) }.padding(6)
+                    HStack(spacing: 3) { record(12); lines(.leading, 14, small: true) }.padding(4)
                 }
                 .overlay(alignment: .bottom) {
-                    VStack(spacing: 3) { lines(.center, 26, small: true); record(18) }.padding(.bottom, 5)
+                    VStack(spacing: 2) { lines(.center, 16, small: true); record(12) }.padding(.bottom, 3)
                 }
         }
     }
@@ -368,10 +372,10 @@ private struct MiniDirectionPreview: View {
     }
 
     private func lines(_ alignment: HorizontalAlignment, _ width: CGFloat, small: Bool = false) -> some View {
-        VStack(alignment: alignment, spacing: small ? 2 : 3) {
-            Capsule().fill(.white).frame(width: width, height: small ? 3 : 4.5)
-            Capsule().fill(.white.opacity(0.8)).frame(width: width * 0.72, height: small ? 2.5 : 3.5)
-            Capsule().fill(.white.opacity(0.5)).frame(width: width * 0.86, height: small ? 2.5 : 3.5)
+        VStack(alignment: alignment, spacing: small ? 1.5 : 2.5) {
+            Capsule().fill(.white).frame(width: width, height: small ? 2.5 : 3.5)
+            Capsule().fill(.white.opacity(0.8)).frame(width: width * 0.72, height: small ? 2 : 3)
+            Capsule().fill(.white.opacity(0.5)).frame(width: width * 0.86, height: small ? 2 : 3)
         }
         .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
     }

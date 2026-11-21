@@ -279,16 +279,29 @@ struct MiniBackdropShape: Equatable {
     }
 }
 
-/// Where the song goes around the record (Settings > Mini player > Direction): wherever the screen suits it, always
-/// beside the record, or always above or below it.
+/// Where the song goes around the record (Settings > Mini player > Direction): wherever the screen suits it, or
+/// always on one side.
 enum MiniDirection: String, CaseIterable {
-    case automatic, horizontal, vertical
+    case automatic, below, above, left, right
 
     var title: String {
         switch self {
         case .automatic: "Automatic"
-        case .horizontal: "Horizontal"
-        case .vertical: "Vertical"
+        case .below: "Below"
+        case .above: "Above"
+        case .left: "Left"
+        case .right: "Right"
+        }
+    }
+
+    /// The side that the song keeps, or nil when the screen picks it.
+    var side: MiniTextSide? {
+        switch self {
+        case .automatic: nil
+        case .below: .below
+        case .above: .above
+        case .left: .left
+        case .right: .right
         }
     }
 }
@@ -297,11 +310,21 @@ enum MiniDirection: String, CaseIterable {
 enum MiniTextSide: Equatable {
     case below, above, left, right
 
-    /// Beside the record, the song goes on the side away from the nearer edge of the screen. Above or below, it goes
-    /// below, and above in the bottom third of the screen. Automatic puts it beside the record only in a corner: close
-    /// to a side edge and in the top or bottom third, on a landscape screen. Anywhere else it stays above or below,
-    /// however close the record is to the top or bottom edge. A side without room for the song gives its place to the
-    /// next one. `center` is the middle of the record, in points from the top left of the visible screen.
+    var opposite: MiniTextSide {
+        switch self {
+        case .below: .above
+        case .above: .below
+        case .left: .right
+        case .right: .left
+        }
+    }
+
+    /// A fixed direction keeps its side, and gives way to the opposite side only when the song doesn't fit on the
+    /// screen there. Automatic puts the song beside the record only in a corner: close to a side edge and in the top or
+    /// bottom third, on a landscape screen, on the side away from the edge. Anywhere else it goes below, or above in
+    /// the bottom third of the screen, however close the record is to the top or bottom edge. A side without room for
+    /// the song gives its place to the next one. `center` is the middle of the record, in points from the top left of
+    /// the visible screen.
     static func choose(center: CGPoint, screen: CGSize, record: CGFloat, text: CGSize, direction: MiniDirection = .automatic) -> MiniTextSide {
         let gap: CGFloat = 6
         let half = record / 2
@@ -316,12 +339,9 @@ enum MiniTextSide: Equatable {
         let row = center.y < screen.height / 3 ? -1 : center.y > screen.height * 2 / 3 ? 1 : 0
         let stacked: MiniTextSide = row > 0 ? .above : .below
         var order: [MiniTextSide]
-        switch direction {
-        case .horizontal:
-            order = [beside, across]
-        case .vertical:
-            order = [stacked, stacked == .below ? .above : .below]
-        case .automatic:
+        if let side = direction.side {
+            order = [side, side.opposite]
+        } else {
             // Thirds of the width made a corner of a third of a wide screen, so a record far from the side edges
             // turned the song sideways as it neared the top. A corner starts within two records of a side edge.
             let nearSide = min(center.x, screen.width - center.x) < record * 2
