@@ -6542,8 +6542,14 @@ extension EnvironmentValues {
         ("pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [.next])),
         ("plain", .below, MiniLayout(line: [], track: false, artist: false, album: false)),
         ("tempo-only", .below, MiniLayout(bottom: .tempo, line: [], track: false, artist: false, album: false)),
+        ("left-long", .left, MiniLayout()),
     ]
     for (name, side, layout) in variants {
+        let sample = HUDSample.track
+        model.track = name.hasSuffix("-long")
+            ? NowPlaying.Track(title: "Paper Lanterns (feat. Someone With a Long Name and Another One)", artist: sample.artist, album: sample.album,
+                               duration: sample.duration, elapsed: sample.elapsed, timestamp: sample.timestamp, rate: 0, bundleID: nil)
+            : sample
         let mini = MiniState()
         mini.key = DetectedKey(pitchClass: 1, minor: true)
         mini.side = side

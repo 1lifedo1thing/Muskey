@@ -179,8 +179,9 @@ struct MiniPlayerView: View {
             vinyl
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mini.hitFrames["record"] = $0 }
             if hasText {
+                // A long title is cut at the width of the text's place, so it never runs past the edge of the panel.
                 text
-                    .fixedSize()
+                    .fixedSize(horizontal: false, vertical: true)
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { mini.textSize = $0 }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mini.hitFrames["text"] = $0 }
                     .frame(width: textWidth, height: Self.textHeight, alignment: textAlignment)
@@ -256,7 +257,8 @@ struct MiniPlayerView: View {
         }
     }
 
-    private var textWidth: CGFloat { mini.side == .left || mini.side == .right ? Self.sideWidth : Self.stackWidth }
+    /// Beside the record, the text may also use the panel's margin on its outer side.
+    private var textWidth: CGFloat { mini.side == .left || mini.side == .right ? Self.sideWidth + Self.margin : Self.stackWidth }
 
     /// Where the text box sits against the record in the middle of the panel.
     private var textOffset: CGSize {
@@ -265,8 +267,8 @@ struct MiniPlayerView: View {
         switch mini.side {
         case .below: return CGSize(width: 0, height: Self.box / 2 + gap + Self.textHeight / 2 - Self.margin + 4)
         case .above: return CGSize(width: 0, height: -(Self.box / 2 + gap + Self.textHeight / 2 - Self.margin + 4))
-        case .right: return CGSize(width: Self.box / 2 + Self.sideWidth / 2 - Self.margin + gap, height: 0)
-        case .left: return CGSize(width: -(Self.box / 2 + Self.sideWidth / 2 - Self.margin + gap), height: 0)
+        case .right: return CGSize(width: Self.box / 2 + textWidth / 2 - Self.margin + gap, height: 0)
+        case .left: return CGSize(width: -(Self.box / 2 + textWidth / 2 - Self.margin + gap), height: 0)
         }
     }
 
@@ -276,9 +278,13 @@ struct MiniPlayerView: View {
         let album = layout.album ? track?.album.flatMap { $0.isEmpty ? nil : $0 } : nil
         let artist = layout.artist ? track?.artist.flatMap { $0.isEmpty ? nil : $0 } : nil
         return VStack(alignment: alignment, spacing: 1) {
-            // The album shares the line of the track, so the player stays short.
+            // The album shares the line of the track, so the player stays short. When the line is too long, the album
+            // goes first, and then the title is cut.
             if title != nil || album != nil {
-                Text("\(Text(title ?? "").font(.system(size: 13.5, weight: .heavy, design: .rounded)))\(Text(title != nil && album != nil ? " · " : "").foregroundStyle(.white.opacity(0.6)))\(Text(album ?? "").font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundStyle(.white.opacity(0.62)))")
+                ViewThatFits(in: .horizontal) {
+                    songLine(title: title, album: album)
+                    if title != nil, album != nil { songLine(title: title, album: nil) }
+                }
             }
             if let artist {
                 Text(artist)
@@ -308,6 +314,10 @@ struct MiniPlayerView: View {
         .foregroundStyle(Color(red: 0.96, green: 0.95, blue: 0.93))
         .multilineTextAlignment(alignment == .leading ? .leading : alignment == .trailing ? .trailing : .center)
         .shadow(color: .black.opacity(0.75), radius: 6, y: 1)
+    }
+
+    private func songLine(title: String?, album: String?) -> Text {
+        Text("\(Text(title ?? "").font(.system(size: 13.5, weight: .heavy, design: .rounded)))\(Text(title != nil && album != nil ? " · " : "").foregroundStyle(.white.opacity(0.6)))\(Text(album ?? "").font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundStyle(.white.opacity(0.62)))")
     }
 
     // MARK: Elements
