@@ -644,11 +644,13 @@ final class MiniPlayerPanel: NSPanel {
     }
 }
 
-/// Settings > Mini player > Elements: the player with its three places, and the elements to drag onto them.
+/// Settings > Mini player > Elements: the player with its three places, and the elements to drag onto them. A click on
+/// an element in the tray adds it to the line under the song, or takes it off the player.
 struct MiniLayoutEditor: View {
     @ObservedObject var prefs: Preferences
     @StateObject private var sample: HUDModel = HUDSample.model(card: false, relative: false)
     @StateObject private var mini = MiniState()
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 14) {
@@ -663,14 +665,27 @@ struct MiniLayoutEditor: View {
             FlowRow(spacing: 6) {
                 ForEach(MiniElement.allCases) { element in
                     let placed = prefs.miniLayout.place(of: element) != nil
-                    Text(element.name)
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(.primary.opacity(placed ? 0.04 : 0.1)))
-                        .foregroundStyle(placed ? .secondary : .primary)
-                        .draggable(element.rawValue)
-                        .help(placed ? "On the player" : "Drag onto a place")
+                    let honey = StripColors.solid(.honey, colorScheme)
+                    // A toggle: ticked and amber on the player, a plus off it.
+                    HStack(spacing: 4) {
+                        Image(systemName: placed ? "checkmark" : "plus")
+                            .font(.system(size: 9, weight: .heavy))
+                        Text(element.name)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    }
+                    .padding(.leading, 8)
+                    .padding(.trailing, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(placed ? honey.fill.opacity(colorScheme == .dark ? 0.3 : 0.45) : .primary.opacity(0.07)))
+                    .overlay(Capsule().strokeBorder(placed ? honey.fill.opacity(0.8) : .primary.opacity(0.12), lineWidth: 1))
+                    .foregroundStyle(placed ? StripColors.text(.honey, colorScheme) : .primary)
+                    .contentShape(Capsule())
+                    .draggable(element.rawValue)
+                    .onTapGesture {
+                        if placed { prefs.miniLayout.remove(element) } else { prefs.miniLayout.put(element, at: .line) }
+                    }
+                    .help(placed ? "Remove from the player" : "Add under the song, or drag onto a place")
+                    .animation(.easeOut(duration: 0.12), value: placed)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

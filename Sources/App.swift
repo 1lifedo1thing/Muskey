@@ -6619,6 +6619,20 @@ extension EnvironmentValues {
     if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
         try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-editor.png"))
     }
+    // The whole editor of Settings > Mini player, with its tray, in both schemes.
+    for scheme in [ColorScheme.light, .dark] {
+        let pane = MiniLayoutEditor(prefs: Preferences.shared)
+            .frame(width: 440)
+            .padding(18)
+            .background(scheme == .dark ? Color(white: 0.17) : Color(white: 0.95))
+            .environment(\.colorScheme, scheme)
+            .environment(\.renderingPreview, true)
+        let renderer = ImageRenderer(content: pane)
+        renderer.scale = 2
+        if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-settings-\(scheme == .dark ? "dark" : "light").png"))
+        }
+    }
 }
 
 @MainActor func renderPreviews(to dir: String) {
