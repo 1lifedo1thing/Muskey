@@ -6547,11 +6547,17 @@ extension EnvironmentValues {
         ("plain", .below, MiniLayout(line: [], track: false, artist: false, album: false)),
         ("tempo-only", .below, MiniLayout(bottom: .tempo, line: [], track: false, artist: false, album: false)),
         ("left-long", .left, MiniLayout()),
+        ("right-long", .right, MiniLayout(line: [.key, .tempo, .timeLeft])),
+        ("left-short", .left, MiniLayout()),
+        ("below-long", .below, MiniLayout()),
     ]
     for (name, side, layout) in variants {
         let sample = HUDSample.track
         model.track = name.hasSuffix("-long")
             ? NowPlaying.Track(title: "Paper Lanterns (feat. Someone With a Long Name and Another One)", artist: sample.artist, album: sample.album,
+                               duration: sample.duration, elapsed: sample.elapsed, timestamp: sample.timestamp, rate: 0, bundleID: nil)
+            : name.hasSuffix("-short")
+            ? NowPlaying.Track(title: "Tide", artist: "Mira Vale", album: "Low Tide Radio",
                                duration: sample.duration, elapsed: sample.elapsed, timestamp: sample.timestamp, rate: 0, bundleID: nil)
             : sample
         let mini = MiniState()

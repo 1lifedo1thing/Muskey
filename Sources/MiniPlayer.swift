@@ -277,19 +277,22 @@ struct MiniPlayerView: View {
         let title = layout.track ? track?.title.flatMap { $0.isEmpty ? nil : $0 } : nil
         let album = layout.album ? track?.album.flatMap { $0.isEmpty ? nil : $0 } : nil
         let artist = layout.artist ? track?.artist.flatMap { $0.isEmpty ? nil : $0 } : nil
-        return VStack(alignment: alignment, spacing: 1) {
-            // The album shares the line of the track, so the player stays short. When the line is too long, the album
-            // goes first, and then the title is cut.
-            if title != nil || album != nil {
-                ViewThatFits(in: .horizontal) {
-                    songLine(title: title, album: album)
-                    if title != nil, album != nil { songLine(title: title, album: nil) }
-                }
+        // Beside the record, the pills wrap at the width of the song's text, so they never reach further from the
+        // record than the song does.
+        let beside = !editing && (mini.side == .left || mini.side == .right)
+        return MiniSongLayout(alignment: alignment, wrap: beside) {
+            if let title {
+                Text(title).font(.system(size: 13.5, weight: .heavy, design: .rounded))
             }
             if let artist {
                 Text(artist)
                     .font(.system(size: 11.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.9))
+            }
+            if let album {
+                Text(album)
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.62))
             }
             if editing {
                 slot(.line, filled: !layout.line.isEmpty) {
@@ -297,15 +300,9 @@ struct MiniPlayerView: View {
                 }
                 .padding(.top, 4)
             } else {
-                let chips = layout.line.compactMap { element in value(element).map { (element, $0) } }
-                if !chips.isEmpty {
-                    // Beside the record the pills stack, so the line never reaches further from the record than the song.
-                    let beside = mini.side == .left || mini.side == .right
-                    let stack = beside ? AnyLayout(VStackLayout(alignment: alignment, spacing: 3)) : AnyLayout(HStackLayout(spacing: 4))
-                    stack {
-                        ForEach(chips, id: \.0) { element, value in MiniChip(text: value, hue: element.hue, small: true) }
-                    }
-                    .padding(.top, 4)
+                ForEach(layout.line.compactMap { element in value(element).map { (element, $0) } }, id: \.0) { element, value in
+                    MiniChip(text: value, hue: element.hue, small: true)
+                        .layoutValue(key: MiniSongLayout.Pill.self, value: true)
                 }
             }
         }
@@ -314,10 +311,6 @@ struct MiniPlayerView: View {
         .foregroundStyle(Color(red: 0.96, green: 0.95, blue: 0.93))
         .multilineTextAlignment(alignment == .leading ? .leading : alignment == .trailing ? .trailing : .center)
         .shadow(color: .black.opacity(0.75), radius: 6, y: 1)
-    }
-
-    private func songLine(title: String?, album: String?) -> Text {
-        Text("\(Text(title ?? "").font(.system(size: 13.5, weight: .heavy, design: .rounded)))\(Text(title != nil && album != nil ? " · " : "").foregroundStyle(.white.opacity(0.6)))\(Text(album ?? "").font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundStyle(.white.opacity(0.62)))")
     }
 
     // MARK: Elements
@@ -377,6 +370,84 @@ struct MiniPlayerView: View {
                 return true
             } isTargeted: { target = $0 ? place : (target == place ? nil : target) }
             .animation(.easeOut(duration: 0.1), value: target)
+    }
+}
+
+/// The song's lines, one under the other, and the pills of the line under them. With `wrap`, a row of pills ends where
+/// the widest line of the song ends, and the next pill starts a new row; a song shorter than any two pills side by side
+/// stacks them all. Without it, the pills share one row.
+struct MiniSongLayout: Layout {
+    struct Pill: LayoutValueKey {
+        static let defaultValue = false
+    }
+
+    var alignment: HorizontalAlignment
+    var wrap: Bool
+
+    private static let lineSpacing: CGFloat = 1
+    private static let pillsTop: CGFloat = 4
+    private static let pillSpacing: CGFloat = 4
+    private static let rowSpacing: CGFloat = 3
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let arranged = arrange(width: proposal.width, subviews: subviews)
+        let slack = bounds.width - arranged.size.width
+        let shift = alignment == .trailing ? slack : alignment == .center ? slack / 2 : 0
+        for (subview, frame) in zip(subviews, arranged.frames) {
+            subview.place(at: CGPoint(x: bounds.minX + shift + frame.minX, y: bounds.minY + frame.minY), proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func arrange(width: CGFloat?, subviews: Subviews) -> (size: CGSize, frames: [CGRect]) {
+        let limit = width ?? .infinity
+        let sizes = subviews.map { $0[Pill.self] ? $0.sizeThatFits(.unspecified) : $0.sizeThatFits(ProposedViewSize(width: width, height: nil)) }
+        let lines = subviews.indices.filter { !subviews[$0][Pill.self] }
+        let pills = subviews.indices.filter { subviews[$0][Pill.self] }
+        let textWidth = lines.map { sizes[$0].width }.max() ?? 0
+
+        // Rows of pills, as indices of subviews.
+        let rowLimit = wrap && textWidth > 0 ? min(textWidth, limit) : (wrap ? limit : .infinity)
+        var rows: [[Int]] = []
+        var rowWidth: CGFloat = 0
+        for index in pills {
+            let pillWidth = sizes[index].width
+            if let last = rows.indices.last, rowWidth + Self.pillSpacing + pillWidth <= rowLimit {
+                rows[last].append(index)
+                rowWidth += Self.pillSpacing + pillWidth
+            } else {
+                rows.append([index])
+                rowWidth = pillWidth
+            }
+        }
+        let rowWidths = rows.map { row in row.map { sizes[$0].width }.reduce(0, +) + Self.pillSpacing * CGFloat(row.count - 1) }
+        let contentWidth = max(textWidth, rowWidths.max() ?? 0)
+
+        func x(for itemWidth: CGFloat) -> CGFloat {
+            alignment == .trailing ? contentWidth - itemWidth : alignment == .center ? (contentWidth - itemWidth) / 2 : 0
+        }
+
+        var frames = Array(repeating: CGRect.zero, count: subviews.count)
+        var y: CGFloat = 0
+        for (n, index) in lines.enumerated() {
+            if n > 0 { y += Self.lineSpacing }
+            frames[index] = CGRect(origin: CGPoint(x: x(for: sizes[index].width), y: y), size: sizes[index])
+            y += sizes[index].height
+        }
+        for (n, row) in rows.enumerated() {
+            y += n > 0 ? Self.rowSpacing : (lines.isEmpty ? 0 : Self.pillsTop)
+            let height = row.map { sizes[$0].height }.max() ?? 0
+            var left = x(for: rowWidths[n])
+            for index in row {
+                frames[index] = CGRect(origin: CGPoint(x: left, y: y + (height - sizes[index].height) / 2), size: sizes[index])
+                left += sizes[index].width + Self.pillSpacing
+            }
+            y += height
+        }
+        return (CGSize(width: contentWidth, height: y), frames)
     }
 }
 
