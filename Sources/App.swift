@@ -3278,6 +3278,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notesSinks = []
         notesStemsPath = nil
         stemsCache.progress = { _ in }
+        // A separation that only the notes needed stops with them. The stems of the HUD keep theirs.
+        if let building = stemsCache.path, !(model.stemsEngaged && playsInFilePlayer && building == filePlayer.current?.path) {
+            stemsCache.cancel()
+            log("notes: the separation stopped")
+        }
         stopLiveCapture()
         clearCaptures()
         log("notes: closed")
@@ -3377,8 +3382,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The stems of the whole song from the cache, separating them first with the separation that the stems of Muskey
-    /// Player use. A separation that ran from its start times the step for the next estimate.
-    private func notesStems(_ path: String, notes: NotesModel, song: Double) async -> StemsCache? {
+    /// Player use. A separation that ran from its start times the step for the next estimate. On the main thread, since
+    /// it sets the window's progress: an async method of the app delegate runs off it otherwise, and a progress set from
+    /// another thread locked the window and the main thread against each other.
+    @MainActor private func notesStems(_ path: String, notes: NotesModel, song: Double) async -> StemsCache? {
         if let cache = StemsCache.open(for: path) { return cache }
         // A separation that already runs for the stems of the HUD starts the step where it is.
         notes.phase = .working(.stems, stemsCache.path == path ? stemsCache.fraction : 0)

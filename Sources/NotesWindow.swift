@@ -1217,6 +1217,12 @@ private struct NotesProgressCard: View {
                         .foregroundStyle(palette.muted)
                     }
                 }
+                // Cancel closes the window, which stops the transcription and a separation that only it needed.
+                HStack(spacing: 6) {
+                    HUDButton(title: "Cancel", symbol: "xmark", palette: palette, small: true, action: model.onClose)
+                    Keycap(text: "esc", palette: palette, small: true)
+                }
+                .help("Stop transcribing and close the window (esc)")
             }
         }
         .padding(.horizontal, 26)
