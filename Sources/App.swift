@@ -5132,7 +5132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let startBPM = loopGridBPM
         let song = loopSong
         loopSnap?.cancel()
-        loopSnap = Task { [weak self] in
+        loopSnap = Task { @MainActor [weak self] in
             var excerpt: (samples: [Float], start: Double)?
             if let path {
                 let from = max(0, time - 8)
@@ -5200,7 +5200,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let now = nowPlaying.track?.position(at: Date()), now > end || now < loop.start - 0.5 { seek(to: loop.start, flash: "repeat") }
             return
         }
-        loopTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in self?.checkLoopEnd() }
+        // The common modes keep it firing while the pointer drags an end of the loop.
+        let timer = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in self?.checkLoopEnd() }
+        RunLoop.main.add(timer, forMode: .common)
+        loopTimer = timer
     }
 
     private func checkLoopEnd() {
@@ -5269,7 +5272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.wave.waveform = nil
             model.wave.lanes = false
             waveformRead?.cancel()
-            waveformRead = Task { [weak self] in
+            waveformRead = Task { @MainActor [weak self] in
                 var waveform = WaveformStore.load(key)
                 if waveform == nil {
                     waveform = await WaveformReader.read(URL(fileURLWithPath: path))
@@ -5334,7 +5337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard playsInFilePlayer, let path = filePlayer.current?.path, let key = waveformKey, let waveform = model.wave.waveform, waveform.stems == nil,
               let cache = StemsCache.open(for: path) else { return }
         let base = waveform
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             let stems = await Task.detached(priority: .utility) { WaveformReader.stems(cache) }.value
             guard let self, waveformKey == key else { return }
             var waveform = model.wave.waveform ?? base
