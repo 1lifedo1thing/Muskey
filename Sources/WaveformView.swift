@@ -15,11 +15,6 @@ enum WaveformStyle: String, CaseIterable {
     }
 }
 
-enum LaneNameStyle: String {
-    case glass
-    case thinMaterial = "thin"
-}
-
 /// The waveform of the whole song, with the played part filled in and a playhead that moves with the song. A click
 /// or a drag moves the song, as the time bar does. Zoomed in, a close-up of the moments around the playhead scrolls
 /// past a fixed playhead, over a thin strip of the whole song, and a region loop that fits in it holds still while
@@ -66,8 +61,6 @@ struct WaveformView: View {
     static let barWidth: CGFloat = 2
     /// `--log-playhead` logs the time that the playhead is drawn at, ten times a second, for testing.
     nonisolated(unsafe) static var trace: ((Double) -> Void)?
-    /// The capsule under a lane's stem name, until one of the two is picked (`--lane-name thin` renders the other one).
-    nonisolated(unsafe) static var laneNameStyle = LaneNameStyle.glass
     nonisolated(unsafe) private static var tracedAt = Date.distantPast
 
     private static func traced(_ seconds: Double, at date: Date) -> Bool {
@@ -237,15 +230,15 @@ struct WaveformView: View {
         let mid = lane.midY
         let isMuted = muted.contains(stem)
         let dark = scheme == .dark
-        // The name sits on a translucent capsule in the stem's colour: in the colour alone, the letters blurred into loud
-        // bars of the same colour, and in ink they lost the link to the lane's stem.
+        // The name sits on a capsule like a thin material, in the stem's colour: in the colour alone, the letters blurred
+        // into loud bars of the same colour, in ink they lost the link to the lane's stem, and a plain translucent capsule
+        // almost disappeared on paper.
         let name = context.resolve(Text(stem.name).font(.system(size: 8.5, weight: .bold, design: .rounded))
             .foregroundStyle(isMuted ? palette.ink.opacity(0.45) : stem.color(scheme)))
         let size = name.measure(in: CGSize(width: 200, height: 20))
         let origin = CGPoint(x: lane.minX + 4, y: lane.minY + 1)
         let plate = CGRect(x: origin.x - 3, y: origin.y - 0.5, width: size.width + 6, height: size.height + 1)
         let capsule = Path(roundedRect: plate, cornerRadius: plate.height / 2)
-        let thin = Self.laneNameStyle == .thinMaterial
 
         context.fill(Path(roundedRect: lane, cornerRadius: 3), with: .color(palette.ink.opacity(0.035)))
         func drawBars(_ context: inout GraphicsContext) {
@@ -260,23 +253,18 @@ struct WaveformView: View {
                 context.fill(Path(roundedRect: CGRect(x: x, y: mid - h / 2, width: Self.barWidth, height: h), cornerRadius: 1), with: .color(color))
             }
         }
-        if thin {
-            // Like an ultra thin material: the bars stay sharp around the capsule and blur under it.
-            var outside = context
-            outside.clip(to: capsule, options: .inverse)
-            drawBars(&outside)
-            var inside = context
-            inside.clip(to: capsule)
-            inside.drawLayer { layer in
-                layer.addFilter(.blur(radius: 2.5))
-                drawBars(&layer)
-            }
-            context.fill(capsule, with: .color(dark ? Color.black.opacity(0.34) : Color.white.opacity(0.5)))
-            context.stroke(capsule, with: .color(dark ? Color.white.opacity(0.1) : Color.black.opacity(0.06)), lineWidth: 0.5)
-        } else {
-            drawBars(&context)
-            context.fill(capsule, with: .color(dark ? Color.black.opacity(0.62) : Color.white.opacity(0.78)))
+        // Like an ultra thin material: the bars stay sharp around the capsule and blur under it.
+        var outside = context
+        outside.clip(to: capsule, options: .inverse)
+        drawBars(&outside)
+        var inside = context
+        inside.clip(to: capsule)
+        inside.drawLayer { layer in
+            layer.addFilter(.blur(radius: 2.5))
+            drawBars(&layer)
         }
+        context.fill(capsule, with: .color(dark ? Color.black.opacity(0.34) : Color.white.opacity(0.5)))
+        context.stroke(capsule, with: .color(dark ? Color.white.opacity(0.1) : Color.black.opacity(0.06)), lineWidth: 0.5)
         context.draw(name, at: origin, anchor: .topLeading)
     }
 

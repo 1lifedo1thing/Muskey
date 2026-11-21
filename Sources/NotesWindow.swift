@@ -382,6 +382,25 @@ struct NotesLayout: Equatable {
 
 // MARK: Drawing
 
+/// The accent of the notes window: a deep, saturated amber on the dark page, and a red with a tinge of magenta on
+/// paper. The honey of the HUD looked washed out on the dark page and muddy on paper.
+enum NotesAccent {
+    static func color(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? .oklch(0.76, 0.18, 62) : .oklch(0.58, 0.24, 16)
+    }
+
+    /// The glow around a lit note.
+    static func glow(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? .oklch(0.78, 0.19, 60) : .oklch(0.7, 0.2, 16)
+    }
+
+    /// The colour that a lit note turns towards at its brightest: a bright gold on the dark page and a vivid red on
+    /// paper, never a paler colour.
+    static func hot(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? .oklch(0.86, 0.18, 76) : .oklch(0.6, 0.26, 20)
+    }
+}
+
 /// Draws the lines of a page: tab, a staff or a piano roll.
 struct NotesPainter {
     let score: Score
@@ -389,7 +408,7 @@ struct NotesPainter {
     let byBar: [[Score.Note]]
     let ink: Color
     let paper: Color
-    let honey: Color
+    let accent: Color
     /// The bars that start after this time aren't transcribed yet.
     let until: Double
 
@@ -700,7 +719,7 @@ struct NotesPainter {
                 let width = max(3, min(end - x, layout.barWidth * CGFloat(note.length / Double(Score.beatsPerBar))) - 1.5)
                 let y = top + CGFloat(staff.high - pitch) * rowHeight
                 context.fill(Path(roundedRect: CGRect(x: x + 0.5, y: y + 0.4, width: width, height: rowHeight - 0.8), cornerRadius: 1.5),
-                             with: .color(honey.opacity(alpha)))
+                             with: .color(accent.opacity(alpha)))
             }
         }
     }
@@ -733,14 +752,16 @@ struct NotesPainter {
     /// How far left of a note's centre the playhead touches it: about half a fret number or a note head.
     private var reach: CGFloat { staff.view == .roll ? 0 : 4 }
 
-    /// A note lights from ink to honey, and then towards warm white when it's brightest, less so on paper. A note of the
-    /// piano roll is honey already, so it goes towards warm white all the way.
+    /// A note lights from ink to the accent, and then towards the hot colour when it's brightest, less so on paper. A note
+    /// of the piano roll is in the accent already, so it goes towards the hot colour all the way.
     private func light(_ level: Double, colors: LightColors, base: Color) -> Light? {
         guard level > 0.01 else { return nil }
         let hot = min(1, level)
-        let tint = base == honey ? honey.mix(with: colors.hot, by: hot * (colors.dark ? 0.75 : 0.5))
-            : hot < 0.75 ? base.mix(with: honey, by: hot / 0.75)
-            : honey.mix(with: colors.hot, by: (hot - 0.75) / 0.25 * (colors.dark ? 0.7 : 0.35))
+        // A note reaches the full accent at half its brightness, so that the afterglow stays in colour instead of
+        // passing through a pale mix with the ink for most of its fade.
+        let tint = base == accent ? accent.mix(with: colors.hot, by: hot * (colors.dark ? 0.75 : 0.5))
+            : hot < 0.5 ? base.mix(with: accent, by: hot / 0.5)
+            : accent.mix(with: colors.hot, by: (hot - 0.5) / 0.5 * (colors.dark ? 0.6 : 0.35))
         return Light(tint: tint, glow: colors.glow, level: level, dark: colors.dark)
     }
 
@@ -816,7 +837,7 @@ struct NotesPainter {
                     for note in byBar[bar] {
                         let x = barX(bar, bars.lowerBound) + layout.barWidth * CGFloat(note.beat / Double(Score.beatsPerBar))
                         let onset = Onset(key: bar * 64 + Int((note.beat * 4).rounded()), line: line, x: x)
-                        guard let light = light(level(onset), colors: colors, base: honey) else { continue }
+                        guard let light = light(level(onset), colors: colors, base: accent) else { continue }
                         let pitch = min(staff.high, max(staff.low, note.pitch))
                         let width = max(3, min(end - x, layout.barWidth * CGFloat(note.length / Double(Score.beatsPerBar))) - 1.5)
                         let rect = CGRect(x: x + 0.5, y: top + CGFloat(staff.high - pitch) * rowHeight + 0.4, width: width, height: rowHeight - 0.8)
@@ -969,7 +990,7 @@ private struct NotesStatus: View {
     var body: some View {
         HStack(spacing: 6) {
             if model.done {
-                if model.shift != 0 { pill(Shift.text(model.shift), color: StripColors.text(.honey, colorScheme)) }
+                if model.shift != 0 { pill(Shift.text(model.shift), color: NotesAccent.color(colorScheme)) }
                 if key, let shown = model.key?.transposed(by: model.shift) { pill(shown.name, color: palette.ink) }
                 if tempo { pill("\(Int(model.bpm.rounded())) BPM", color: palette.ink) }
             }
@@ -994,7 +1015,7 @@ private struct NotesProgressCard: View {
     let palette: Palette
     @Environment(\.colorScheme) private var colorScheme
 
-    private var honey: Color { StripColors.text(.honey, colorScheme) }
+    private var honey: Color { NotesAccent.color(colorScheme) }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -1114,7 +1135,7 @@ private struct NotesPageView: View {
             let pages = !model.done ? layout.pagesShown(at: nil, in: model.score)
                 : renderingPreview ? layout.pagesShown(at: model.now(), in: model.score) : shown
             let painter = NotesPainter(score: model.score, layout: layout, byBar: model.score.notesByBar, ink: palette.ink, paper: paper,
-                                       honey: StripColors.text(.honey, colorScheme), until: model.done ? .infinity : -1)
+                                       accent: NotesAccent.color(colorScheme), until: model.done ? .infinity : -1)
             ZStack(alignment: .topLeading) {
                 Group {
                     half(painter, top: true, page: pages.top)
@@ -1176,7 +1197,7 @@ private struct NotesPageView: View {
         let loop: (Double, Double)? = drag.map { (min($0.from, $0.to), max($0.from, $0.to)) }
             ?? model.loop.flatMap { loop in loop.end.map { (Score.position(of: loop.start, in: beats), Score.position(of: $0, in: beats)) } }
         if let (start, end) = loop {
-            let honey = StripColors.text(.honey, colorScheme)
+            let honey = NotesAccent.color(colorScheme)
             let rects = painter.region(from: start, to: end, page: page, rows: painter.layout.rows(top: top))
             let dy = top ? 0 : painter.layout.middle
             ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
@@ -1226,7 +1247,7 @@ private struct NotesPageView: View {
     }
 }
 
-/// The honey line, which moves through the lines at the speed of the song and jumps to the next line at the end of
+/// The line in the accent colour, which moves through the lines at the speed of the song and jumps to the next line at the end of
 /// each one. The notes light like phosphor as it passes: a note barely stirs as the line comes close, flashes a little
 /// past full brightness when the line touches it, and keeps an afterglow that fades over about a second of the song.
 /// The light comes from the song's time alone, so it holds still while the song is paused and is right after a seek.
@@ -1265,11 +1286,7 @@ private struct NotesPlayhead: View {
                 let layout = painter.layout
                 guard let time = model.now(), let spot = layout.spot(at: time, in: model.score) else { return }
                 let dark = colorScheme == .dark
-                let colors = NotesPainter.LightColors(
-                    glow: dark ? Color(red: 1, green: 0.82, blue: 0.48) : Color(red: 0.94, green: 0.71, blue: 0.26),
-                    hot: dark ? Color(red: 1, green: 0.965, blue: 0.886) : Color(red: 1, green: 0.84, blue: 0.55),
-                    dark: dark
-                )
+                let colors = NotesPainter.LightColors(glow: NotesAccent.glow(colorScheme), hot: NotesAccent.hot(colorScheme), dark: dark)
                 let line = spot.page * layout.linesPerPage + spot.row
                 let score = model.score
                 for top in [true, false] where !turning.contains(top) {
@@ -1281,8 +1298,8 @@ private struct NotesPlayhead: View {
                 guard spot.page == (inTop ? shown.top : shown.bottom), !turning.contains(inTop) else { return }
                 let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
                 let rect = CGRect(x: spot.x - 1, y: top, width: 2, height: layout.staff.linesHeight + 14)
-                let honey = StripColors.text(.honey, colorScheme)
-                // The glow is a band of honey that fades out on both sides, cheaper on every frame than a shadow filter.
+                let honey = NotesAccent.color(colorScheme)
+                // The glow is a band of the accent that fades out on both sides, cheaper on every frame than a shadow filter.
                 let band = rect.insetBy(dx: -6, dy: 0)
                 context.fill(Path(roundedRect: band, cornerRadius: 6), with: .linearGradient(
                     Gradient(stops: [.init(color: honey.opacity(0), location: 0), .init(color: honey.opacity(dark ? 0.32 : 0.24), location: 0.5),

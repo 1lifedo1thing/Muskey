@@ -6540,7 +6540,6 @@ extension EnvironmentValues {
     let only = TestFlags.value("--render-only")
     let realWaveform = TestFlags.value("--render-waveform").flatMap { FileManager.default.contents(atPath: $0) }
         .flatMap { try? JSONDecoder().decode(SongWaveform.self, from: $0) }
-    if let style = TestFlags.value("--lane-name").flatMap(LaneNameStyle.init) { WaveformView.laneNameStyle = style }
     if only == nil { renderMiniPreviews(to: dir) }
     let csm = EKResult(pitchClass: 1, minor: 1, strength: 0.8)
     let a = EKResult(pitchClass: 9, minor: 0, strength: 0.8)
