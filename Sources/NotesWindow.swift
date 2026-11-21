@@ -152,6 +152,7 @@ final class NotesModel: ObservableObject {
     var onTranspose: (Int) -> Void = { _ in }
     var onCapo: (Int) -> Void = { _ in }
     var onRetry: () -> Void = {}
+    var onStopHere: () -> Void = {}
     var onTranscribeAnyway: () -> Void = {}
     var onPickStem: (Stem) -> Void = { _ in }
     var onClose: () -> Void = {}
@@ -271,10 +272,12 @@ final class NotesModel: ObservableObject {
 
     /// The seconds of music in the song, without its silent parts and the parts of a capture that weren't heard.
     var musicSeconds: Double?
+    /// Where a transcription that Stop Here ended stopped, in seconds of the song. The bars after it stay faint.
+    var transcribedUntil: Double?
 
     /// The fewest notes that are worth showing: 4 for each minute of music, so that a few notes scattered over a song
     /// don't fill pages of empty bars. With fewer, the window says that there are no notes to transcribe.
-    var fewest: Int { max(4, Int((musicSeconds ?? duration) / 60 * 4)) }
+    var fewest: Int { max(4, Int(min(musicSeconds ?? duration, transcribedUntil ?? .infinity) / 60 * 4)) }
 
     func finish(_ notes: [TranscribedNote]) {
         self.notes = notes
@@ -1217,12 +1220,16 @@ private struct NotesProgressCard: View {
                         .foregroundStyle(palette.muted)
                     }
                 }
-                // Cancel closes the window, which stops the transcription and a separation that only it needed.
-                HStack(spacing: 6) {
-                    HUDButton(title: "Cancel", symbol: "xmark", palette: palette, small: true, action: model.onClose)
-                    Keycap(text: "esc", palette: palette, small: true)
+                HStack(spacing: 8) {
+                    // Once the notes are being found, Stop Here shows the ones found so far.
+                    if case let .working(.notes, fraction) = model.phase, fraction > 0 {
+                        HUDButton(title: "Stop Here", symbol: "stop.fill", palette: palette, small: true, action: model.onStopHere)
+                            .help("Stop transcribing and show the notes found so far")
+                    }
+                    // Cancel closes the window, which stops the transcription and a separation that only it needed.
+                    HUDButton(title: "Cancel", symbol: "xmark", palette: palette, isOn: true, small: true, action: model.onClose)
+                        .help("Stop transcribing and close the window")
                 }
-                .help("Stop transcribing and close the window (esc)")
             }
         }
         .padding(.horizontal, 26)
@@ -1349,7 +1356,7 @@ private struct NotesPageView: View {
             let pages = !model.done ? layout.pagesShown(at: nil, in: model.score)
                 : renderingPreview ? layout.pagesShown(at: model.now(), in: model.score) : shown
             let painter = NotesPainter(score: model.score, layout: layout, byBar: model.score.notesByBar, ink: palette.ink, paper: paper,
-                                       accent: NotesAccent.color(colorScheme), until: model.done ? .infinity : -1)
+                                       accent: NotesAccent.color(colorScheme), until: model.done ? model.transcribedUntil ?? .infinity : -1)
             ZStack(alignment: .topLeading) {
                 Group {
                     half(painter, top: true, page: pages.top)
@@ -1415,6 +1422,7 @@ private struct NotesPageView: View {
                     if !top { context.translateBy(x: 0, y: -layout.middle) }
                     painter.draw(&context, page: page, rows: layout.rows(top: top))
                 }
+                untranscribed(painter, page: page, top: top)
                 region(painter, page: page, top: top)
             }
             .frame(width: layout.size.width, height: max(0, height), alignment: .topLeading)
@@ -1422,6 +1430,37 @@ private struct NotesPageView: View {
         .frame(width: layout.size.width, height: max(0, height))
         .clipped()
         .offset(y: top ? 0 : layout.middle)
+    }
+
+    /// The lines after the place where Stop Here ended the transcription, dimmed under a wash of the paper, with
+    /// "Not transcribed" at the start of the first of them in each half.
+    @ViewBuilder private func untranscribed(_ painter: NotesPainter, page: Int, top: Bool) -> some View {
+        if model.done, let until = model.transcribedUntil {
+            let layout = painter.layout
+            let start = Score.position(of: until, in: model.score.beats)
+            let rects = painter.region(from: start, to: Double(layout.bars * Score.beatsPerBar), page: page, rows: layout.rows(top: top))
+            let dy = top ? 0 : layout.middle
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
+                    // Up over the bar numbers, which the wash would cut in half otherwise.
+                    Rectangle()
+                        .fill(paper.opacity(0.72))
+                        .frame(width: rect.width, height: rect.height + 12)
+                        .offset(x: rect.minX, y: rect.minY - 12 - dy)
+                }
+                if let first = rects.first {
+                    Text("Not transcribed")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(palette.muted)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(palette.ink.opacity(0.08)))
+                        .fixedSize()
+                        .offset(x: first.minX + 8, y: first.midY - dy - 9)
+                }
+            }
+            .allowsHitTesting(false)
+        }
     }
 
     /// The region loop on the lines of one half of a page, in the coordinates of that half.
@@ -2422,6 +2461,11 @@ extension NotesModel {
     if TestFlags.has("--notes-failed") {
         model.begin([.beats, .stems, .notes])
         model.phase = .failed
+    }
+    // `--notes-until S` shows the notes of a transcription that Stop Here ended at S seconds.
+    if let until = TestFlags.value("--notes-until").flatMap(Double.init) {
+        model.transcribedUntil = until
+        model.finish(model.notes.filter { $0.start < until })
     }
     // `--notes-quiet` shows the card of a stem that hardly plays, and `--notes-empty` the card of a transcription that
     // found no notes.

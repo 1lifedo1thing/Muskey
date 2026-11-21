@@ -96,11 +96,18 @@ enum Dettato {
         return Array(UnsafeBufferPointer(start: target.floatChannelData![0], count: Int(target.frameLength)))
     }
 
+    /// Thrown when `stop` asked to end early: the notes up to the time that every window so far covers.
+    struct Stopped: Error {
+        let notes: [TranscribedNote]
+        let until: Double
+    }
+
     /// The notes in `samples`, mono at 16 kHz. `progress` gets the part of the song done, from 0 to 1, after each window.
     /// `partial` gets the notes found so far every 16 seconds of song, without the ones that may still go on, and the
-    /// time up to which they are final.
+    /// time up to which they are final. When `stop` says so after a window, `Stopped` is thrown with the notes so far.
     static func transcribe(_ samples: [Float], program: Int, progress: @escaping @Sendable (Double) -> Void = { _ in },
-                           partial: (@Sendable ([TranscribedNote], Double) -> Void)? = nil) throws -> [TranscribedNote]
+                           partial: (@Sendable ([TranscribedNote], Double) -> Void)? = nil,
+                           stop: (@Sendable () -> Bool)? = nil) throws -> [TranscribedNote]
     {
         let network = try network()
         let front = DettatoFrontEnd()
@@ -142,6 +149,15 @@ enum Dettato {
             }
             for frame in from ..< to { weights[frame] += taper[frame - first] }
             progress(Double(index + 1) / Double(starts.count))
+            // The notes so far end where the next window starts: no window after this one reaches the frames before it.
+            if let stop, stop(), index + 1 < starts.count {
+                let final = min(total, Int((Double(starts[index + 1]) / rate / frameSeconds).rounded()) - framePad)
+                let cut = Double(max(0, final)) * frameSeconds
+                let found = final > 0 ? notes(maps, weights, frames: final, program: program) : []
+                throw Stopped(notes: found.filter { $0.start < cut }.map {
+                    TranscribedNote(start: $0.start, end: min($0.end, cut), pitch: $0.pitch, program: $0.program, drum: $0.drum)
+                }, until: cut)
+            }
             // The frames before the next window's first are final: no window after this one reaches them.
             if let partial, (index + 1) % 8 == 0, index + 1 < starts.count {
                 let final = min(total, Int((Double(starts[index + 1]) / rate / frameSeconds).rounded()) - framePad)

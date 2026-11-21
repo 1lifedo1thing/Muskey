@@ -433,6 +433,14 @@ final class WaveState: ObservableObject {
 }
 
 /// The level of each stem, in the order of `Stem`, 20 times a second while the stems play and the HUD shows.
+/// A flag that the main thread sets and another thread reads, such as Stop Here for a transcription that runs.
+final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
+}
+
 final class StemMeters: ObservableObject {
     @Published var levels = [Float](repeating: 0, count: Stem.allCases.count)
 }
@@ -3352,6 +3360,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             notes.phase = .working(.notes, 0)
             let started = Date()
+            let stopHere = StopFlag()
+            notes.onStopHere = { [weak self] in
+                stopHere.set()
+                self?.log("notes: stop here")
+            }
             let work = Task.detached(priority: .userInitiated) { () throws -> [TranscribedNote] in
                 let audio = Dettato.resample(NotesPipeline.stemSamples(cache, stem: stem), from: StemsCache.rate)
                 return try Dettato.transcribe(audio, program: stem.program, progress: { fraction in
@@ -3359,7 +3372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Task { @MainActor in
                         if notes.phase.step == .notes { notes.phase = .working(.notes, fraction * 0.96) }
                     }
-                })
+                }, stop: { stopHere.isSet })
             }
             notesWork = work
             do {
@@ -3372,6 +3385,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if notes.phase == .ready { deleteCapture(path) }
                 NotesTiming.learn(.notes, seconds: Date().timeIntervalSince(started), song: song)
                 log(String(format: "notes: %d notes of the %@ in %.1f s", found.count, stem.name.lowercased(), Date().timeIntervalSince(started)))
+            } catch let stopped as Dettato.Stopped {
+                // The notes so far show, and the bars after them stay faint. They aren't kept in the cache, which holds
+                // whole transcriptions, and the capture of a song from another app stays for the rest until the window
+                // closes.
+                guard !Task.isCancelled else { return }
+                notes.transcribedUntil = stopped.until
+                notes.finish(stopped.notes)
+                log(String(format: "notes: stopped at %.1f s with %d notes of the %@", stopped.until, stopped.notes.count, stem.name.lowercased()))
             } catch is CancellationError {
                 log("notes: transcription stopped")
             } catch {
