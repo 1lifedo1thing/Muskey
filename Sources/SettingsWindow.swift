@@ -305,6 +305,18 @@ private struct HUDPane: View {
 
     var body: some View {
         Form {
+            Section("Record") {
+                LabeledContent {
+                    Picker("Rotation speed", selection: $prefs.recordSpeed) {
+                        ForEach(RecordSpeed.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                } label: {
+                    Text("Rotation speed")
+                    Text("Speed of the turning record in the HUD and the mini player")
+                }
+            }
             Section("Layout") {
                 HStack(spacing: 14) {
                     ChoiceTile(title: "Wide", selected: !hud.card, height: 150, wallpaper: true) { setLayout(false) } preview: {

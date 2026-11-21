@@ -58,6 +58,29 @@ enum MenuBarIcon: String, CaseIterable {
 
 /// How long cached stems and songs downloaded from links are kept after they were last played. The same periods as
 /// Clop's cleanup of its working folder.
+/// How fast the record turns in the HUD and the mini player, in turns a minute like a turntable's speeds. Karaoke's
+/// calmer record keeps the same ratio to it.
+enum RecordSpeed: Double, CaseIterable {
+    case still = 0
+    case slow = 16.667
+    case standard = 33.333
+    case fast = 45
+    case fastest = 78
+
+    var title: String {
+        switch self {
+        case .still: "Still"
+        case .slow: "16⅔ rpm"
+        case .standard: "33⅓ rpm"
+        case .fast: "45 rpm"
+        case .fastest: "78 rpm"
+        }
+    }
+
+    /// The speed against 33⅓ turns a minute, which the record's turn is drawn at.
+    var rate: Double { rawValue / RecordSpeed.standard.rawValue }
+}
+
 enum CacheCleanup: TimeInterval, CaseIterable {
     case every10Minutes = 600
     case hourly = 3600
@@ -188,6 +211,9 @@ final class Preferences: ObservableObject {
     @Published var cacheCleanup: CacheCleanup {
         didSet { defaults.set(cacheCleanup.rawValue, forKey: "cacheCleanup") }
     }
+    @Published var recordSpeed: RecordSpeed {
+        didSet { defaults.set(recordSpeed.rawValue, forKey: "recordSpeed") }
+    }
     /// The base URL of the Whisper server, up to `/v1`.
     @Published var whisperServer: String {
         didSet { defaults.set(whisperServer, forKey: "whisperServer") }
@@ -234,6 +260,7 @@ final class Preferences: ObservableObject {
         autoHide = defaults.bool(forKey: "autoHide")
         autoHideSeconds = min(max(defaults.integer(forKey: "autoHideSeconds"), 1), 3600)
         cacheCleanup = CacheCleanup(rawValue: defaults.double(forKey: "cacheCleanup")) ?? .weekly
+        recordSpeed = defaults.object(forKey: "recordSpeed") == nil ? .standard : RecordSpeed(rawValue: defaults.double(forKey: "recordSpeed")) ?? .standard
         waveform = defaults.bool(forKey: "waveform")
         waveformStyle = defaults.string(forKey: "waveformStyle").flatMap(WaveformStyle.init) ?? .ribbon
         waveformLanes = (defaults.array(forKey: "waveformLanes") as? [Int]).map { Set($0.compactMap(Stem.init)) } ?? [.vocals, .guitar]

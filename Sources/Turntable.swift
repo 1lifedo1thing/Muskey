@@ -615,6 +615,8 @@ private struct SpinningRecord: NSViewRepresentable {
     /// Seconds for one turn: 33⅓ turns a minute on the deck, and a calmer turn in karaoke.
     var period = 1.8
     var spindle = true
+    /// Settings > HUD > Rotation speed, which speeds the turn up or slows it down from `period`.
+    @ObservedObject private var prefs = Preferences.shared
 
     final class Coordinator {
         var artwork: NSImage?
@@ -655,6 +657,7 @@ private struct SpinningRecord: NSViewRepresentable {
         let rewinds = context.environment.recordRewinds
         if let seen = context.coordinator.rewinds, rewinds > seen { view.rewind() }
         context.coordinator.rewinds = rewinds
+        view.rate = prefs.recordSpeed.rate
         view.spinning = spinning
     }
 
@@ -837,13 +840,24 @@ private struct SpinningRecord: NSViewRepresentable {
             didSet { if spinning != oldValue { spinning ? resume() : pause() } }
         }
 
+        /// The turn's speed against `period`: 0 keeps the record still, and a change while it turns carries on from
+        /// its angle.
+        var rate = 1.0 {
+            didSet {
+                guard rate != oldValue, spinning else { return }
+                pause()
+                resume()
+            }
+        }
+
         /// Turns the record back, fast and slowing to a stop, with the backspin that the output plays when it steps
         /// back in the song. It adds to the turn, so the record carries on from where the spin left it.
         func rewind() {
             let back = CABasicAnimation(keyPath: "transform.rotation.z")
             back.fromValue = 0
             back.toValue = 2.6 * Double.pi
-            back.duration = 0.9
+            // The record's clock runs at `rate`, so the backspin takes the same time at every speed.
+            back.duration = 0.9 * max(rate, 0.1)
             back.timingFunction = CAMediaTimingFunction(controlPoints: 0.12, 0.8, 0.3, 1)
             back.isAdditive = true
             for layer in turning { layer.add(back, forKey: "rewind") }
@@ -861,13 +875,15 @@ private struct SpinningRecord: NSViewRepresentable {
             }
         }
 
+        /// Turns the record at `rate` from the angle where it stopped.
         private func resume() {
+            guard rate > 0 else { return }
             for layer in turning {
                 let paused = layer.timeOffset
-                layer.speed = 1
-                layer.timeOffset = 0
-                layer.beginTime = 0
-                layer.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) - paused
+                let now = layer.superlayer?.convertTime(CACurrentMediaTime(), from: nil) ?? CACurrentMediaTime()
+                layer.speed = Float(rate)
+                layer.timeOffset = paused
+                layer.beginTime = now
             }
         }
     }
