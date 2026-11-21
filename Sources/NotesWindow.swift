@@ -512,12 +512,7 @@ struct NotesPainter {
         let gap = NotesStaff.staffGap
         let top = lineTop + staff.linesTop
         let end = barX(bars.upperBound, bars.lowerBound)
-        var clefs: [Clef] = []
-        if staff.grand {
-            clefs = [Clef(bottom: top + gap * 4, step: 30, bass: false), Clef(bottom: top + gap * 8 + NotesStaff.grandGap, step: 18, bass: true)]
-        } else {
-            clefs = [Clef(bottom: top + gap * 4, step: staff.bassClef ? 18 : 30, bass: staff.bassClef)]
-        }
+        let clefs = clefs(top: top)
         let spelling = Spelling(key: score.key)
         for clef in clefs {
             for index in 0 ..< 5 {
@@ -545,6 +540,15 @@ struct NotesPainter {
         }
     }
 
+    /// The staves of a line whose top staff line is at `top`: one, or the treble and the bass of a grand staff.
+    private func clefs(top: CGFloat) -> [Clef] {
+        let gap = NotesStaff.staffGap
+        if staff.grand {
+            return [Clef(bottom: top + gap * 4, step: 30, bass: false), Clef(bottom: top + gap * 8 + NotesStaff.grandGap, step: 18, bass: true)]
+        }
+        return [Clef(bottom: top + gap * 4, step: staff.bassClef ? 18 : 30, bass: staff.bassClef)]
+    }
+
     private func clefGlyph(_ context: inout GraphicsContext, _ clef: Clef) {
         let gap = NotesStaff.staffGap
         let glyph = Text(clef.bass ? "\u{1D122}" : "\u{1D11E}").font(.custom("Apple Symbols", size: clef.bass ? gap * 4.2 : gap * 5.6)).foregroundColor(ink)
@@ -569,9 +573,13 @@ struct NotesPainter {
 
     /// The notes that start together on one staff: heads, accidentals, ledger lines, one stem and the flags of the
     /// shortest note.
-    private func chord(_ context: inout GraphicsContext, _ notes: [Score.Note], x: CGFloat, clef: Clef, spelling: Spelling, shown: inout [Int: String], alpha: Double) {
+    /// A lit chord takes the colour of its light and glows, over the ink chord of the page; `draw` false only keeps
+    /// the accidentals of the bar up to date.
+    private func chord(_ canvas: inout GraphicsContext, _ notes: [Score.Note], x: CGFloat, clef: Clef, spelling: Spelling, shown: inout [Int: String],
+                       alpha: Double, light: Light? = nil, draw: Bool = true) {
+        var context = canvas
         let gap = NotesStaff.staffGap
-        let color = ink.opacity(alpha)
+        let color = light?.tint ?? ink.opacity(alpha)
         // Guitar and bass are written an octave above where they sound.
         let lift = score.stem == .guitar || score.stem == .bass ? 12 : 0
         let spelled = notes.map { note -> (step: Int, accidental: String?, length: Double) in
@@ -609,11 +617,18 @@ struct NotesPainter {
             columns[column].append(note.step)
             signs.append((index, sign, column))
         }
+        guard draw else { return }
+        if let light, let low = ys.max(), let high = ys.min() {
+            halo(&canvas, at: CGPoint(x: x, y: (low + high) / 2), radius: 10 + 7 * min(1.35, light.level) + (low - high) / 2, light: light)
+            context.addFilter(.shadow(color: light.glow.opacity(min(1, 0.85 * light.level)), radius: 1.5 + 5 * min(1.35, light.level)))
+        }
         for (index, note) in spelled.enumerated() {
             let y = ys[index]
             // Ledger lines under and over the staff, wide enough for a head moved to either side.
             let from = x - 7 - left, to = x + 7 + right
-            if note.step < clef.step - 1 {
+            if light != nil {
+                // The ledger lines of a lit chord stay as the page draws them.
+            } else if note.step < clef.step - 1 {
                 for step in stride(from: clef.step - 2, through: note.step, by: -2) {
                     let ly = clef.bottom - CGFloat(step - clef.step) * gap / 2
                     line(&context, from: CGPoint(x: from, y: ly), to: CGPoint(x: to, y: ly), color: ink.opacity(0.45 * alpha))
@@ -688,6 +703,129 @@ struct NotesPainter {
                 let y = top + CGFloat(staff.high - pitch) * rowHeight
                 context.fill(Path(roundedRect: CGRect(x: x + 0.5, y: y + 0.4, width: width, height: rowHeight - 0.8), cornerRadius: 1.5),
                              with: .color(honey.opacity(alpha)))
+            }
+        }
+    }
+
+    // MARK: Light
+
+    /// A place where notes start on a line: the bar and the sixteenth as a key, the line, and the x where the playhead
+    /// touches it.
+    struct Onset {
+        let key: Int
+        let line: Int
+        let x: CGFloat
+    }
+
+    /// The colours of the light: the glow around a lit note, the warm white of the brightest moment, and the scheme.
+    struct LightColors {
+        let glow: Color
+        let hot: Color
+        let dark: Bool
+    }
+
+    /// A lit note: its colour, the colour of its glow, and how lit it is, from 0 to about 1.4 in the flash.
+    struct Light {
+        let tint: Color
+        let glow: Color
+        let level: Double
+        let dark: Bool
+    }
+
+    /// How far left of a note's centre the playhead touches it: about half a fret number or a note head.
+    private var reach: CGFloat { staff.view == .roll ? 0 : 4 }
+
+    /// A note lights from its own colour to honey, and then towards warm white when it's brightest, less so on paper.
+    private func light(_ level: Double, colors: LightColors, base: Color) -> Light? {
+        guard level > 0.01 else { return nil }
+        let hot = min(1, level)
+        let tint = hot < 0.75 ? base.mix(with: honey, by: hot / 0.75)
+            : honey.mix(with: colors.hot, by: (hot - 0.75) / 0.25 * (colors.dark ? 0.7 : 0.35))
+        return Light(tint: tint, glow: colors.glow, level: level, dark: colors.dark)
+    }
+
+    /// The light around a lit note, which adds to the dark page and tints the light one.
+    private func halo(_ context: inout GraphicsContext, at center: CGPoint, radius: CGFloat, light: Light) {
+        let alpha = (light.dark ? 0.34 : 0.3) * min(1.35, light.level)
+        var glow = context
+        if light.dark { glow.blendMode = .plusLighter }
+        let gradient = Gradient(stops: [
+            .init(color: light.glow.opacity(alpha), location: 0),
+            .init(color: light.glow.opacity(alpha * 0.5), location: 0.4),
+            .init(color: light.glow.opacity(0), location: 1),
+        ])
+        glow.fill(Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)),
+                  with: .radialGradient(gradient, center: center, startRadius: 0, endRadius: radius))
+    }
+
+    /// Draws the notes of a page half that the playhead lights, over the page. `level` says how lit an onset is.
+    func drawLight(_ context: inout GraphicsContext, page: Int, rows: Range<Int>, colors: LightColors, level: (Onset) -> Double) {
+        for row in rows {
+            let line = page * layout.linesPerPage + row
+            let first = line * layout.barsPerLine
+            guard first < score.bars.count else { break }
+            let bars = first ..< min(score.bars.count, first + layout.barsPerLine)
+            let top = layout.top(ofRow: row) + staff.linesTop
+            switch staff.view {
+            case .tab:
+                // The halos first, so that no halo lies over a lit number next to it.
+                var lit: [(x: CGFloat, y: CGFloat, fret: Int, light: Light)] = []
+                for bar in bars {
+                    for note in byBar[bar] {
+                        guard let string = note.string, let fret = note.fret else { continue }
+                        let x = noteX(bar, bars.lowerBound, beat: note.beat)
+                        let onset = Onset(key: bar * 64 + Int((note.beat * 4).rounded()), line: line, x: x - reach)
+                        guard let light = light(level(onset), colors: colors, base: ink) else { continue }
+                        lit.append((x, top + NotesStaff.tabGap * CGFloat(staff.strings - 1 - string), fret, light))
+                    }
+                }
+                for note in lit {
+                    halo(&context, at: CGPoint(x: note.x, y: note.y), radius: 9 + 7 * min(1.35, note.light.level), light: note.light)
+                }
+                for note in lit {
+                    var glyph = context
+                    glyph.addFilter(.shadow(color: note.light.glow.opacity(min(1, 0.85 * note.light.level)), radius: 1.5 + 5 * min(1.35, note.light.level)))
+                    glyph.draw(text("\(note.fret)", size: 9.5, weight: .heavy, color: note.light.tint), at: CGPoint(x: note.x, y: note.y))
+                }
+            case .sheet:
+                let clefs = clefs(top: top)
+                let spelling = Spelling(key: score.key)
+                for bar in bars {
+                    let groups = Dictionary(grouping: byBar[bar]) { Int(($0.beat * 4).rounded()) }
+                    let places = groups.keys.sorted()
+                    let lights = places.map { place in
+                        light(level(Onset(key: bar * 64 + place, line: line, x: noteX(bar, bars.lowerBound, beat: Double(place) / 4, pad: 14) - reach)),
+                              colors: colors, base: ink)
+                    }
+                    // A bar with nothing lit is skipped; in a lit bar every chord runs, for the accidentals of the bar.
+                    guard lights.contains(where: { $0 != nil }) else { continue }
+                    var shown: [Int: String] = [:]
+                    for (place, light) in zip(places, lights) {
+                        let x = noteX(bar, bars.lowerBound, beat: Double(place) / 4, pad: 14)
+                        for (index, clef) in clefs.enumerated() {
+                            let notes = groups[place]!.filter { clefs.count == 1 || ($0.pitch >= 60) == (index == 0) }
+                            guard !notes.isEmpty else { continue }
+                            chord(&context, notes, x: x, clef: clef, spelling: spelling, shown: &shown, alpha: 1, light: light, draw: light != nil)
+                        }
+                    }
+                }
+            case .roll:
+                let rowHeight = NotesStaff.rowHeight
+                let end = barX(bars.upperBound, bars.lowerBound)
+                for bar in bars {
+                    for note in byBar[bar] {
+                        let x = barX(bar, bars.lowerBound) + layout.barWidth * CGFloat(note.beat / Double(Score.beatsPerBar))
+                        let onset = Onset(key: bar * 64 + Int((note.beat * 4).rounded()), line: line, x: x)
+                        guard let light = light(level(onset), colors: colors, base: honey) else { continue }
+                        let pitch = min(staff.high, max(staff.low, note.pitch))
+                        let width = max(3, min(end - x, layout.barWidth * CGFloat(note.length / Double(Score.beatsPerBar))) - 1.5)
+                        let rect = CGRect(x: x + 0.5, y: top + CGFloat(staff.high - pitch) * rowHeight + 0.4, width: width, height: rowHeight - 0.8)
+                        halo(&context, at: CGPoint(x: rect.minX + min(rect.width / 2, 8), y: rect.midY), radius: 8 + 6 * min(1.35, light.level), light: light)
+                        var glyph = context
+                        glyph.addFilter(.shadow(color: light.glow.opacity(min(1, 0.85 * light.level)), radius: 1.5 + 5 * min(1.35, light.level)))
+                        glyph.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(light.tint))
+                    }
+                }
             }
         }
     }
@@ -991,7 +1129,7 @@ private struct NotesPageView: View {
                     .padding(.horizontal, 12)
                     .offset(y: layout.middle)
                 if model.done {
-                    NotesPlayhead(model: model, layout: layout, shown: pages, turning: turning)
+                    NotesPlayhead(model: model, painter: painter, shown: pages, turning: turning)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
@@ -1091,19 +1229,35 @@ private struct NotesPageView: View {
 }
 
 /// The honey line, which moves through the lines at the speed of the song and jumps to the next line at the end of
-/// each one.
+/// each one. The notes light like phosphor as it passes: a note barely stirs as the line comes close, flashes a little
+/// past full brightness when the line touches it, and keeps an afterglow that fades over about a second of the song.
+/// The light comes from the song's time alone, so it holds still while the song is paused and is right after a seek.
 private struct NotesPlayhead: View {
     @ObservedObject var model: NotesModel
-    let layout: NotesLayout
+    let painter: NotesPainter
     let shown: (top: Int, bottom: Int)
-    /// The halves that are turning (true is the top one): the line shows there once the page lies flat.
+    /// The halves that are turning (true is the top one): the line and the light show there once the page lies flat.
     var turning: Set<Bool> = []
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !model.playing)) { _ in
+        TimelineView(.animation(paused: !model.playing)) { _ in
             Canvas { context, _ in
+                let layout = painter.layout
                 guard let time = model.now(), let spot = layout.spot(at: time, in: model.score) else { return }
+                let dark = colorScheme == .dark
+                let colors = NotesPainter.LightColors(
+                    glow: dark ? Color(red: 1, green: 0.82, blue: 0.48) : Color(red: 0.94, green: 0.71, blue: 0.26),
+                    hot: dark ? Color(red: 1, green: 0.965, blue: 0.886) : Color(red: 1, green: 0.84, blue: 0.55),
+                    dark: dark
+                )
+                let line = spot.page * layout.linesPerPage + spot.row
+                let score = model.score
+                for top in [true, false] where !turning.contains(top) {
+                    painter.drawLight(&context, page: top ? shown.top : shown.bottom, rows: layout.rows(top: top), colors: colors) { onset in
+                        Self.phosphor(onset, time: time, line: line, x: spot.x, layout: layout, score: score)
+                    }
+                }
                 let inTop = spot.row < layout.topLines
                 guard spot.page == (inTop ? shown.top : shown.bottom), !turning.contains(inTop) else { return }
                 let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
@@ -1116,6 +1270,20 @@ private struct NotesPlayhead: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// How lit an onset is with the playhead at `x` on `line`: a faint warm-up over the last seventh of a bar before
+    /// the touch, then the flash and the afterglow, timed from the moment that the playhead touched it.
+    static func phosphor(_ onset: NotesPainter.Onset, time: Double, line: Int, x: CGFloat, layout: NotesLayout, score: Score) -> Double {
+        guard onset.line < line || (onset.line == line && onset.x <= x) else {
+            guard onset.line == line else { return 0 }
+            let span = layout.barWidth * 0.14, distance = onset.x - x
+            return distance < span ? 0.16 * pow(1 - distance / span, 3) : 0
+        }
+        let bars = Double(onset.line * layout.barsPerLine) + Double((onset.x - layout.x0) / layout.barWidth)
+        let age = time - score.time(at: bars * Double(Score.beatsPerBar))
+        guard age >= 0, age < 5 else { return 0 }
+        return exp(-age / 1.1) * (1 + 0.45 * exp(-age / 0.09))
     }
 }
 
