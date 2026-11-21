@@ -806,8 +806,9 @@ struct KeyHints: View {
             [Hint(keys: ["←", "→"], name: loopEnd == .start ? "nudge A" : "nudge B"), Hint(keys: ["⌥", "←", "→"], name: "by a beat"),
              Hint(keys: ["R"], name: "region loop"), Hint(keys: ["⌘", "+", "−"], name: "zoom")]
         case _ where waveform:
-            [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: "lanes")] : [])
-                // In a close-up, ⌘0 joins the zoom keys, which keeps the row within the card.
+            [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: style == .footer ? "per instrument" : "one waveform per instrument")] : [])
+                // In a close-up, ⌘0 joins the zoom keys, which keeps the row within the card. The card's row names ⌥W
+                // by its last words, since the hints show over the waveform and the whole name made the row wider than the card.
                 + [Hint(keys: ["⌘", "+", "−"] + (zoomed ? ["0"] : []), name: "zoom"), Hint(keys: ["scroll"], name: "move song")]
         case .band where karaokeKeys, .footer where karaokeKeys:
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),

@@ -370,6 +370,35 @@ final class WaveformRecorder: @unchecked Sendable {
         }
     }
 
+    /// The slot that the level of the stems was last written to, so that the readings between two slots fill them.
+    private var lastStemSlot: Int?
+
+    /// The level of each stem as the stems of the song play, written where the song is heard: the player's place less
+    /// the delay of the stems. The levels come 20 times a second and the waveform has 50 slots a second, so the slots
+    /// since the last reading get this one, unless the song jumped.
+    func addStems(_ levels: [Float], delay: Double) {
+        lock.withLock {
+            guard let position, position.playing, position.rate > 0 else { return lastStemSlot = nil }
+            let now = Date().timeIntervalSince1970
+            let heard = position.seconds + (now - position.at - delay) * position.rate
+            let count = waveform.levels.count
+            let slot = Int((heard * SongWaveform.rate).rounded(.down))
+            guard slot >= 0, slot < count else { return lastStemSlot = nil }
+            var stems = waveform.stems ?? Dictionary(uniqueKeysWithValues: Stem.allCases.map { ($0.rawValue, Data(count: count)) })
+            let from = lastStemSlot.flatMap { ($0 ..< slot).contains($0) && slot - $0 <= 6 ? $0 + 1 : nil } ?? slot
+            for stem in Stem.allCases where stem.rawValue < levels.count {
+                let byte = SongWaveform.byte(rms: levels[stem.rawValue])
+                if stems[stem.rawValue]?.count != count { stems[stem.rawValue] = Data(count: count) }
+                stems[stem.rawValue]!.withUnsafeMutableBytes { raw in
+                    for i in from ... slot { raw[i] = byte }
+                }
+            }
+            waveform.stems = stems
+            lastStemSlot = slot
+            changed = true
+        }
+    }
+
     /// What was drawn so far, and whether anything changed since the last call.
     func take() -> (waveform: SongWaveform, changed: Bool) {
         lock.withLock {

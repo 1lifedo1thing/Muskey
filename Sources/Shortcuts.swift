@@ -54,7 +54,7 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("S")], name: card ? "wide style" : "card style"),
             Row(caps: [.key("M")], name: "mini player"),
             Row(caps: [.key("esc"), .key("⌫")], name: "hide mini player", condition: "over the mini player"),
-            Row(caps: [.key("⌘"), .key("⌥"), .key("C")], name: "move to bottom centre"),
+            Row(caps: [.key("⌘"), .key("⌥"), .key("C")], name: "center window"),
             Row(caps: [.key("⌘"), .key(",")], name: "settings"),
             Row(caps: [.key("?")], name: "shortcuts"),
             Row(caps: [.key("esc")], name: "close"),
@@ -89,7 +89,7 @@ struct ShortcutsSheet: View {
         ])
         let waveform = KeyGroup(name: "Waveform and loop", symbol: "waveform", hue: 74, rows: [
             Row(caps: [.key("W")], name: "waveform"),
-            Row(caps: [.key("⌥"), .key("W")], name: "instrument lanes", condition: "once the whole song is separated"),
+            Row(caps: [.key("⌥"), .key("W")], name: "one waveform per instrument", condition: "once the instruments are separated"),
             Row(caps: [.key("⌘"), .key("+"), .key("−")], name: "zoom"),
             Row(caps: [.key("⌘"), .key("0")], name: "whole song", condition: "after zoom"),
             Row(caps: [.key("R")], name: "region loop", condition: "start, end, clear"),

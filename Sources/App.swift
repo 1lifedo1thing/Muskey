@@ -3641,7 +3641,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         item("Waveform", #selector(toggleWaveformFromMenu), key: "w", on: model.waveformShown)
         if keyed, model.waveformShown, model.waveformStyle == .ribbon {
-            item("Instrument Lanes", #selector(lanesFromMenu), key: "w", modifiers: .option, on: model.wave.lanes, enabled: model.wave.waveform?.stems != nil)
+            item("One Waveform per Instrument", #selector(lanesFromMenu), key: "w", modifiers: .option, on: model.wave.lanes, enabled: lanesAvailable)
         }
         if model.seekable || model.loop != nil {
             let title = model.loop == nil ? "Start Region Loop" : model.loop?.end == nil ? "End Region Loop" : "Clear Region Loop"
@@ -3655,7 +3655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         item("Mini Player", #selector(toggleMiniPlayer), key: "m", on: prefs.miniPlayer)
         item("Card Layout", #selector(toggleLayoutFromMenu), key: "s", on: model.card)
-        item("Move to Bottom Centre", #selector(homeFromMenu), key: "c", modifiers: [.command, .option])
+        item("Center Window", #selector(homeFromMenu), key: "c", modifiers: [.command, .option])
         menu.addItem(.separator())
         item("Open File…", #selector(openFile), key: "o", modifiers: .command)
         item("Open URL…", #selector(openLocation), key: "l", modifiers: .command)
@@ -5746,11 +5746,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ⌥W: one lane per stem, or the whole song again. Without the stems of the whole song there are no lanes.
     private func toggleWaveformLanes() {
         guard model.waveformStyle == .ribbon else { return log("waveform: lanes only in the ribbon style") }
-        guard model.wave.waveform?.stems != nil else {
-            log("waveform: no lanes until the stems of the whole song are separated")
+        guard lanesAvailable else {
+            log("waveform: no lanes until the stems are separated")
             return
         }
         model.wave.lanes.toggle()
+    }
+
+    /// One waveform per instrument can show: from the stems of the whole song of Muskey Player, or from what the stems
+    /// of a song from another app play, which fill in while it plays.
+    private var lanesAvailable: Bool {
+        model.wave.waveform?.stems != nil || (liveRecorder != nil && model.stemsEngaged && !cachedStems)
     }
 
     /// Zooms the waveform by `factor`, from the whole song to a close-up of a few seconds. A factor of 0 shows the
@@ -5902,6 +5908,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if model.karaokeCountdown != countdown { model.karaokeCountdown = countdown }
             let levels = Stem.allCases.map { self.pitch.stemLevel($0) }
             if model.stemMeters.levels != levels { model.stemMeters.levels = levels }
+            // A song from another app gets one waveform per instrument from what its stems play, as its waveform is
+            // drawn from what Muskey hears.
+            let delay = pitch.stemsDelay
+            if progress == nil, !cachedStems, delay > 0, let recorder = liveRecorder, recorder.running {
+                recorder.addStems(levels, delay: delay)
+            }
             checkSpins()
         }
         RunLoop.main.add(timer, forMode: .common)
