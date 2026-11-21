@@ -2366,7 +2366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.store(in: &prefChanges)
         model.$track.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.syncMini() } }.store(in: &prefChanges)
         model.$lyricsShown.dropFirst().removeDuplicates().sink { [weak self] _ in DispatchQueue.main.async { self?.syncChords() } }.store(in: &prefChanges)
-        mini.onHide = { [weak self] in self?.prefs.miniPlayer = false }
+        mini.onHide = { [weak self] in self?.hideMiniPlayer() }
         mini.onShowHUD = { [weak self] in self?.pickKey() }
         mini.onSettings = { [weak self] in
             SettingsRoute.shared.pane = .mini
@@ -3333,7 +3333,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var miniKeys: [HotKey] = []
 
-    /// The keys that work over the mini player: Space, N and P, the arrows that seek, and M, which hides it.
+    /// Escape or Delete over the mini player, and Hide Mini Player in its menu.
+    private func hideMiniPlayer() {
+        guard prefs.miniPlayer else { return }
+        prefs.miniPlayer = false
+        log("mini player off")
+    }
+
+    /// The keys that work over the mini player: Space, N and P, the arrows that seek, and M, Escape and Delete, which hide
+    /// it.
     private func updateMiniKeys() {
         miniKeys = []
         guard miniPanel.hovering else { return }
@@ -3342,6 +3350,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             (kVK_ANSI_N, { [weak self] in self?.skip(1) }),
             (kVK_ANSI_P, { [weak self] in self?.skip(-1) }),
             (kVK_ANSI_M, { [weak self] in self?.toggleMiniPlayer() }),
+            (kVK_Escape, { [weak self] in self?.hideMiniPlayer() }),
+            (kVK_Delete, { [weak self] in self?.hideMiniPlayer() }),
         ]
         if model.seekable {
             keys += [(kVK_LeftArrow, { [weak self] in self?.seek(by: -5) }), (kVK_RightArrow, { [weak self] in self?.seek(by: 5) })]
