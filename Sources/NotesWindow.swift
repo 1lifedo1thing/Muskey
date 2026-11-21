@@ -142,7 +142,10 @@ final class NotesModel: ObservableObject {
     /// The time that a paused song is at, which a seek changes.
     @Published var pausedAt = 0.0
     @Published var artwork: NSImage?
+    /// The score as the window shows it, with a bar of rest for each run of bars without notes.
     @Published private(set) var score: Score
+    /// Every bar of the song, for saving and copying the notes.
+    private(set) var fullScore: Score
 
     /// The time in the song now, or nil while the song isn't the one in the window.
     var now: () -> Double? = { nil }
@@ -168,7 +171,9 @@ final class NotesModel: ObservableObject {
         self.duration = duration
         view = .preferred(for: stem)
         phase = .working(.notes, 0)
-        score = Score(notes: [], stem: stem, beats: [], bpm: 120, key: nil, duration: duration)
+        let empty = Score(notes: [], stem: stem, beats: [], bpm: 120, key: nil, duration: duration)
+        score = empty
+        fullScore = empty
     }
 
     // MARK: Progress
@@ -270,14 +275,13 @@ final class NotesModel: ObservableObject {
         rebuild()
     }
 
-    /// The seconds of music in the song, without its silent parts and the parts of a capture that weren't heard.
-    var musicSeconds: Double?
     /// Where a transcription that Stop Here ended stopped, in seconds of the song. The bars after it stay faint.
     var transcribedUntil: Double?
 
-    /// The fewest notes that are worth showing: 4 for each minute of music, so that a few notes scattered over a song
-    /// don't fill pages of empty bars. With fewer, the window says that there are no notes to transcribe.
-    var fewest: Int { max(4, Int(min(musicSeconds ?? duration, transcribedUntil ?? .infinity) / 60 * 4)) }
+    /// The fewest notes that are worth showing. With fewer, the window says that there are no notes to transcribe. After
+    /// Transcribe Anyway, any note shows: runs of bars without notes are one bar of rest each, so a few notes never fill
+    /// pages of empty bars.
+    var fewest: Int { forced ? 1 : 4 }
 
     func finish(_ notes: [TranscribedNote]) {
         self.notes = notes
@@ -288,7 +292,9 @@ final class NotesModel: ObservableObject {
     /// The score of the notes moved by the pitch change, in the key that the song plays in after it.
     private func rebuild() {
         let moved = shift == 0 ? notes : notes.map { TranscribedNote(start: $0.start, end: $0.end, pitch: $0.pitch + shift, program: $0.program, drum: $0.drum) }
-        score = Score(notes: moved, stem: stem, beats: beats, bpm: bpm, key: key?.transposed(by: shift), duration: duration, capo: hasTab ? capo : 0)
+        fullScore = Score(notes: moved, stem: stem, beats: beats, bpm: bpm, key: key?.transposed(by: shift), duration: duration, capo: hasTab ? capo : 0)
+        // Until the notes are done, the faint page under the progress shows every bar.
+        score = notes.isEmpty ? fullScore : fullScore.collapsingRests()
     }
 
     /// The score as it was heard, for the files that Save As writes, moved by the pitch change like the page.
@@ -522,6 +528,7 @@ struct NotesPainter {
             guard first < score.bars.count else { break }
             let bars = first ..< min(score.bars.count, first + layout.barsPerLine)
             let top = layout.top(ofRow: row)
+            rests(&context, bars: bars, top: top + staff.linesTop)
             switch staff.view {
             case .tab: tab(&context, bars: bars, top: top)
             case .sheet: sheet(&context, bars: bars, top: top)
@@ -539,6 +546,24 @@ struct NotesPainter {
 
     private func faint(_ bar: Int) -> Bool { score.bars[bar].start > until }
 
+    /// A bar that stands for a run of bars without notes: the thick bar of a multi-bar rest across the middle of the
+    /// lines, with short ends, and the number of bars over it.
+    private func rests(_ context: inout GraphicsContext, bars: Range<Int>, top: CGFloat) {
+        let middle = top + staff.linesHeight / 2
+        for bar in bars {
+            guard let count = score.rests[bar] else { continue }
+            let inset = min(24, layout.barWidth * 0.18)
+            let left = barX(bar, bars.lowerBound) + inset, right = barX(bar + 1, bars.lowerBound) - inset
+            guard right > left + 8 else { continue }
+            let alpha = faint(bar) ? 0.25 : 1.0
+            context.fill(Path(CGRect(x: left, y: middle - 2.5, width: right - left, height: 5)), with: .color(ink.opacity(0.7 * alpha)))
+            for x in [left, right] {
+                context.fill(Path(CGRect(x: x - 0.75, y: middle - 7, width: 1.5, height: 14)), with: .color(ink.opacity(0.7 * alpha)))
+            }
+            context.draw(text("\(count)", size: 11, weight: .heavy, color: ink.opacity(0.75 * alpha)), at: CGPoint(x: (left + right) / 2, y: middle - 15))
+        }
+    }
+
     private func text(_ string: String, size: CGFloat, weight: Font.Weight = .bold, color: Color) -> Text {
         Text(string).font(.system(size: size, weight: weight, design: .rounded)).foregroundColor(color)
     }
@@ -554,7 +579,7 @@ struct NotesPainter {
         for bar in bars {
             let x = barX(bar, bars.lowerBound)
             line(&context, from: CGPoint(x: x, y: top), to: CGPoint(x: x, y: bottom), color: ink.opacity(0.42))
-            context.draw(text("\(bar + 1)", size: 7.5, color: ink.opacity(0.45)), at: CGPoint(x: x + 2, y: top - 9), anchor: .leading)
+            context.draw(text("\(score.number(of: bar))", size: 7.5, color: ink.opacity(0.45)), at: CGPoint(x: x + 2, y: top - 9), anchor: .leading)
         }
         let end = barX(bars.upperBound, bars.lowerBound)
         line(&context, from: CGPoint(x: end, y: top), to: CGPoint(x: end, y: bottom), color: ink.opacity(0.42))

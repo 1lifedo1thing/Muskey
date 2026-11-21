@@ -3235,12 +3235,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.onClose = { [weak self] in self?.notesWindow.close() }
         notes.onSave = { [weak self, weak notes] format in
             guard let self, let notes else { return }
-            notesWindow.save(format, score: notes.score, title: notes.title)
+            notesWindow.save(format, score: notes.fullScore, title: notes.title)
         }
         notes.onCopyTab = { [weak self, weak notes] in
             guard let notes else { return }
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(notes.score.textTab, forType: .string)
+            NSPasteboard.general.setString(notes.fullScore.textTab, forType: .string)
             self?.log("notes: text tab copied")
         }
         notes.onTurnPage = { [weak self] in self?.notesWindow.turnPage() }
@@ -3351,7 +3351,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let activity = await Task.detached(priority: .userInitiated) { NotesPipeline.activity(cache) }.value
             guard !Task.isCancelled else { return }
             let share = activity.shares[stem] ?? 0
-            notes.musicSeconds = activity.seconds
             log(String(format: "notes: the %@ plays in %.0f%% of the %.0f s of music", stem.name.lowercased(), share * 100, activity.seconds))
             offerOtherStems(notes, activity: activity)
             if share < NotesPipeline.quiet, !notes.forced {
@@ -3379,7 +3378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let found = try await work.value
                 guard !Task.isCancelled else { return }
                 notes.finish(found)
-                if notes.phase == .empty { log("notes: \(found.count) notes are too few for \(Int(activity.seconds)) s of music") }
+                if notes.phase == .empty { log("notes: \(found.count) notes are too few to show") }
                 NotesStore.save(notes.fixture, path: path, stem: stem)
                 // Without notes, the capture stays for another stem until the window closes.
                 if notes.phase == .ready { deleteCapture(path) }
@@ -5488,7 +5487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// to the attacks in the audio.
     private var loopNotes: Score? {
         guard let notes = notesWindow.model, notes.done, notes.now() != nil else { return nil }
-        return notes.score
+        return notes.fullScore
     }
 
     /// Moves an end of the loop to the notes: the start to the nearest note within half a beat, the end to the next note

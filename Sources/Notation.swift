@@ -63,6 +63,53 @@ struct Score: Sendable {
     /// The fret that a capo sits on. Tab frets count from it, as tabs for a capo are written, and a note lower than a
     /// string sounds with the capo on gets another string.
     let capo: Int
+    /// The bars that stand for a run of bars without notes, drawn as one bar of rest, and how many bars each stands for.
+    private(set) var rests: [Int: Int] = [:]
+    /// The number in the song of each bar, when rests stand for several bars. Empty while every bar is its own.
+    private(set) var numbers: [Int] = []
+
+    /// The number in the song of a bar, from 1.
+    func number(of bar: Int) -> Int { numbers.indices.contains(bar) ? numbers[bar] : bar + 1 }
+
+    /// The score as the notes window shows it: each run of two or more bars where no note sounds becomes one bar of rest,
+    /// whose four beats are spread over the whole run. Times map to it as to the score, so the line, the clicks and the
+    /// loops need nothing else, and pages hold only the parts with notes.
+    func collapsingRests() -> Score {
+        var sounding = [Bool](repeating: false, count: bars.count)
+        for note in notes {
+            let first = max(0, note.bar)
+            var bar = first
+            while bar < bars.count, bar == first || bars[bar].start < note.end - 0.01 {
+                sounding[bar] = true
+                bar += 1
+            }
+        }
+        var grid: [Double] = []
+        var rests: [Int: Int] = [:], numbers: [Int] = []
+        var bar = 0
+        while bar < bars.count {
+            var run = 0
+            while bar + run < bars.count, !sounding[bar + run] { run += 1 }
+            if run >= 2 {
+                let start = bars[bar].start, end = bars[bar + run - 1].end
+                rests[numbers.count] = run
+                numbers.append(bar + 1)
+                grid += (0 ..< Self.beatsPerBar).map { start + (end - start) * Double($0) / Double(Self.beatsPerBar) }
+                bar += run
+            } else {
+                numbers.append(bar + 1)
+                grid += beats[bar * Self.beatsPerBar ..< (bar + 1) * Self.beatsPerBar]
+                bar += 1
+            }
+        }
+        guard !rests.isEmpty else { return self }
+        grid.append(beats[bars.count * Self.beatsPerBar])
+        let raw = notes.map { TranscribedNote(start: $0.start, end: $0.end, pitch: $0.pitch, program: $0.program, drum: $0.drum) }
+        var shown = Score(notes: raw, stem: stem, beats: grid, bpm: bpm, key: key, duration: 0, capo: capo)
+        shown.rests = rests
+        shown.numbers = numbers
+        return shown
+    }
 
     static func tuning(for stem: Stem) -> [Int] { stem == .bass ? [28, 33, 38, 43] : [40, 45, 50, 55, 59, 64] }
 
