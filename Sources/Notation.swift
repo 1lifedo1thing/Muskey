@@ -60,13 +60,17 @@ struct Score: Sendable {
     let key: DetectedKey?
     /// The open strings for tab, lowest first, as MIDI notes: standard tuning for guitar and for a four-string bass.
     let tuning: [Int]
+    /// The fret that a capo sits on. Tab frets count from it, as tabs for a capo are written, and a note lower than a
+    /// string sounds with the capo on gets another string.
+    let capo: Int
 
     static func tuning(for stem: Stem) -> [Int] { stem == .bass ? [28, 33, 38, 43] : [40, 45, 50, 55, 59, 64] }
 
-    init(notes raw: [TranscribedNote], stem: Stem, beats: [Double], bpm: Double, key: DetectedKey?, duration: Double) {
+    init(notes raw: [TranscribedNote], stem: Stem, beats: [Double], bpm: Double, key: DetectedKey?, duration: Double, capo: Int = 0) {
         self.stem = stem
         self.key = key
         self.bpm = bpm
+        self.capo = capo
         tuning = Self.tuning(for: stem)
         let grid = Self.grid(beats: beats, bpm: bpm, until: max(duration, raw.map(\.end).max() ?? 0) + 2)
         self.beats = grid
@@ -84,7 +88,7 @@ struct Score: Sendable {
             return Note(pitch: note.pitch, start: note.start, end: note.end, drum: note.drum, program: note.program, bar: bar,
                         beat: start - Double(bar * Self.beatsPerBar), length: max(0.25, end - start))
         }
-        notes = stem == .bass || stem == .guitar ? Self.fret(placed, tuning: tuning) : placed
+        notes = stem == .bass || stem == .guitar ? Self.fret(placed, tuning: tuning.map { $0 + capo }, highest: max(12, 20 - capo)) : placed
     }
 
     /// The beats with the gaps that the tracker left filled at the song's tempo, from the start of the song to its end.
@@ -142,7 +146,7 @@ struct Score: Sendable {
     /// strings that keep them within reach of one hand: each one on its own string, close to the frets played before,
     /// with as small a stretch as the notes allow. Open strings cost nothing. A note that no free string can play gets
     /// no fret, and shows only on the staff.
-    private static func fret(_ notes: [Note], tuning: [Int]) -> [Note] {
+    private static func fret(_ notes: [Note], tuning: [Int], highest: Int = 20) -> [Note] {
         var result: [Note] = []
         var hand = 3.0
         let groups = Dictionary(grouping: notes.indices) { notes[$0].bar * 64 + Int(notes[$0].beat * 4) }
@@ -169,7 +173,7 @@ struct Score: Sendable {
                 let pitch = notes[playable[index]].pitch
                 for string in tuning.indices where !used.contains(string) {
                     let fret = pitch - tuning[string]
-                    guard (0 ... 20).contains(fret) else { continue }
+                    guard (0 ... highest).contains(fret) else { continue }
                     used.insert(string)
                     picks.append((string, fret))
                     search(index + 1, skips: skips)
@@ -433,7 +437,7 @@ extension Score {
     var textTab: String {
         let names = tuning.map { ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"][$0 % 12] }
         let byBar = notesByBar
-        var lines: [String] = []
+        var lines: [String] = capo > 0 ? ["Capo \(capo)", ""] : []
         for first in stride(from: 0, to: bars.count, by: 4) {
             var rows = tuning.indices.reversed().map { string in (names[string] == "E" && string == tuning.count - 1 ? "e" : names[string]).padding(toLength: 2, withPad: " ", startingAt: 0) + "|" }
             for bar in first ..< min(bars.count, first + 4) {

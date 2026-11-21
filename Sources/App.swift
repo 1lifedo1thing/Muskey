@@ -3172,6 +3172,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notesWindow.onClosed = { [weak self] in self?.notesClosed() }
         notesSinks = []
         model.$shift.sink { [weak notes] in notes?.shift = $0 }.store(in: &notesSinks)
+        model.$capo.sink { [weak notes] in notes?.capo = $0 }.store(in: &notesSinks)
+        notes.onCapo = { [weak self] step in
+            guard let self else { return }
+            setCapo(model.capo + step)
+        }
         model.$loop.sink { [weak notes] in notes?.loop = $0 }.store(in: &notesSinks)
     }
 

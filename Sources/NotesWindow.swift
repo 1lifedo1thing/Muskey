@@ -109,6 +109,8 @@ final class NotesModel: ObservableObject {
     @Published var key: DetectedKey? { didSet { if key != oldValue { rebuild() } } }
     /// The pitch change of the song, which the notes follow.
     @Published var shift = 0 { didSet { if shift != oldValue { rebuild() } } }
+    /// The capo for the tab, the same one that the chords over the lyrics use.
+    @Published var capo = 0 { didSet { if capo != oldValue { rebuild() } } }
     @Published var view: NotesView
     @Published var loop: LoopRegion?
     @Published var playing = false
@@ -121,6 +123,7 @@ final class NotesModel: ObservableObject {
     var onLoop: (Double, Double) -> Void = { _, _ in }
     var onPlayPause: () -> Void = {}
     var onTranspose: (Int) -> Void = { _ in }
+    var onCapo: (Int) -> Void = { _ in }
     var onRetry: () -> Void = {}
     var onClose: () -> Void = {}
     var onSave: (NotesFormat) -> Void = { _ in }
@@ -246,7 +249,7 @@ final class NotesModel: ObservableObject {
     /// The score of the notes moved by the pitch change, in the key that the song plays in after it.
     private func rebuild() {
         let moved = shift == 0 ? notes : notes.map { TranscribedNote(start: $0.start, end: $0.end, pitch: $0.pitch + shift, program: $0.program, drum: $0.drum) }
-        score = Score(notes: moved, stem: stem, beats: beats, bpm: bpm, key: key?.transposed(by: shift), duration: duration)
+        score = Score(notes: moved, stem: stem, beats: beats, bpm: bpm, key: key?.transposed(by: shift), duration: duration, capo: hasTab ? capo : 0)
     }
 
     /// The score as it was heard, for the files that Save As writes, moved by the pitch change like the page.
@@ -948,6 +951,7 @@ private struct NotesTopBar: View {
             .frame(minWidth: 90, alignment: .leading)
             .layoutPriority(1)
             Spacer(minLength: 0)
+            if model.view == .tab, model.hasTab, model.done { NotesCapo(model: model, palette: palette) }
             NotesViewSwitch(view: $model.view, palette: palette)
             // A narrow window keeps the pills that it has room for, the transpose first.
             ViewThatFits(in: .horizontal) {
@@ -985,6 +989,42 @@ private struct NotesTopBar: View {
         .padding(.top, 14)
         .padding(.bottom, 10)
         .background(Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture()))
+    }
+}
+
+/// The capo of the tab, with buttons that move it a fret down or up, in a capsule like the pills of the HUD.
+private struct NotesCapo: View {
+    @ObservedObject var model: NotesModel
+    let palette: Palette
+
+    var body: some View {
+        HStack(spacing: 2) {
+            step("minus", by: -1).disabled(model.capo == 0)
+            Text(model.capo == 0 ? "No capo" : "Capo \(model.capo)")
+                .font(.system(size: 11.5, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(model.capo == 0 ? palette.muted : palette.ink)
+                .contentTransition(.numericText(value: Double(model.capo)))
+                .fixedSize()
+            step("plus", by: 1).disabled(model.capo >= 11)
+        }
+        .padding(.horizontal, 3)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(palette.ink.opacity(0.1)))
+        .help("Capo (⌥← ⌥→)")
+        .animation(.snappy(duration: 0.2), value: model.capo)
+    }
+
+    private func step(_ symbol: String, by amount: Int) -> some View {
+        Button { model.onCapo(amount) } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .heavy))
+                .foregroundStyle(palette.ink)
+                .frame(width: 18, height: 18)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
     }
 }
 
@@ -1593,6 +1633,9 @@ private struct NotesFooter: View {
             Spacer(minLength: 0)
             // A narrow window keeps the hints that it has room for.
             ViewThatFits(in: .horizontal) {
+                if model.view == .tab, model.hasTab {
+                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "transpose"), (["⌥", "←", "→"], "capo"), (["esc"], "close")])
+                }
                 hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "transpose"), (["esc"], "close")])
                 hints([(["space"], "play or pause"), (["R"], "region loop"), (["←", "→"], "transpose")])
                 hints([(["R"], "region loop")])
@@ -1765,6 +1808,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             let all = NotesView.allCases
             let index = all.firstIndex(of: model.view) ?? 0
             model.view = all[(index + (flags.contains(.shift) ? all.count - 1 : 1)) % all.count]
+        // With Option, the arrows move the capo of the tab, as they move the chords' capo over the lyrics.
+        case kVK_LeftArrow where flags.contains(.option): if model.hasTab { model.onCapo(-1) }
+        case kVK_RightArrow where flags.contains(.option): if model.hasTab { model.onCapo(1) }
         case kVK_LeftArrow: model.onTranspose(-1)
         case kVK_RightArrow: model.onTranspose(1)
         default: return false
@@ -2041,6 +2087,7 @@ extension NotesModel {
     model.now = { at }
     notesFoldInRenders = TestFlags.value("--notes-fold").flatMap(Double.init)
     if let shift = TestFlags.value("--notes-shift").flatMap(Int.init) { model.shift = shift }
+    if let capo = TestFlags.value("--notes-capo").flatMap(Int.init) { model.capo = capo }
     if let loop = TestFlags.value("--notes-loop")?.split(separator: "-").compactMap({ Double($0) }), loop.count == 2 {
         model.loop = LoopRegion(start: loop[0], end: loop[1], startPress: nil)
     }
