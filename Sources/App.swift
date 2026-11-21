@@ -4162,10 +4162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return nil
             }
-            // ⌘+ and ⌘− zoom the waveform.
+            // ⌘+ and ⌘− zoom the waveform, and ⌘0 shows the whole song again.
             if let self, event.window === self.panel, flags.contains(.command), !flags.contains(.option),
-               [kVK_ANSI_Equal, kVK_ANSI_Minus, kVK_ANSI_KeypadPlus, kVK_ANSI_KeypadMinus].contains(Int(event.keyCode)) {
-                self.zoomWaveform([kVK_ANSI_Equal, kVK_ANSI_KeypadPlus].contains(Int(event.keyCode)) ? 1.5 : 1 / 1.5)
+               [kVK_ANSI_Equal, kVK_ANSI_Minus, kVK_ANSI_KeypadPlus, kVK_ANSI_KeypadMinus, kVK_ANSI_0, kVK_ANSI_Keypad0].contains(Int(event.keyCode)) {
+                let code = Int(event.keyCode)
+                self.zoomWaveform([kVK_ANSI_0, kVK_ANSI_Keypad0].contains(code) ? 0 : [kVK_ANSI_Equal, kVK_ANSI_KeypadPlus].contains(code) ? 1.5 : 1 / 1.5)
                 return nil
             }
             // ⌘K opens karaoke, or closes it.
@@ -5453,7 +5454,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.wave.lanes.toggle()
     }
 
-    /// Zooms the waveform by `factor`, from the whole song to a close-up of a few seconds.
+    /// Zooms the waveform by `factor`, from the whole song to a close-up of a few seconds. A factor of 0 shows the
+    /// whole song.
     private func zoomWaveform(_ factor: Double) {
         guard model.waveformShown, model.waveformStyle == .ribbon, model.wave.waveform != nil else { return }
         let before = model.wave.zoom
@@ -6136,9 +6138,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if keyed, let karaoke = try? HotKey(keyCode: kVK_ANSI_K, modifiers: cmdKey, action: { [weak self] in self?.toggleKaraoke() }) {
             hoverKeys.append(karaoke)
         }
-        // ⌘+ and ⌘− zoom the waveform in and out, with or without Shift for the +.
+        // ⌘+ and ⌘− zoom the waveform in and out, with or without Shift for the +, and ⌘0 shows the whole song.
         if keyed {
-            for (code, modifiers, factor) in [(kVK_ANSI_Equal, cmdKey, 1.5), (kVK_ANSI_Equal, cmdKey | shiftKey, 1.5), (kVK_ANSI_Minus, cmdKey, 1 / 1.5)] {
+            for (code, modifiers, factor) in [(kVK_ANSI_Equal, cmdKey, 1.5), (kVK_ANSI_Equal, cmdKey | shiftKey, 1.5), (kVK_ANSI_Minus, cmdKey, 1 / 1.5), (kVK_ANSI_0, cmdKey, 0)] {
                 if let zoom = try? HotKey(keyCode: code, modifiers: modifiers, action: { [weak self] in self?.zoomWaveform(factor) }) { hoverKeys.append(zoom) }
             }
         }
@@ -6669,7 +6671,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-notes-picker", "-notes-download", "-notes-outside"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-notes-picker", "-notes-download", "-notes-outside"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -6779,7 +6781,7 @@ extension EnvironmentValues {
             }
             model.waveformShown = variant != "-waveform-off"
             model.waveformStyle = variant == "-waveform-strip" ? .strip : .ribbon
-            model.wave.zoom = variant == "-waveform-zoom" || variant.hasSuffix("-zoom") && variant.hasPrefix("-lanes") ? 10 : 1
+            model.wave.zoom = variant == "-waveform-zoom" || variant == "-waveform-hover-zoom" || variant.hasSuffix("-zoom") && variant.hasPrefix("-lanes") ? 10 : 1
             model.wave.lanes = variant == "-waveform-lanes" || variant.hasPrefix("-lanes")
             model.wave.laneStems = switch variant {
             case "-lanes-one": [.guitar]

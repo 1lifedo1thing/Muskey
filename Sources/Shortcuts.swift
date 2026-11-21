@@ -89,6 +89,7 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("W")], name: "waveform"),
             Row(caps: [.key("⌥"), .key("W")], name: "instrument lanes", condition: "once the whole song is separated"),
             Row(caps: [.key("⌘"), .key("+"), .key("−")], name: "zoom"),
+            Row(caps: [.key("⌘"), .key("0")], name: "whole song", condition: "after zoom"),
             Row(caps: [.key("R")], name: "region loop", condition: "start, end, clear"),
             Row(caps: [.key("⌥"), .key("R")], name: "region loop end without snapping"),
             Row(caps: [.key("←"), .key("→")], name: "nudge region loop end", condition: "over its tab"),

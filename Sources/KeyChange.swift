@@ -765,6 +765,8 @@ struct KeyHints: View {
     var lanes = false
     /// The pointer is over the tab of an end of the region loop, and the arrows nudge it.
     var loopEnd: LoopEnd?
+    /// The waveform shows a close-up, which ⌘0 takes back to the whole song.
+    var zoomed = false
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -784,7 +786,8 @@ struct KeyHints: View {
              Hint(keys: ["R"], name: "region loop"), Hint(keys: ["⌘", "+", "−"], name: "zoom")]
         case _ where waveform:
             [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: "lanes")] : [])
-                + [Hint(keys: ["⌘", "+", "−"], name: "zoom"), Hint(keys: ["scroll"], name: "move song")]
+                // In a close-up, ⌘0 joins the zoom keys, which keeps the row within the card.
+                + [Hint(keys: ["⌘", "+", "−"] + (zoomed ? ["0"] : []), name: "zoom"), Hint(keys: ["scroll"], name: "move song")]
         case .band where karaokeKeys, .footer where karaokeKeys:
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["esc"], name: "close")]
@@ -854,7 +857,7 @@ struct WaveformKeysSwap<Content: View>: View {
             content.opacity(on ? 0 : 1)
             if on {
                 KeyHints(style: small ? .footer : .band, waveform: true, lanes: wave.waveform?.stems != nil && Preferences.shared.waveformStyle == .ribbon,
-                         loopEnd: wave.loopEnd, otherMode: "", palette: palette)
+                         loopEnd: wave.loopEnd, zoomed: wave.zoom > 1, otherMode: "", palette: palette)
                     .transition(.opacity)
             }
         }
