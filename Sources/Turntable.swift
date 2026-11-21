@@ -448,7 +448,9 @@ struct MiniRecord: View {
                 if renderingPreview {
                     Record(artwork: artwork, label: Self.label, spindle: false)
                 } else {
-                    SpinningRecord(artwork: artwork, spinning: spinning, side: side, label: Self.label, spindle: false)
+                    // Half the frames of the HUD's record: the mini player turns all the time, over every Space, and 30
+                    // frames a second roughly halves the window server's work for it.
+                    SpinningRecord(artwork: artwork, spinning: spinning, side: side, label: Self.label, spindle: false, frameRate: 30)
                         .background(Circle().fill(Color(white: 0.09)).shadow(color: .black.opacity(0.45), radius: 9, y: 5))
                 }
                 Sheen()
@@ -615,6 +617,9 @@ private struct SpinningRecord: NSViewRepresentable {
     /// Seconds for one turn: 33⅓ turns a minute on the deck, and a calmer turn in karaoke.
     var period = 1.8
     var spindle = true
+    /// The most frames a second for the turn at 33⅓ rpm. A faster speed gets more, so each frame turns the record by
+    /// about the same angle.
+    var frameRate: Float = 60
     /// Settings > HUD > Rotation speed, which speeds the turn up or slows it down from `period`.
     @ObservedObject private var prefs = Preferences.shared
 
@@ -630,7 +635,7 @@ private struct SpinningRecord: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context _: Context) -> SpinView { SpinView(period: period, label: label) }
+    func makeNSView(context _: Context) -> SpinView { SpinView(period: period, label: label, frameRate: frameRate) }
 
     func updateNSView(_ view: SpinView, context: Context) {
         if !context.coordinator.drawn || context.coordinator.artwork !== artwork || side > context.coordinator.drawnSide + 0.5 {
@@ -697,9 +702,11 @@ private struct SpinningRecord: NSViewRepresentable {
             if shownGlyph != nil { drawBlur() }
         }
         private let label: CGFloat
+        private let frameRate: Float
 
-        init(period: Double, label: CGFloat) {
+        init(period: Double, label: CGFloat, frameRate: Float) {
             self.label = label
+            self.frameRate = frameRate
             super.init(frame: .zero)
             layer = CALayer()
             wantsLayer = true
@@ -731,9 +738,9 @@ private struct SpinningRecord: NSViewRepresentable {
             turn.duration = period
             turn.repeatCount = .infinity
             turn.isRemovedOnCompletion = false
-            // At most 60 frames a second, as on most Mac displays, since the window server composites the turning
-            // record on every frame.
-            turn.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+            // A few frames a second less is a lot less work, since the window server composites the turning record on
+            // every frame.
+            turn.preferredFrameRateRange = frames(at: 1)
             for layer in turning { layer.add(turn, forKey: "turn") }
             pause()
         }
@@ -848,9 +855,29 @@ private struct SpinningRecord: NSViewRepresentable {
         /// its angle.
         var rate = 1.0 {
             didSet {
-                guard rate != oldValue, spinning else { return }
+                guard rate != oldValue else { return }
+                retime()
+                guard spinning else { return }
                 pause()
                 resume()
+            }
+        }
+
+        /// The frames a second for the turn at `rate`, so that each frame turns the record by the same angle at every
+        /// speed, from 24 to the 60 of most Mac displays.
+        private func frames(at rate: Double) -> CAFrameRateRange {
+            let preferred = min(60, max(24, (frameRate * Float(rate)).rounded()))
+            return CAFrameRateRange(minimum: min(24, preferred), maximum: preferred, preferred: preferred)
+        }
+
+        /// Gives the turn the frames of the new speed. The copy keeps the time its original started at, so the record
+        /// stays at its angle.
+        private func retime() {
+            guard rate > 0 else { return }
+            for layer in turning {
+                guard let turn = layer.animation(forKey: "turn")?.copy() as? CABasicAnimation else { continue }
+                turn.preferredFrameRateRange = frames(at: rate)
+                layer.add(turn, forKey: "turn")
             }
         }
 

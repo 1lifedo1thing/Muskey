@@ -1319,7 +1319,9 @@ private struct NotesPlayhead: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        TimelineView(.animation(paused: !model.playing)) { timeline in
+        // Sheet and Piano roll draw the line at most 60 times a second: their pages cost the window server the most for
+        // each frame, and the line at 120 looked hardly smoother there. Tab keeps every frame of the display.
+        TimelineView(.animation(minimumInterval: model.view == .tab ? nil : 1.0 / 60, paused: !model.playing)) { timeline in
             // The frame's date goes into the drawing, so that the canvas draws again on every frame: with nothing in it
             // that changed, the canvas only drew when another view made it.
             let frame = timeline.date
