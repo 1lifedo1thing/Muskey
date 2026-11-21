@@ -450,7 +450,7 @@ struct MiniRecord: View {
                 } else {
                     // Half the frames of the HUD's record: the mini player turns all the time, over every Space, and 30
                     // frames a second roughly halves the window server's work for it.
-                    SpinningRecord(artwork: artwork, spinning: spinning, side: side, label: Self.label, spindle: false, frameRate: 30)
+                    SpinningRecord(artwork: artwork, spinning: spinning, side: side, label: Self.label, spindle: false, step: 3)
                         .background(Circle().fill(Color(white: 0.09)).shadow(color: .black.opacity(0.45), radius: 9, y: 5))
                 }
                 Sheen()
@@ -617,9 +617,9 @@ private struct SpinningRecord: NSViewRepresentable {
     /// Seconds for one turn: 33⅓ turns a minute on the deck, and a calmer turn in karaoke.
     var period = 1.8
     var spindle = true
-    /// The most frames a second for the turn at 33⅓ rpm. A faster speed gets more, so each frame turns the record by
-    /// about the same angle.
-    var frameRate: Float = 60
+    /// The most points that the edge of the record moves in a frame, which sets the frames a second of the turn: a
+    /// smaller or slower record needs fewer frames to turn smoothly.
+    var step: CGFloat = 2
     /// Settings > HUD > Rotation speed, which speeds the turn up or slows it down from `period`.
     @ObservedObject private var prefs = Preferences.shared
 
@@ -635,7 +635,7 @@ private struct SpinningRecord: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context _: Context) -> SpinView { SpinView(period: period, label: label, frameRate: frameRate) }
+    func makeNSView(context _: Context) -> SpinView { SpinView(period: period, label: label, step: step) }
 
     func updateNSView(_ view: SpinView, context: Context) {
         if !context.coordinator.drawn || context.coordinator.artwork !== artwork || side > context.coordinator.drawnSide + 0.5 {
@@ -702,11 +702,15 @@ private struct SpinningRecord: NSViewRepresentable {
             if shownGlyph != nil { drawBlur() }
         }
         private let label: CGFloat
-        private let frameRate: Float
+        private let period: Double
+        private let step: CGFloat
+        /// The width and the display refresh rate that the turn's frames were last worked out for.
+        private var timedFor: (width: CGFloat, refresh: Int) = (0, 0)
 
-        init(period: Double, label: CGFloat, frameRate: Float) {
+        init(period: Double, label: CGFloat, step: CGFloat) {
             self.label = label
-            self.frameRate = frameRate
+            self.period = period
+            self.step = step
             super.init(frame: .zero)
             layer = CALayer()
             wantsLayer = true
@@ -771,6 +775,25 @@ private struct SpinningRecord: NSViewRepresentable {
             tint.position = coverScale.position
             placeGlyph()
             CATransaction.commit()
+            retimeIfNeeded()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: nil)
+            guard let window else { return }
+            NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSWindow.didChangeScreenNotification, object: window)
+            retimeIfNeeded()
+        }
+
+        @objc private func screenChanged() { retimeIfNeeded() }
+
+        private var refresh: Int { window?.screen?.maximumFramesPerSecond ?? NSScreen.main?.maximumFramesPerSecond ?? 60 }
+
+        /// A record that grew, shrank or moved to a display with another refresh rate gets the frames for it.
+        private func retimeIfNeeded() {
+            guard abs(bounds.width - timedFor.width) > 4 || refresh != timedFor.refresh else { return }
+            retime()
         }
 
         /// Shows the glyph over the dimmed and blurred cover, or fades them out with nil.
@@ -863,16 +886,28 @@ private struct SpinningRecord: NSViewRepresentable {
             }
         }
 
-        /// The frames a second for the turn at `rate`, so that each frame turns the record by the same angle at every
-        /// speed, from 24 to the 60 of most Mac displays.
+        /// The frames a second for the turn at `rate`: enough that the edge of the record moves at most `step` points a
+        /// frame, at least 20 and at most 60. The count always divides the display's refresh rate (60, 40, 30, 24 or 20
+        /// on a 120 Hz display), so every frame stays on screen for the same number of refreshes. A count that didn't
+        /// divide it, like 24 on a 60 Hz display, held frames for 2 and 3 refreshes in turn, and the record stuttered.
         private func frames(at rate: Double) -> CAFrameRateRange {
-            let preferred = min(60, max(24, (frameRate * Float(rate)).rounded()))
-            return CAFrameRateRange(minimum: min(24, preferred), maximum: preferred, preferred: preferred)
+            let refresh = Float(max(30, refresh))
+            let edge = Float(.pi * max(bounds.width, 1) * rate / period)
+            let wanted = max(20, edge / Float(step))
+            var fps = refresh / (refresh / 60).rounded(.up)
+            for divisor in 1 ... 12 {
+                let candidate = refresh / Float(divisor)
+                guard candidate <= 60 else { continue }
+                guard candidate >= wanted else { break }
+                fps = candidate
+            }
+            return CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
         }
 
         /// Gives the turn the frames of the new speed. The copy keeps the time its original started at, so the record
         /// stays at its angle.
         private func retime() {
+            timedFor = (bounds.width, refresh)
             guard rate > 0 else { return }
             for layer in turning {
                 guard let turn = layer.animation(forKey: "turn")?.copy() as? CABasicAnimation else { continue }

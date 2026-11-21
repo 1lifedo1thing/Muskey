@@ -6843,6 +6843,16 @@ extension EnvironmentValues {
                             to: URL(fileURLWithPath: dir).appending(path: "mini-background-\(name)-\(scheme == .dark ? "dark" : "light").png"))
         }
     }
+    // Settings > General > Menu bar icon, with the wallpaper behind each tile.
+    for scheme in [ColorScheme.light, .dark] {
+        var icon = MenuBarIcon.always
+        let form = Form {
+            Section("Menu bar icon") { MenuBarIconTiles(icon: Binding(get: { icon }, set: { icon = $0 })) }
+        }
+        .formStyle(.grouped)
+        renderOffscreen(form, size: CGSize(width: 520, height: 200), scheme: scheme,
+                        to: URL(fileURLWithPath: dir).appending(path: "menubar-icon-\(scheme == .dark ? "dark" : "light").png"))
+    }
     // Settings > Mini player > Direction, with the wallpaper behind each tile.
     for scheme in [ColorScheme.light, .dark] {
         var direction = MiniDirection.automatic

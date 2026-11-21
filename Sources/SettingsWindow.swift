@@ -258,15 +258,7 @@ private struct GeneralPane: View {
                 }
             }
             Section("Menu bar icon") {
-                HStack(spacing: 14) {
-                    ChoiceTile(title: "Always", selected: prefs.menuBarIcon == .always, wallpaper: true) { prefs.menuBarIcon = .always } preview: {
-                        MiniMenuBar(idle: true)
-                    }
-                    ChoiceTile(title: "During a pitch change", selected: prefs.menuBarIcon == .pitchChange, wallpaper: true) { prefs.menuBarIcon = .pitchChange } preview: {
-                        MiniMenuBar(idle: false)
-                    }
-                }
-                .padding(.vertical, 4)
+                MenuBarIconTiles(icon: $prefs.menuBarIcon)
             }
             Section("Startup") {
                 Toggle("Launch at login", isOn: $prefs.launchAtLogin)
@@ -301,6 +293,24 @@ private struct MiniPlayerPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Settings > General > Menu bar icon: a picture tile for each choice. It takes a binding so renders can show it
+/// without touching the saved settings.
+struct MenuBarIconTiles: View {
+    @Binding var icon: MenuBarIcon
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ChoiceTile(title: "Always", selected: icon == .always, wallpaper: true) { icon = .always } preview: {
+                MiniMenuBar(idle: true)
+            }
+            ChoiceTile(title: "During a pitch change", selected: icon == .pitchChange, wallpaper: true) { icon = .pitchChange } preview: {
+                MiniMenuBar(idle: false)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -917,7 +927,7 @@ private struct MiniMenuBar: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 24)
-        .background(RoundedRectangle(cornerRadius: 6).fill(scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.75)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(scheme == .dark ? Color(white: 0.11).opacity(0.85) : Color.white.opacity(0.88)))
     }
 }
 
