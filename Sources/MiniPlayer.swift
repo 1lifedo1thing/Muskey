@@ -202,10 +202,9 @@ struct MiniBackdropShape: Equatable {
             [CGPoint(x: line.minX, y: line.minY), CGPoint(x: line.maxX, y: line.minY), CGPoint(x: line.minX, y: line.maxY), CGPoint(x: line.maxX, y: line.maxY)]
         }
         let vertical = side == .above || side == .below
-        // Growing along the side changes the radius while that side is the short one, so this repeats until the
-        // corners fit, which takes a few rounds at most.
-        for _ in 0 ..< 24 {
-            let radius = roundness * min(rect.width, rect.height) / 2
+        // How far the background has to grow away from the record for every corner to sit `padding` inside corners of
+        // this radius.
+        func growth(_ rect: CGRect, radius: CGFloat) -> CGFloat {
             let inner = rect.insetBy(dx: radius, dy: radius)
             let reach = max(radius - padding, 0)
             var grow: CGFloat = 0
@@ -219,6 +218,27 @@ struct MiniBackdropShape: Equatable {
                 }
                 grow = max(grow, beyond - max(reach * reach - across * across, 0).squareRoot())
             }
+            return grow
+        }
+        // Above or below the record, a capsule would round off far past the song's last line, since the song is
+        // wider than tall. There the corners round only as far as the song allows, and the background stays tight.
+        if vertical {
+            var low: CGFloat = 0, high = roundness * min(rect.width, rect.height) / 2
+            if growth(rect, radius: high) > 0.1 {
+                for _ in 0 ..< 20 {
+                    let mid = (low + high) / 2
+                    if growth(rect, radius: mid) > 0.1 { high = mid } else { low = mid }
+                }
+                high = low
+            }
+            self.rect = rect
+            radius = high
+            return
+        }
+        // Growing along the side changes the radius while that side is the short one, so this repeats until the
+        // corners fit, which takes a few rounds at most.
+        for _ in 0 ..< 24 {
+            let grow = growth(rect, radius: roundness * min(rect.width, rect.height) / 2)
             guard grow > 0.1 else { break }
             switch side {
             case .below: rect.size.height += grow
@@ -304,8 +324,9 @@ struct MiniPlayerView: View {
     static let textHeight: CGFloat = 70
     private static let textGap: CGFloat = 6
 
-    /// The place of the song on each side, from the middle of the record.
-    static func textPlace(_ side: MiniTextSide) -> CGRect {
+    /// The place of the song on each side, from the middle of the record. `box` is the record with its rim, which is
+    /// smaller beside the song while the background is nearly round.
+    static func textPlace(_ side: MiniTextSide, box: CGFloat = box) -> CGRect {
         let width = side == .left || side == .right ? sideWidth + margin : stackWidth
         let offset = switch side {
         case .below: CGSize(width: 0, height: box / 2 + textGap + textHeight / 2 - margin + 4)
@@ -319,8 +340,8 @@ struct MiniPlayerView: View {
     /// As far as the song can reach from the middle of the record, which the background stops at: its place, a little
     /// further away from the record for a line of pills under it, and taller beside the record, where the pills wrap
     /// into rows (three lines and three rows of pills).
-    static func textReach(_ side: MiniTextSide) -> CGRect {
-        let place = textPlace(side)
+    static func textReach(_ side: MiniTextSide, box: CGFloat = box) -> CGRect {
+        let place = textPlace(side, box: box)
         switch side {
         case .below: return CGRect(x: place.minX, y: place.minY, width: place.width, height: place.height + 10)
         case .above: return CGRect(x: place.minX, y: place.minY - 10, width: place.width, height: place.height + 10)
@@ -406,7 +427,7 @@ struct MiniPlayerView: View {
                 let center = CGPoint(x: record.midX, y: record.midY)
                 // The panel has room for the song as far as its reach, so the background stops there too and never
                 // meets the edge of the panel. The editor has no such edge.
-                let reach = Self.textReach(side).offsetBy(dx: center.x, dy: center.y)
+                let reach = Self.textReach(side, box: record.width).offsetBy(dx: center.x, dy: center.y)
                 let clamp = { (frame: CGRect) in editing ? frame : frame.intersection(reach) }
                 let text = frames["text"].map { clamp(proxy[$0]) }
                 let lines = frames.filter { $0.key.hasPrefix("line ") }.map { clamp(proxy[$0.value]) }
@@ -427,9 +448,9 @@ struct MiniPlayerView: View {
     private var vinyl: some View {
         Group {
             if let track = model.track, track.title?.isEmpty == false {
-                MiniRecord(track: track, artwork: model.artwork, spinning: model.playing && !editing, side: Self.record, flash: editing ? nil : model.playFlash)
+                MiniRecord(track: track, artwork: model.artwork, spinning: model.playing && !editing, side: recordSide, flash: editing ? nil : model.playFlash)
             } else {
-                EmptyPlatter(side: Self.record)
+                EmptyPlatter(side: recordSide)
             }
         }
         .padding(Self.margin)
@@ -490,8 +511,22 @@ struct MiniPlayerView: View {
     /// Where the text box sits against the record in the middle of the panel.
     private var textOffset: CGSize {
         if editing { return .zero }
-        let place = Self.textPlace(mini.side)
+        let place = Self.textPlace(mini.side, box: recordSide + Self.margin * 2)
         return CGSize(width: place.midX, height: place.midY)
+    }
+
+    /// The smallest that the record gets beside the song, which still leaves its glyphs room.
+    static let smallestRecord: CGFloat = 72
+
+    /// Beside the song, a background that is nearly round turns the record down toward the song's height, so the
+    /// background is a slim pill instead of a tall capsule with empty space above and below the song. Above or below
+    /// the record the song's width sets the background's, so a smaller record wouldn't take that space away.
+    private var recordSide: CGFloat {
+        guard !editing, mini.background.visible, mini.side == .left || mini.side == .right, hasText else { return Self.record }
+        let t = min(max((mini.background.roundness - 0.5) / 0.5, 0), 1)
+        let eased = t * t * (3 - 2 * t)
+        let target = min(Self.record, max(Self.smallestRecord, mini.textSize.height))
+        return (Self.record - (Self.record - target) * eased).rounded()
     }
 
     private var text: some View {

@@ -621,6 +621,9 @@ private struct SpinningRecord: NSViewRepresentable {
     final class Coordinator {
         var artwork: NSImage?
         var drawn = false
+        /// The side that the record was drawn at. A smaller record shows the same image scaled down, and a larger one
+        /// is drawn again so it stays sharp.
+        var drawnSide: CGFloat = 0
         /// The backspins seen so far. A record that appears doesn't turn back for the ones before it.
         var rewinds: Int?
     }
@@ -630,9 +633,10 @@ private struct SpinningRecord: NSViewRepresentable {
     func makeNSView(context _: Context) -> SpinView { SpinView(period: period, label: label) }
 
     func updateNSView(_ view: SpinView, context: Context) {
-        if !context.coordinator.drawn || context.coordinator.artwork !== artwork {
+        if !context.coordinator.drawn || context.coordinator.artwork !== artwork || side > context.coordinator.drawnSide + 0.5 {
             context.coordinator.artwork = artwork
             context.coordinator.drawn = true
+            context.coordinator.drawnSide = side
             let scale = NSScreen.main?.backingScaleFactor ?? 2
             let vinyl = ImageRenderer(content: Record(artwork: artwork, shadow: false, label: label, part: .vinyl).frame(width: side, height: side))
             vinyl.scale = scale
