@@ -554,13 +554,6 @@ struct KeyChip: View {
         let isOriginal: Bool
     }
 
-    /// The look of the selected key in the main row, while one is picked from renders (`--key-style`).
-    enum SelectedStyle: String, CaseIterable {
-        case current, raised, ring, white, tall, underline, glow, caret, outline, spotlight, keycap
-    }
-
-    nonisolated(unsafe) static var selectedStyle = SelectedStyle.current
-
     let front: Face
     /// The same notes in the other mode, which the chip flips to while Option is held.
     let back: Face
@@ -611,10 +604,9 @@ struct KeyChip: View {
 
     private func side(_ face: Face) -> some View {
         let text = textColor(face)
+        // The related keys are filled too, so the selected key in the main row also gets a ring and a little glow.
         let marked = face.selected && size == .regular && slice == nil
-        let style = marked ? Self.selectedStyle : .current
-        let dimmed = Self.selectedStyle == .spotlight && !face.selected && !face.partner && size == .regular && slice == nil
-        return KeyName(key: face.key, size: size.font + (style == .keycap ? 2 : 0), weight: face.selected ? .bold : .semibold, color: text)
+        return KeyName(key: face.key, size: size.font, weight: face.selected ? .bold : .semibold, color: text)
             .foregroundStyle(text)
             // The second row stays quieter than the main one until a key in it is picked.
             .opacity(small && !face.selected && !face.partner && !hovering ? 0.78 : 1)
@@ -628,43 +620,26 @@ struct KeyChip: View {
                         .padding(.bottom, small ? 1 : 4)
                 }
             }
-            .background { if slice == nil { chipBackground(face, style: style) } }
+            .background { if slice == nil { chipBackground(face, glow: marked) } }
             .overlay {
                 if face.partner, slice == nil {
                     RoundedRectangle(cornerRadius: size.corner)
                         .strokeBorder(StripColors.solid(colors.selected, colorScheme).fill.opacity(0.75), lineWidth: 1.5)
                 }
             }
-            .overlay { if marked { decoration(style) } }
-            .scaleEffect(style == .raised ? 1.12 : 1)
-            .opacity(dimmed ? 0.4 : 1)
+            .overlay {
+                if marked {
+                    RoundedRectangle(cornerRadius: size.corner + 3).strokeBorder(palette.ink.opacity(0.9), lineWidth: 2).padding(-4)
+                }
+            }
     }
 
-    @ViewBuilder private func chipBackground(_ face: Face, style: SelectedStyle) -> some View {
+    @ViewBuilder private func chipBackground(_ face: Face, glow: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: size.corner)
-        let honey = StripColors.solid(colors.selected, colorScheme).fill
-        switch style {
-        case .raised: shape.fill(honey).shadow(color: .black.opacity(0.45), radius: 4, y: 2)
-        case .white: shape.fill(palette.ink).shadow(color: .black.opacity(0.3), radius: 3, y: 1.5)
-        case .tall: shape.fill(honey).padding(.vertical, -5)
-        case .glow: shape.fill(honey).shadow(color: honey.opacity(0.95), radius: 6).shadow(color: honey.opacity(0.6), radius: 12)
-        case .outline: shape.strokeBorder(honey, lineWidth: 2.5)
-        case .keycap:
-            shape
-                .fill(LinearGradient(colors: [honey.mix(with: .white, by: 0.3), honey, honey.mix(with: .black, by: 0.15)], startPoint: .top, endPoint: .bottom))
-                .overlay(shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.6), .clear], startPoint: .top, endPoint: .center), lineWidth: 1))
-                .shadow(color: .black.opacity(0.4), radius: 2, y: 2)
-        default: shape.fill(background(face))
-        }
-    }
-
-    @ViewBuilder private func decoration(_ style: SelectedStyle) -> some View {
-        let honey = StripColors.solid(colors.selected, colorScheme).fill
-        switch style {
-        case .ring: RoundedRectangle(cornerRadius: size.corner + 3).strokeBorder(palette.ink.opacity(0.9), lineWidth: 2).padding(-4)
-        case .underline: Capsule().fill(Color.black.opacity(0.7)).frame(width: 16, height: 3).frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 4)
-        case .caret: KeyCaret().fill(honey).frame(width: 10, height: 6).frame(maxHeight: .infinity, alignment: .top).offset(y: -9)
-        default: EmptyView()
+        if glow {
+            shape.fill(background(face)).shadow(color: StripColors.solid(colors.selected, colorScheme).fill.opacity(0.7), radius: 6)
+        } else {
+            shape.fill(background(face))
         }
     }
 
@@ -687,11 +662,7 @@ struct KeyChip: View {
     }
 
     private func textColor(_ face: Face) -> Color {
-        if face.selected {
-            if size == .regular, slice == nil, Self.selectedStyle == .white { return colorScheme == .dark ? Color(white: 0.08) : .white }
-            if size == .regular, slice == nil, Self.selectedStyle == .outline { return StripColors.text(colors.selected, colorScheme) }
-            return StripColors.solid(colors.selected, colorScheme).text
-        }
+        if face.selected { return StripColors.solid(colors.selected, colorScheme).text }
         if face.partner { return StripColors.text(colors.selected, colorScheme) }
         if let hue { return StripColors.text(hue, colorScheme) }
         return face.isOriginal ? palette.ink : palette.muted
@@ -705,18 +676,6 @@ struct KeyChip: View {
             return AnyShapeStyle(hovering ? tint.mix(with: palette.ink, by: 0.12) : tint)
         }
         return AnyShapeStyle(palette.ink.opacity(hovering ? 0.1 : 0))
-    }
-}
-
-/// A small triangle that points down at the selected key, for the caret style.
-struct KeyCaret: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-        path.closeSubpath()
-        return path
     }
 }
 

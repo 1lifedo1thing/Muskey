@@ -6574,10 +6574,9 @@ extension EnvironmentValues {
     // `--render-only TEXT` renders only the states whose file name holds TEXT, and `--render-waveform FILE` draws the
     // waveform from a file of the waveform cache instead of the made-up one, for comparing a few variants on real songs.
     let only = TestFlags.value("--render-only")
-    if let style = TestFlags.value("--key-style").flatMap(KeyChip.SelectedStyle.init) { KeyChip.selectedStyle = style }
     let realWaveform = TestFlags.value("--render-waveform").flatMap { FileManager.default.contents(atPath: $0) }
         .flatMap { try? JSONDecoder().decode(SongWaveform.self, from: $0) }
-    if only == nil { renderMiniPreviews(to: dir) }
+    if only == nil || only?.hasPrefix("mini") == true { renderMiniPreviews(to: dir) }
     let csm = EKResult(pitchClass: 1, minor: 1, strength: 0.8)
     let a = EKResult(pitchClass: 9, minor: 0, strength: 0.8)
     // Name, phase, key, progress, shift, picking, relative, Lock Key.

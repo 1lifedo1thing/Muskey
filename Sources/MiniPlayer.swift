@@ -287,14 +287,17 @@ struct MiniPlayerView: View {
             }
             if editing {
                 slot(.line, filled: !layout.line.isEmpty) {
-                    HStack(spacing: 4) { ForEach(layout.line) { chip($0, removable: true) } }
+                    HStack(spacing: 4) { ForEach(layout.line) { chip($0, removable: true, small: true) } }
                 }
                 .padding(.top, 4)
             } else {
                 let chips = layout.line.compactMap { element in value(element).map { (element, $0) } }
                 if !chips.isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(chips, id: \.0) { element, value in MiniChip(text: value, hue: element.hue) }
+                    // Beside the record the pills stack, so the line never reaches further from the record than the song.
+                    let beside = mini.side == .left || mini.side == .right
+                    let stack = beside ? AnyLayout(VStackLayout(alignment: alignment, spacing: 3)) : AnyLayout(HStackLayout(spacing: 4))
+                    stack {
+                        ForEach(chips, id: \.0) { element, value in MiniChip(text: value, hue: element.hue, small: true) }
                     }
                     .padding(.top, 4)
                 }
@@ -342,8 +345,8 @@ struct MiniPlayerView: View {
 
     // MARK: Editing
 
-    private func chip(_ element: MiniElement, removable: Bool) -> some View {
-        MiniChip(text: element.sample, hue: element.hue)
+    private func chip(_ element: MiniElement, removable: Bool, small: Bool = false) -> some View {
+        MiniChip(text: element.sample, hue: element.hue, small: small)
             .draggable(element.rawValue)
             .onTapGesture { if removable { onRemove(element) } }
             .help("Drag to another place, or click to remove")
@@ -371,15 +374,17 @@ struct MiniPlayerView: View {
 struct MiniChip: View {
     let text: String
     var hue: StripColors.Hue?
+    /// The pills in the line under the song, smaller than the song's text so they don't outweigh it.
+    var small = false
 
     var body: some View {
         let colors = hue.map { StripColors.solid($0, .dark) }
         Text(text)
-            .font(.system(size: 11, weight: .heavy, design: .rounded))
+            .font(.system(size: small ? 9.5 : 11, weight: .heavy, design: .rounded))
             .monospacedDigit()
             .foregroundStyle(hue.map { StripColors.text($0, .dark) } ?? Color(red: 0.96, green: 0.95, blue: 0.93))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
+            .padding(.horizontal, small ? 6 : 8)
+            .padding(.vertical, small ? 2 : 3)
             .background(Capsule().fill(colors.map { $0.fill.mix(with: Color(red: 0.09, green: 0.07, blue: 0.08), by: 0.72) } ?? Color(red: 0.09, green: 0.07, blue: 0.08).opacity(0.92)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.35), radius: 3, y: 1)

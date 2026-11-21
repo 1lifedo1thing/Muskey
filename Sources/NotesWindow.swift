@@ -1320,6 +1320,10 @@ private struct NotesPlayhead: View {
                 let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
                 let rect = CGRect(x: spot.x - 1, y: top, width: 2, height: layout.staff.linesHeight + 14)
                 let honey = NotesAccent.color(colorScheme)
+                // The bar that plays gets a faint wash of the accent.
+                let bar = min(max(0, ((spot.x - layout.x0) / layout.barWidth).rounded(.down)), CGFloat(layout.barsPerLine - 1))
+                let barRect = CGRect(x: layout.x0 + bar * layout.barWidth, y: top, width: layout.barWidth, height: rect.height)
+                context.fill(Path(roundedRect: barRect, cornerRadius: 5), with: .color(honey.opacity(dark ? 0.06 : 0.05)))
                 // The glow is a band of the accent that fades out on both sides, cheaper on every frame than a shadow filter.
                 let band = rect.insetBy(dx: -6, dy: 0)
                 context.fill(Path(roundedRect: band, cornerRadius: 6), with: .linearGradient(
