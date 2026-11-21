@@ -11,6 +11,20 @@ struct LoopRegion: Equatable {
     var endPress: Double?
 
     var length: Double? { end.map { $0 - start } }
+
+    /// A click on an arrow beside an end, or ← and → over its tab, moves the end by this many seconds, and by a beat
+    /// with ⌥.
+    static let nudge = 0.02
+
+    func time(of end: LoopEnd) -> Double? { end == .start ? start : self.end }
+
+    /// The ends stay in the song, and at least a quarter of a second apart.
+    func clamped(_ end: LoopEnd, _ time: Double, duration: Double) -> Double {
+        switch end {
+        case .start: min(max(0, time), (self.end ?? duration) - 0.25)
+        case .end: max(min(duration, time), start + 0.25)
+        }
+    }
 }
 
 /// One end of the region loop.

@@ -407,6 +407,8 @@ final class WaveState: ObservableObject {
     @Published var laneStems = Preferences.shared.waveformLanes
     /// The pointer is over the waveform, and its keys take the place of the hints row, or of the song's lines on the card.
     @Published var hovered = false
+    /// The end of the region loop whose tab is under the pointer, which ← and → nudge.
+    @Published var loopEnd: LoopEnd?
 
     static let zoomLimit = 40.0
 
@@ -2605,6 +2607,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overRecordChange = model.$overRecord.removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateHoverKeys() }
         }
+        // And over the tab of an end of the region loop, the arrows nudge that end.
+        loopEndChange = model.wave.$loopEnd.map { $0 != nil }.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateHoverKeys() }
+        }
         // A new song's listen starts with no key, and the keys that change the key come back with its first estimate.
         keyChange = model.$key.map { $0 != nil }.removeDuplicates().sink { [weak self] keyed in
             DispatchQueue.main.async {
@@ -4226,6 +4232,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
         if model.queueShown, !model.lyricsFocus, handleQueueKey(code, shift: shift) { return true }
+        // Over the tab of an end of the region loop, ← and → nudge that end, and by a beat with ⌥.
+        if let end = model.wave.loopEnd, model.loop != nil, !shift, code == kVK_LeftArrow || code == kVK_RightArrow {
+            nudgeLoopEnd(end, by: code == kVK_RightArrow ? 1 : -1, beat: option)
+            return true
+        }
         // With chords over the lyrics, ← and → move the song a semitone, and ⌥← and ⌥→ move the capo, which changes
         // only the chords shown.
         // Over the record, they still seek.
@@ -5255,6 +5266,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyLoop()
     }
 
+    /// ← or → over the tab of an end, which moves it as a click on its arrow does.
+    private func nudgeLoopEnd(_ end: LoopEnd, by direction: Double, beat: Bool) {
+        guard let loop = model.loop, let time = loop.time(of: end) else { return }
+        let step = beat ? model.shownTempo.map { 60 / $0.bpm } ?? 0.5 : LoopRegion.nudge
+        setLoopEnd(end, loop.clamped(end, time + direction * step, duration: nowPlaying.track?.duration ?? .infinity))
+    }
+
     /// Repeats the part from the start to the end of the loop: Muskey Player at the exact end, other players with a
     /// seek once the song reaches the end, which lands within a few hundredths of a second.
     private func applyLoop() {
@@ -5290,6 +5308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard model.loop != nil else { return }
         loopSnap?.cancel()
         withAnimation(.easeOut(duration: 0.15)) { model.loop = nil }
+        model.wave.loopEnd = nil
         loopSong = nil
         applyLoop()
         log("region loop cleared")
@@ -5993,6 +6012,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForRecord = false
     private var hoverKeysForQueue = false
     private var hoverKeysForChords = false
+    private var hoverKeysForLoopEnd = false
     private var hoverKeysForNotes = false
     private var hoverKeysForKey = false
     /// The clipboard when the keys were registered: ⌘V over the HUD is a key only while it holds files or a link.
@@ -6003,6 +6023,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysQuestion: LayoutKey?
     private enum HoverKeysLock { case none, saving, shortcuts }
     private var overRecordChange: AnyCancellable?
+    private var loopEndChange: AnyCancellable?
     private var lockChange: AnyCancellable?
     private var keyChange: AnyCancellable?
     private var heldGlassChange: AnyCancellable?
@@ -6028,7 +6049,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
-                || hoverKeysForRecord != model.overRecord || hoverKeysForQueue != model.queueShown
+                || hoverKeysForRecord != model.overRecord || hoverKeysForQueue != model.queueShown || hoverKeysForLoopEnd != (model.wave.loopEnd != nil)
                 || hoverKeysForChords != !model.chords.isEmpty || hoverKeysForNotes != (model.notesPicking != nil) || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
@@ -6045,6 +6066,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForSave = model.savable
         hoverKeysForRecord = model.overRecord
         hoverKeysForQueue = model.queueShown
+        hoverKeysForLoopEnd = model.wave.loopEnd != nil
         hoverKeysForChords = !model.chords.isEmpty
         hoverKeysForNotes = model.notesPicking != nil
         hoverKeysLock = lock
@@ -6072,6 +6094,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var keys: [(Int, Int)] = [kVK_Escape, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
         if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } + [(kVK_ANSI_W, 0), (kVK_ANSI_W, optionKey)] }
         if model.seekable || model.loop != nil { keys += [(kVK_ANSI_R, 0), (kVK_ANSI_R, optionKey)] }
+        // Over the tab of an end of the region loop, the arrows nudge it.
+        if model.loop != nil, model.wave.loopEnd != nil { keys += [kVK_LeftArrow, kVK_RightArrow].flatMap { [($0, 0), ($0, optionKey)] } }
         // Q shows the queue, which takes the arrows, Return and Delete while it shows, and M the mini player.
         if !model.lyricsFocus { keys += [(kVK_ANSI_Q, 0), (kVK_ANSI_T, 0)] }
         keys.append((kVK_ANSI_M, 0))
@@ -6483,7 +6507,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state = .idle
         let current = session
         panel.fadeOut { [self] in
-            if session == current { panel.orderOut(nil); model.shown = false; model.overRecord = false }
+            if session == current { panel.orderOut(nil); model.shown = false; model.overRecord = false; model.wave.loopEnd = nil }
         }
         autoListenIfNeeded()
     }
@@ -6768,6 +6792,7 @@ extension EnvironmentValues {
             model.wave.hovered = variant.hasPrefix("-waveform-hover")
             // The B end of the region loop under the pointer: its arrows, its time and the thicker line.
             LoopFlags.hoveredInRenders = variant.hasSuffix("-loop-hover") ? .end : nil
+            model.wave.loopEnd = LoopFlags.hoveredInRenders
             // A region loop with the dashed lines of the presses, one still waiting for its end, and one over lyric lines.
             if variant.hasSuffix("loop") || variant.hasPrefix("-loop") || variant.hasSuffix("-loop-hover") || variant.hasPrefix("-lanes-loop") {
                 model.loop = variant.contains("lyrics") ? LoopRegion(start: 16.5, end: 30)

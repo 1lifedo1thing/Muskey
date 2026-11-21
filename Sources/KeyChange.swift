@@ -763,6 +763,8 @@ struct KeyHints: View {
     /// The pointer is over the waveform, and only its keys are listed: ⌥W with the stems of the whole song.
     var waveform = false
     var lanes = false
+    /// The pointer is over the tab of an end of the region loop, and the arrows nudge it.
+    var loopEnd: LoopEnd?
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -777,6 +779,9 @@ struct KeyHints: View {
 
     private var listed: [Hint] {
         switch style {
+        case _ where waveform && loopEnd != nil:
+            [Hint(keys: ["←", "→"], name: loopEnd == .start ? "nudge A" : "nudge B"), Hint(keys: ["⌥", "←", "→"], name: "by a beat"),
+             Hint(keys: ["R"], name: "region loop"), Hint(keys: ["⌘", "+", "−"], name: "zoom")]
         case _ where waveform:
             [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: "lanes")] : [])
                 + [Hint(keys: ["⌘", "+", "−"], name: "zoom"), Hint(keys: ["scroll"], name: "move song")]
@@ -844,12 +849,12 @@ struct WaveformKeysSwap<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        let on = wave.hovered && wave.waveform != nil
+        let on = (wave.hovered || wave.loopEnd != nil) && wave.waveform != nil
         ZStack(alignment: alignment) {
             content.opacity(on ? 0 : 1)
             if on {
                 KeyHints(style: small ? .footer : .band, waveform: true, lanes: wave.waveform?.stems != nil && Preferences.shared.waveformStyle == .ribbon,
-                         otherMode: "", palette: palette)
+                         loopEnd: wave.loopEnd, otherMode: "", palette: palette)
                     .transition(.opacity)
             }
         }

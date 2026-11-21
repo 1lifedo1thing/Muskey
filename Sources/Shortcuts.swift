@@ -91,6 +91,8 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("⌘"), .key("+"), .key("−")], name: "zoom"),
             Row(caps: [.key("R")], name: "region loop", condition: "start, end, clear"),
             Row(caps: [.key("⌥"), .key("R")], name: "region loop end without snapping"),
+            Row(caps: [.key("←"), .key("→")], name: "nudge region loop end", condition: "over its tab"),
+            Row(caps: [.key("⌥"), .key("←"), .key("→")], name: "nudge region loop end by a beat", condition: "over its tab"),
         ])
         let queue = KeyGroup(name: "Queue", symbol: "list.bullet", hue: 40, rows: [
             Row(caps: [.key("Q")], name: "queue"),

@@ -45,6 +45,8 @@ struct WaveformView: View {
     var typing: (Bool) -> Void = { _ in }
     /// The pointer moves over the waveform or leaves it, which shows its keys in place of the hints row.
     var hovered: (Bool) -> Void = { _ in }
+    /// The pointer moves onto the tab of an end of the region loop or off it, which turns ← and → into its nudge keys.
+    var hoveredEnd: (LoopEnd?) -> Void = { _ in }
     let palette: Palette
 
     @Environment(\.recordActions) private var actions
@@ -326,7 +328,7 @@ struct WaveformView: View {
                 let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
                 LoopFlags(loop: loop, from: zoomed ? closeUpStart(seconds, at: context.date) : 0, span: zoomed ? span : duration, width: width,
                           height: mainHeight, now: seconds, duration: duration, beat: bpm.map { 60 / $0 },
-                          color: played, palette: palette, set: setLoop, typing: typing)
+                          color: played, palette: palette, set: setLoop, typing: typing, hoveredEnd: hoveredEnd)
             }
         }
     }
@@ -486,7 +488,8 @@ struct WaveformHost: View {
             WaveformView(waveform: waveform, track: track, style: style, width: width, height: height, ticking: ticking, bpm: bpm,
                          zoom: wave.zoom, lanes: wave.lanes, laneStems: wave.laneStems, toggleLane: { [wave] in wave.toggleLane($0) },
                          muted: muted, loop: loop, setLoop: setLoop, typing: typing,
-                         hovered: { [wave] inside in if wave.hovered != inside { wave.hovered = inside } }, palette: palette)
+                         hovered: { [wave] inside in if wave.hovered != inside { wave.hovered = inside } },
+                         hoveredEnd: { [wave] end in if wave.loopEnd != end { wave.loopEnd = end } }, palette: palette)
         } else {
             // The place stays while the waveform is read, so the key row doesn't move when it arrives.
             Color.clear.frame(width: width, height: height)
@@ -496,8 +499,9 @@ struct WaveformHost: View {
 
 /// The ends of the region loop on the waveform: a line at each end, with an A tab on the left of the start's line and
 /// a B tab on the right of the end's line. The pointer over a tab turns it into ‹ › arrows on both sides of its line,
-/// which nudge the end, and a drag on an arrow moves the end freely. The time of the end shows under its line while
-/// the pointer is over it, after a nudge and during a drag, and a click on the time lets it be typed.
+/// which nudge the end on a click, as ← and → do while the pointer is there, and a drag on an arrow moves the end
+/// freely. The time of the end shows under its line while the pointer is over it, after a nudge and during a drag,
+/// and a click on the time lets it be typed.
 struct LoopFlags: View {
     let loop: LoopRegion
     let from: Double
@@ -513,6 +517,7 @@ struct LoopFlags: View {
     let palette: Palette
     let set: (LoopEnd, Double) -> Void
     let typing: (Bool) -> Void
+    var hoveredEnd: (LoopEnd?) -> Void = { _ in }
 
     @Environment(\.recordActions) private var actions
     @Environment(\.colorScheme) private var scheme
@@ -531,9 +536,6 @@ struct LoopFlags: View {
     @State private var text = ""
     @FocusState private var focused: Bool
 
-    /// A click on an arrow moves the end by 10 ms, and by a beat with ⌥.
-    static let nudge = 0.01
-
     var body: some View {
         ZStack(alignment: .topLeading) {
             end(.start, time: dragged?.end == .start ? dragged!.time : loop.start, press: loop.startPress)
@@ -542,6 +544,8 @@ struct LoopFlags: View {
             }
         }
         .frame(width: width, height: height, alignment: .topLeading)
+        .onChange(of: hovered) { _, end in hoveredEnd(end) }
+        .onDisappear { hoveredEnd(nil) }
     }
 
     private func x(_ time: Double) -> CGFloat { CGFloat((time - from) / max(span, 0.001)) * width }
@@ -637,9 +641,9 @@ struct LoopFlags: View {
             .frame(width: 14, height: 12)
             .background(RoundedRectangle(cornerRadius: 3.5).fill(color))
             .contentShape(Rectangle())
+            // The arrow pointer, as on a button: a click nudges, and the drag that also works is the strip's job.
             .gesture(move(end, time: time, direction: direction))
-            .pointerStyle(.columnResize)
-            .help("Nudge \(end == .start ? "A" : "B") by 10 ms, or a beat with ⌥ (drag to move it)")
+            .help("Move \(end == .start ? "A" : "B") \(Int(LoopRegion.nudge * 1000)) ms \(direction < 0 ? "earlier" : "later"), or a beat with ⌥ (\(direction < 0 ? "←" : "→"))")
     }
 
     /// A drag moves the end with the pointer. A click without a drag nudges it on an arrow (`direction`), or moves the
@@ -659,7 +663,7 @@ struct LoopFlags: View {
                     self.dragged = nil
                     nudged = (end, Date())
                 } else if let direction {
-                    let step = NSEvent.modifierFlags.contains(.option) ? (beat ?? 0.5) : Self.nudge
+                    let step = NSEvent.modifierFlags.contains(.option) ? (beat ?? 0.5) : LoopRegion.nudge
                     set(end, clamp(end, time + direction * step))
                     nudged = (end, Date())
                 } else if actions.seekable {
@@ -668,13 +672,7 @@ struct LoopFlags: View {
             }
     }
 
-    /// The ends stay in the song, and at least a quarter of a second apart.
-    private func clamp(_ end: LoopEnd, _ time: Double) -> Double {
-        switch end {
-        case .start: min(max(0, time), (loop.end ?? duration) - 0.25)
-        case .end: max(min(duration, time), loop.start + 0.25)
-        }
-    }
+    private func clamp(_ end: LoopEnd, _ time: Double) -> Double { loop.clamped(end, time, duration: duration) }
 
     /// The time under the line, which turns into a field for typing a time on a click.
     @ViewBuilder private func timeLabel(_ end: LoopEnd, time: Double) -> some View {
@@ -691,7 +689,10 @@ struct LoopFlags: View {
                         focused = true
                     }
             } else {
+                // The digits roll on a nudge, which moves the line too little to see on the whole song.
                 Text(Self.format(time))
+                    .contentTransition(.numericText(value: time))
+                    .animation(dragged == nil ? .snappy(duration: 0.2) : nil, value: time)
                     .onTapGesture {
                         editing = end
                         typing(true)
