@@ -320,6 +320,8 @@ struct KeyPicker: View {
     var showsRelatives = true
     /// Option is held: every key shows the other mode.
     var flipped = false
+    /// Shift is held: the sharp and flat keys of the main row stand out, and the others dim.
+    var accidentals = false
     let palette: Palette
     var colors = StripColors.current
     /// The shift, and whether the key is in the other mode than the song.
@@ -364,6 +366,7 @@ struct KeyPicker: View {
             flipDelay: Double(offset + 6) * 0.022,
             harmony: offset == selectedOffset ? 0 : Harmony.distance(semitones: offset - shift),
             size: second ? .small : .regular,
+            accidentals: accidentals ? !second : nil,
             colors: colors,
             palette: palette
         ) {
@@ -408,6 +411,7 @@ struct FifthsRing: View {
     let innerRadius: CGFloat
     var showsRelatives = true
     var flipped = false
+    var accidentals = false
     var colors = StripColors.current
     let select: (Int, Bool) -> Void
 
@@ -459,6 +463,7 @@ struct FifthsRing: View {
             harmony: offset == selectedOffset ? 0 : Harmony.distance(semitones: offset - shift),
             size: second ? .ring : .regular,
             slice: slice,
+            accidentals: accidentals ? !second : nil,
             colors: colors,
             palette: palette
         ) {
@@ -564,6 +569,9 @@ struct KeyChip: View {
     var size = Size.regular
     /// On the card's circle of fifths, the chip's background is its slice of the ring rather than a rounded square.
     var slice: RingSlice?
+    /// While Shift is held: true for a chip in the row that letters pick from, whose sharp or flat key then stands out
+    /// while the rest dim, and false for a chip in the other row, which dims whatever it shows.
+    var accidentals: Bool?
     let colors: StripColors
     let palette: Palette
     let action: () -> Void
@@ -582,6 +590,11 @@ struct KeyChip: View {
     /// The colour of a fourth or a fifth, or of a whole step, from the key heard now.
     private var hue: StripColors.Hue? { harmony == 1 ? colors.strong : harmony == 2 ? colors.light : nil }
 
+    /// Nil without Shift, true for a sharp or flat key that a letter with Shift picks, false for every other key.
+    private var standsOut: Bool? {
+        accidentals.map { $0 && (flipped ? back : front).key.accidental }
+    }
+
     var body: some View {
         Button(action: action) {
             side(front)
@@ -594,6 +607,14 @@ struct KeyChip: View {
         }
         .buttonStyle(.plain)
         .focusable(false)
+        .opacity(standsOut == false ? 0.28 : 1)
+        .overlay {
+            if standsOut == true, slice == nil {
+                RoundedRectangle(cornerRadius: size.corner).strokeBorder(palette.ink.opacity(0.75), lineWidth: 1.5)
+            }
+        }
+        .overlay { if standsOut == true, let slice { slice.stroke(palette.ink.opacity(0.75), lineWidth: 1.5) } }
+        .animation(.easeOut(duration: 0.1), value: standsOut)
         .onHover { hovering = $0 }
         .animation(.snappy(duration: 0.18), value: front)
         .animation(.snappy(duration: 0.18), value: harmony)

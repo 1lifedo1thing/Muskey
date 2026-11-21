@@ -455,7 +455,8 @@ struct HUDCard: View {
                 }
                 if !model.lyricsShown, showsKeys, let key = model.key {
                     FifthsRing(original: key, shift: model.shift, relative: model.relative, palette: palette, radius: radius,
-                               innerRadius: Self.innerRadius, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative, select: model.onShift)
+                               innerRadius: Self.innerRadius, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative,
+                               accidentals: model.accidentals, select: model.onShift)
                         // The ring still has the last song's keys while a new song waits for its key.
                         .opacity(model.pending == nil ? 1 : 0.4)
                         .allowsHitTesting(model.pending == nil)

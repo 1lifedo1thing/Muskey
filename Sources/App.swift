@@ -40,6 +40,8 @@ struct DetectedKey: Equatable {
     static func pitchClass(letter: Character, accidental: Bool, minor: Bool) -> Int? {
         (minor ? minorNames : majorNames).firstIndex { $0.first == letter && ($0.count == 2) == accidental }
     }
+    /// A sharp or flat key, which a letter picks with Shift held.
+    var accidental: Bool { (minor ? Self.minorNames : Self.majorNames)[pitchClass].count == 2 }
     var name: String { "\(tonic) \(minor ? "minor" : "major")" }
     /// The name written short, as in the menu bar and the pills under the key: `Cm`, `F♯`, `E♭m`.
     var short: String { tonic + (minor ? "m" : "") }
@@ -242,6 +244,8 @@ final class HUDModel: ObservableObject {
     @Published var relativeKeys = false
     /// Option is held over the keys: they show the other mode.
     @Published var flipped = false
+    /// Shift is held over the keys: the sharp and flat keys that a letter with Shift picks stand out.
+    @Published var accidentals = false
     /// The card shows the keyboard shortcuts in place of the record and its keys.
     @Published var shortcuts = false
     /// The lyrics of the song in place of the key in the wide layout, and in place of the record on the card.
@@ -767,7 +771,7 @@ struct HUDView: View {
             }
             if showsStrip, let key = model.key {
                 KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative,
-                          palette: palette, select: model.onShift)
+                          accidentals: model.accidentals, palette: palette, select: model.onShift)
                     // The row still has the last song's keys while a new song waits for its key.
                     .opacity(model.pending == nil ? 1 : 0.4)
                     .allowsHitTesting(model.pending == nil)
@@ -923,7 +927,7 @@ struct HUDView: View {
 
     private func karaokeKeyRow(_ key: DetectedKey, _ palette: Palette) -> some View {
         KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.flipped != model.relative,
-                  palette: palette, select: model.onShift)
+                  accidentals: model.accidentals, palette: palette, select: model.onShift)
             // A new song still waits for its key.
             .opacity(model.pending == nil ? 1 : 0.4)
             .allowsHitTesting(model.pending == nil)
@@ -6147,13 +6151,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func watchOption(_ shown: Bool) {
         optionWatch?.invalidate()
         optionWatch = nil
-        guard shown else { return model.flipped = false }
+        guard shown else {
+            model.accidentals = false
+            return model.flipped = false
+        }
         optionWatch = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             guard let self else { return }
             let flags = NSEvent.modifierFlags
             // Only with the pointer over the HUD: Option held while typing in another app flipped the keys out of sight.
             let flipped = flags.contains(.option) && !flags.contains(.command) && model.key != nil && model.hovering
             if model.flipped != flipped { model.flipped = flipped }
+            let accidentals = flags.contains(.shift) && !flags.contains(.command) && !flags.contains(.control) && model.key != nil && model.hovering
+            if model.accidentals != accidentals { model.accidentals = accidentals }
         }
     }
 
@@ -6917,7 +6926,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -6937,6 +6946,7 @@ extension EnvironmentValues {
             // A new song that is heard in 4 of its 6 seconds of waiting.
             if variant.hasSuffix("-arriving") { model.songArriving = Date().addingTimeInterval(-2) ... Date().addingTimeInterval(4) }
             model.flipped = variant == "-option" || variant == "-stems-option"
+            model.accidentals = variant == "-shift"
             // A song in another key can be saved, so its renders show the Save button.
             model.savable = shift != 0 && suffix == "-song"
             if variant.hasPrefix("-lyrics") {
