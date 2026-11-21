@@ -1873,13 +1873,22 @@ struct NotesStemPicker: View {
                 if picking.available, picking.missing != nil || picking.downloading != nil || picking.failed {
                     // The download button needs the whole row.
                     button.frame(maxWidth: .infinity)
+                } else if picking.available, partlyHeard {
+                    // Part of a song from another app: the time heard is in the button, and Full Song is beside it. With
+                    // nothing heard yet, only Full Song can work.
+                    if heardEnough {
+                        button
+                    } else {
+                        Text("Nothing heard yet").foregroundStyle(palette.muted).lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    fullButton
                 } else if picking.available {
-                    Text(heardText)
+                    Text(picking.duration.map { "Whole song · \(NotesTime.time($0))" } ?? "Whole song")
                         .foregroundStyle(palette.muted)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    // With nothing heard yet, only Capture Full Song can work.
-                    if heardEnough { button }
+                    button
                 } else {
                     Text(picking.heard == nil ? "Only for songs in Muskey Player" : "Only for songs up to 20 minutes")
                         .foregroundStyle(palette.muted)
@@ -1887,7 +1896,6 @@ struct NotesStemPicker: View {
                 }
             }
             .font(.system(size: 12, weight: .semibold, design: .rounded))
-            if partlyHeard { fullButton }
             KeyHintsRow(hints: picking.available
                 ? [(["1–\(picking.stems.count)"], "stem")] + (heardEnough ? [(["↩"], "transcribe")] : []) + (partlyHeard ? [(["⌥", "↩"], "full song")] : []) + [(["esc"], "close")]
                 : [(["esc"], "close")],
@@ -1905,19 +1913,13 @@ struct NotesStemPicker: View {
     /// Enough of the song was heard to transcribe it now: a file, or a few seconds of a song from another app.
     private var heardEnough: Bool { (picking.heard ?? .infinity) >= 5 }
 
-    private var heardText: String {
-        let length = picking.duration.map { NotesTime.time($0) }
-        guard let heard = picking.heard, partlyHeard else { return length.map { "Whole song · \($0)" } ?? "Whole song" }
-        guard heard >= 5 else { return "Nothing heard yet" }
-        return "Heard \(NotesTime.time(heard))" + (length.map { " of \($0)" } ?? "")
-    }
-
     /// Plays the rest of a song from another app, and transcribes it once it ends.
     private var fullButton: some View {
         let honey = StripColors.text(.honey, colorScheme)
         return Button(action: startFull) {
             HStack(spacing: 6) {
-                Text("Capture Full Song")
+                // Beside Transcribe Vocals · 1:12, the other choice is the full song, which plays to its end first.
+                Text("Full Song")
                 Keycap(text: "⌥", palette: palette, small: true)
                 Keycap(text: "↩", palette: palette, small: true)
             }
@@ -1932,7 +1934,6 @@ struct NotesStemPicker: View {
         }
         .buttonStyle(.plain)
         .focusable(false)
-        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     private func tile(_ stem: Stem, number: Int) -> some View {
@@ -1974,7 +1975,8 @@ struct NotesStemPicker: View {
                 } else if let missing = picking.missing {
                     Text("Download and Transcribe · \(Int((Double(missing) / 1e6).rounded())) MB")
                 } else {
-                    Text("Transcribe \(picking.selected.name)")
+                    // Part of a song from another app names the time that gets transcribed.
+                    Text("Transcribe \(picking.selected.name)" + (partlyHeard ? " · \(NotesTime.time(picking.heard ?? 0))" : ""))
                     // The dark keycap of the light scheme, which reads on honey in both schemes.
                     Keycap(text: "↩", palette: .of(.light), small: true)
                 }

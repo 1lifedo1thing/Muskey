@@ -7063,7 +7063,8 @@ extension EnvironmentValues {
             if variant.hasPrefix("-notes") {
                 // A song from another app: 72 seconds heard, nothing heard yet, and one too long to keep.
                 let outside = variant.hasPrefix("-notes-outside")
-                model.notesPicking = NotesPicking(stems: [.vocals, .bass, .guitar, .piano, .winds, .other], selected: .bass,
+                // The live picker picks Vocals, the longest name for its button.
+                model.notesPicking = NotesPicking(stems: [.vocals, .bass, .guitar, .piano, .winds, .other], selected: outside ? .vocals : .bass,
                                                   available: variant != "-notes-outside-long", duration: variant == "-notes-outside-long" ? 1500 : song?.duration ?? 222,
                                                   heard: outside ? (variant == "-notes-outside" ? 72 : 0) : nil,
                                                   missing: variant == "-notes-download" ? 33_437_377 : nil)
