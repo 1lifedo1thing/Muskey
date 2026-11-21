@@ -396,6 +396,7 @@ final class HUDModel: ObservableObject {
     @Published var notesPicking: NotesPicking?
     var onNotesSelect: (Stem) -> Void = { _ in }
     var onNotesStart: () -> Void = {}
+    var onNotesStartFull: () -> Void = {}
 }
 
 /// The waveform of the song that plays: whole for a file, and drawn while it plays for a song from another player.
@@ -518,7 +519,7 @@ struct HUDView: View {
                 lyricsFocus(palette)
             } else if model.card, let picking = model.notesPicking {
                 // T shows the stems to transcribe in place of the card.
-                NotesStemPicker(picking: picking, palette: palette, select: model.onNotesSelect, start: model.onNotesStart)
+                NotesStemPicker(picking: picking, palette: palette, select: model.onNotesSelect, start: model.onNotesStart, startFull: model.onNotesStartFull)
                     .padding(.horizontal, 22)
                     .padding(.top, 44)
                     .padding(.bottom, 18)
@@ -667,7 +668,7 @@ struct HUDView: View {
                 Group {
                     if let picking = model.notesPicking {
                         // T shows the stems to transcribe in place of the key column.
-                        NotesStemPicker(picking: picking, palette: palette, select: model.onNotesSelect, start: model.onNotesStart)
+                        NotesStemPicker(picking: picking, palette: palette, select: model.onNotesSelect, start: model.onNotesStart, startFull: model.onNotesStartFull)
                             .frame(maxHeight: .infinity)
                     } else if model.lyricsShown, showsStrip {
                         // The stems stay under the lyrics, which get shorter by as much, so the vocals can be muted
@@ -2578,6 +2579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onLoopSet = { [weak self] in self?.setLoopEnd($0, $1) }
         model.onNotesSelect = { [weak self] in self?.selectNotesStem($0) }
         model.onNotesStart = { [weak self] in self?.startNotes() }
+        model.onNotesStartFull = { [weak self] in self?.startNotes(full: true) }
         model.onLoopTyping = { [weak self] in self?.loopTyping($0) }
         nowPlaying.onSongChange = { [weak self] in
             // Another song during karaoke's countdown plays as it comes.
@@ -2880,8 +2882,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let stems = notesStems
         let selected = lastNotesStem.flatMap { stems.contains($0) ? $0 : nil } ?? (stems.contains(.bass) ? .bass : stems[0])
         model.queueShown = false
-        model.notesPicking = NotesPicking(stems: stems, selected: selected, available: playsInFilePlayer, duration: model.track?.duration, missing: notesMissing)
-        log("notes: picker shown\(playsInFilePlayer ? "" : " for a song outside Muskey Player")")
+        // A song from another app is transcribed from what Muskey heard of it, which its waveform's recorder keeps.
+        let live = !playsInFilePlayer
+        let recorder = live ? liveRecorder : nil
+        model.notesPicking = NotesPicking(stems: stems, selected: selected, available: live ? recorder?.captures == true : true,
+                                          duration: model.track?.duration, heard: live ? recorder?.capturedSeconds ?? 0 : nil, missing: notesMissing)
+        log("notes: picker shown" + (live ? String(format: " for a song from another app, %.0f s heard", recorder?.capturedSeconds ?? 0) : ""))
         updateHoverKeys()
         keepHover()
     }
@@ -2909,6 +2915,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func closeNotesPicker() {
         guard model.notesPicking != nil else { return }
         model.notesPicking = nil
+        notesFullAfterDownload = false
         notesDownloads = []
         updateHoverKeys()
         keepHover()
@@ -2919,16 +2926,125 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.notesPicking?.selected = stem
     }
 
-    /// Return or the honey button: downloads the models that are missing, then transcribes the stem.
-    private func startNotes() {
+    /// Return or the honey button: downloads the models that are missing, then transcribes the stem. A song from
+    /// another app is transcribed from what Muskey heard of it, and with `full` it plays to its end first.
+    private func startNotes(full: Bool = false) {
         guard let picking = model.notesPicking, picking.available, picking.downloading == nil else { return }
         lastNotesStem = picking.selected
+        if full { notesFullAfterDownload = true }
         if notesMissing != nil { return downloadNotesModels() }
-        guard let path = filePlayer.current?.path, let track = model.track else { return }
-        closeNotesPicker()
-        openNotes(path: path, track: track, stem: picking.selected)
+        let full = full || notesFullAfterDownload
+        notesFullAfterDownload = false
+        guard let track = model.track else { return }
+        if playsInFilePlayer {
+            guard let path = filePlayer.current?.path else { return }
+            closeNotesPicker()
+            openNotes(path: path, track: track, stem: picking.selected)
+        } else {
+            guard let recorder = liveRecorder, recorder.captures else { return }
+            let whole = recorder.firstGap == nil
+            guard full && !whole || recorder.capturedSeconds >= 5 else { return }
+            closeNotesPicker()
+            openLiveNotes(recorder, track: track, stem: picking.selected, waiting: full && !whole)
+        }
         // The HUD floats above every window, and the notes window takes the screen under it.
         dismiss()
+    }
+
+    /// ⌥↩ or Capture Full Song started the download of the models, and the song plays to its end once they are in.
+    private var notesFullAfterDownload = false
+
+    /// The recorder of the song from another app that plays, which keeps what Muskey heard of it.
+    private var liveRecorder: WaveformRecorder? {
+        guard !playsInFilePlayer, let recorder = waveformRecorder, let track = nowPlaying.track, recorder.song == track.song else { return nil }
+        return recorder
+    }
+
+    /// A song from another app that plays to its end before its notes are transcribed: the window's notes, and the
+    /// recorder that hears it, kept even after the song changes.
+    private var liveCapture: (notes: NotesModel, recorder: WaveformRecorder, song: [String?])?
+    private var liveCaptureTimer: Timer?
+
+    /// The capture of a song from another app is written here for the beats, the stems and the notes, and deleted once
+    /// the notes are done or the window closes, so no copy of the song stays on disk.
+    private static func captureURL(_ key: String) -> URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "Muskey/Captures/\(key).wav")
+    }
+
+    /// Opens the notes window on a song from another app: transcribed now from what was heard, or once it played to
+    /// its end (`waiting`), from the first part that wasn't heard.
+    private func openLiveNotes(_ recorder: WaveformRecorder, track: NowPlaying.Track, stem: Stem, waiting: Bool) {
+        notesTask?.cancel()
+        notesWork?.cancel()
+        let path = Self.captureURL(recorder.key).path
+        let title = track.title?.isEmpty == false ? track.title! : "Song"
+        let notes = NotesModel(path: path, title: title, artist: track.artist, stem: stem, duration: track.duration ?? recorder.duration)
+        notes.key = songKey?.key
+        wireNotes(notes, song: track.song)
+        notesWindow.show(notes)
+        syncNotesPlaying()
+        log(String(format: "notes: %@ of %@, from %.0f s heard of a song from another app%@", stem.name.lowercased(), title, recorder.capturedSeconds,
+                   waiting ? ", after the rest of it plays" : ""))
+        guard waiting else { return transcribeCapture(recorder, notes: notes) }
+        // The song goes back to the first part that wasn't heard, and plays to its end from there.
+        let gap = recorder.firstGap ?? 0
+        let now = track.position(at: Date()) ?? 0
+        let from = gap < now - 1 && model.seekable ? gap : now
+        notes.captureSeconds = max(1, notes.duration - from)
+        notes.begin([.capture, .beats, .stems, .notes])
+        notes.phase = .working(.capture, recorder.capturedShare)
+        liveCapture = (notes, recorder, track.song)
+        if from < now - 1 {
+            seek(to: from, flash: "")
+            log(String(format: "notes: the song moves back to %.1f s, the first part that wasn't heard", from))
+        }
+        if !track.playing { playPause() }
+        liveCaptureTimer?.invalidate()
+        liveCaptureTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.checkLiveCapture() }
+        syncWaveform()
+    }
+
+    /// The song from another app plays on: the bar follows what was heard, and the notes are transcribed once the song
+    /// was heard whole, reached its end or gave way to another song.
+    private func checkLiveCapture() {
+        guard let capture = liveCapture, notesWindow.model === capture.notes else { return stopLiveCapture() }
+        let recorder = capture.recorder
+        let share = recorder.capturedShare
+        if capture.notes.phase.step == .capture { capture.notes.phase = .working(.capture, share) }
+        let track = nowPlaying.track
+        let otherSong = track?.song != capture.song
+        let atEnd = !otherSong && (track?.position(at: Date())).map { $0 >= capture.notes.duration - 0.75 } == true
+        guard recorder.firstGap == nil || otherSong || atEnd else { return }
+        log(String(format: "notes: the song was heard %@, %.0f%% of it", recorder.firstGap == nil ? "whole" : otherSong ? "until another song played" : "to its end", share * 100))
+        stopLiveCapture()
+        transcribeCapture(recorder, notes: capture.notes)
+    }
+
+    private func stopLiveCapture() {
+        liveCaptureTimer?.invalidate()
+        liveCaptureTimer = nil
+        guard liveCapture != nil else { return }
+        liveCapture = nil
+        syncWaveform()
+    }
+
+    /// Writes what was heard to the file of the notes, and transcribes it like a file of Muskey Player.
+    private func transcribeCapture(_ recorder: WaveformRecorder, notes: NotesModel) {
+        do {
+            try recorder.writeCapture(to: URL(fileURLWithPath: notes.path))
+        } catch {
+            notes.phase = .failed
+            log("notes: the capture couldn't be written: \(error.localizedDescription)")
+            return
+        }
+        runNotes(notes)
+    }
+
+    /// Deletes the capture of a song from another app and the stems separated from it.
+    private func deleteCapture(_ path: String) {
+        guard path.hasPrefix(Self.captureURL("").deletingLastPathComponent().path) else { return }
+        if let stems = StemsCache.url(for: path) { try? FileManager.default.removeItem(at: stems) }
+        try? FileManager.default.removeItem(atPath: path)
     }
 
     private func downloadNotesModels() {
@@ -3006,10 +3122,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runNotes(notes)
     }
 
-    /// The window's actions go to the song, and the pitch change, the loop and the play state come back from it.
-    private func wireNotes(_ notes: NotesModel) {
+    /// The window's actions go to the song, and the pitch change, the loop and the play state come back from it. A
+    /// song from another app (`song`) is the window's while that app plays it.
+    private func wireNotes(_ notes: NotesModel, song: [String?]? = nil) {
         notes.now = { [weak self, weak notes] in
-            guard let self, let notes, playsInFilePlayer, filePlayer.current?.path == notes.path else { return nil }
+            guard let self, let notes else { return nil }
+            if let song {
+                guard nowPlaying.track?.song == song else { return nil }
+            } else {
+                guard playsInFilePlayer, filePlayer.current?.path == notes.path else { return nil }
+            }
             return nowPlaying.track?.position(at: Date())
         }
         notes.onSeek = { [weak self] seconds in self?.seek(to: seconds, flash: "") }
@@ -3071,7 +3193,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notesSinks = []
         notesStemsPath = nil
         stemsCache.progress = { _ in }
+        stopLiveCapture()
+        clearCaptures()
         log("notes: closed")
+    }
+
+    /// Deletes the captures of songs from other apps, except the one that the notes window transcribes now.
+    private func clearCaptures() {
+        let folder = Self.captureURL("").deletingLastPathComponent()
+        let kept = notesWindow.model?.path
+        for url in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] where url.path != kept {
+            deleteCapture(url.path)
+        }
     }
 
     /// Finds the beats if they aren't known yet, separates the stems if the cache doesn't have them, and transcribes
@@ -3083,7 +3216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let path = notes.path, stem = notes.stem
         stemsCacheFailed.remove(path)
         let steps = (grids[path] == nil ? [NotesStep.beats] : []) + (StemsCache.open(for: path) == nil ? [.stems] : []) + [.notes]
-        notes.begin(steps)
+        // After a capture, the capture stays in the steps row, ticked.
+        if notes.steps.first == .capture { notes.carryOn(steps) } else { notes.begin(steps) }
         if Self.logKeys {
             // The bar and the time left once a second, for testing that the bar only goes forward.
             Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self, weak notes] timer in
@@ -3132,6 +3266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !Task.isCancelled else { return }
                 notes.finish(found)
                 NotesStore.save(notes.fixture, path: path, stem: stem)
+                deleteCapture(path)
                 NotesTiming.learn(.notes, seconds: Date().timeIntervalSince(started), song: song)
                 log(String(format: "notes: %d notes of the %@ in %.1f s", found.count, stem.name.lowercased(), Date().timeIntervalSince(started)))
             } catch is CancellationError {
@@ -4232,7 +4367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.notesPicking != nil {
             switch code {
             case kVK_Escape, kVK_ANSI_T: closeNotesPicker()
-            case kVK_Return, kVK_ANSI_KeypadEnter: startNotes()
+            case kVK_Return, kVK_ANSI_KeypadEnter: startNotes(full: option)
             case kVK_Space: playPause()
             default:
                 if let digit = Self.digitKeys.firstIndex(of: code), digit > 0, let stems = model.notesPicking?.stems, digit <= stems.count {
@@ -5356,7 +5491,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The waveform of the song that plays: a file's is read whole, and another player's comes from the cache and
     /// from what Muskey hears while the HUD shows, until the whole song was heard.
     private func syncWaveform() {
-        guard model.waveformShown, let track = nowPlaying.track, track.title?.isEmpty == false, let duration = track.duration, duration > 0 else {
+        // A song from another app is heard while the HUD shows even with the waveform hidden, since T transcribes it
+        // from what was heard.
+        guard model.waveformShown || !playsInFilePlayer, let track = nowPlaying.track, track.title?.isEmpty == false, let duration = track.duration, duration > 0 else {
             stopWaveformRecorder()
             if !model.waveformShown || nowPlaying.track?.title?.isEmpty != false {
                 waveformKey = nil
@@ -5397,8 +5534,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let recorder = waveformRecorder else { return }
         if let player = nowPlaying.player { recorder.report(player) }
         // A hidden HUD shows no waveform. A song heard whole is still heard while the HUD shows, for the ends of the
-        // region loop, which snap to the audio around them.
-        let wanted = model.shown
+        // region loop, which snap to the audio around them. A song that plays to its end for its notes is heard with
+        // the HUD hidden too.
+        let wanted = model.shown || liveCapture?.recorder === recorder
         if wanted, !recorder.running {
             do {
                 try recorder.start(SystemAudioTap())
@@ -5416,7 +5554,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func publishRecordedWaveform() {
         guard let recorder = waveformRecorder, recorder.key == waveformKey else { return }
         let (waveform, changed) = recorder.take()
-        if changed { model.wave.waveform = waveform }
+        if changed, model.waveformShown { model.wave.waveform = waveform }
+        // The picker of T shows how much of a song from another app was heard, which grows while it plays.
+        if model.notesPicking?.heard != nil {
+            let heard = recorder.capturedSeconds
+            if abs((model.notesPicking?.heard ?? 0) - heard) >= 1 { model.notesPicking?.heard = heard }
+        }
     }
 
     /// Stops drawing from what Muskey hears and keeps what was drawn on disk. `keep` leaves the recorder for the same
@@ -6098,6 +6241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hoverKeys = keys.compactMap { code in
                 try? HotKey(keyCode: code, modifiers: 0) { [weak self] in self?.handleKey(code, shift: false, option: false) }
             }
+            // ⌥↩ captures the rest of a song from another app before transcribing it.
+            if picking.heard != nil, let full = try? HotKey(keyCode: kVK_Return, modifiers: optionKey, action: { [weak self] in
+                self?.handleKey(kVK_Return, shift: false, option: true)
+            }) { hoverKeys.append(full) }
             return
         }
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
@@ -6694,7 +6841,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -6848,8 +6995,11 @@ extension EnvironmentValues {
             // T's stem picker, with both models installed, with a model to download, and for a song outside Muskey
             // Player.
             if variant.hasPrefix("-notes") {
+                // A song from another app: 72 seconds heard, nothing heard yet, and one too long to keep.
+                let outside = variant.hasPrefix("-notes-outside")
                 model.notesPicking = NotesPicking(stems: [.vocals, .bass, .guitar, .piano, .winds, .other], selected: .bass,
-                                                  available: variant != "-notes-outside", duration: song?.duration ?? 222,
+                                                  available: variant != "-notes-outside-long", duration: variant == "-notes-outside-long" ? 1500 : song?.duration ?? 222,
+                                                  heard: outside ? (variant == "-notes-outside" ? 72 : 0) : nil,
                                                   missing: variant == "-notes-download" ? 33_437_377 : nil)
             }
             if variant == "-waveform-stems" {

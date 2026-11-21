@@ -225,6 +225,15 @@ final class WaveformRecorder: @unchecked Sendable {
     private var ringNext = 0
     private var ringFilled = 0
     private var ringEnd: (seconds: Double, rate: Double, sampleRate: Double)?
+    /// The song as heard since the recorder started, mono and 16-bit at the tap's rate, each moment at its place in the
+    /// song, for transcribing its notes. It stays in memory, and what wasn't heard stays silent.
+    private var capture: [Int16] = []
+    private var captureRate = 0.0
+    /// The slots of the waveform that the capture holds.
+    private var captured: [Bool] = []
+    private var capturedCount = 0
+    /// Longer songs aren't kept, since the capture of an hour would take hundreds of megabytes.
+    static let captureLimit = 20 * 60.0
     let song: [String?]
     /// Where the waveform is kept between plays.
     let key: String
@@ -287,6 +296,80 @@ final class WaveformRecorder: @unchecked Sendable {
         return (TempoDetector.resample(copied, from: sampleRate, to: LoopSnap.rate), start)
     }
 
+    /// The song's length, from its waveform.
+    var duration: Double { lock.withLock { waveform.duration } }
+
+    /// The capture can hold this song.
+    var captures: Bool { duration > 0 && duration <= Self.captureLimit }
+
+    /// The seconds of the song in the capture.
+    var capturedSeconds: Double { lock.withLock { Double(capturedCount) / SongWaveform.rate } }
+
+    /// The share of the song in the capture, from 0 to 1.
+    var capturedShare: Double { lock.withLock { captured.isEmpty ? 0 : Double(capturedCount) / Double(captured.count) } }
+
+    /// The start of the first moment of the song that the capture doesn't hold, or nil when it holds all of it.
+    var firstGap: Double? {
+        lock.withLock {
+            guard !captured.isEmpty else { return 0 }
+            // A few slots missed between two buffers aren't a gap worth playing again.
+            var run = 0
+            for (slot, held) in captured.enumerated() {
+                run = held ? 0 : run + 1
+                if run == 10 { return Double(slot - 9) / SongWaveform.rate }
+            }
+            return nil
+        }
+    }
+
+    /// Writes the capture to a 16-bit mono WAV file.
+    func writeCapture(to url: URL) throws {
+        let (samples, rate) = lock.withLock { (capture, captureRate) }
+        guard !samples.isEmpty, rate > 0,
+              let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate, channels: 1, interleaved: false)
+        else { throw SaveError(message: "Nothing of the song was heard") }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: url)
+        let file = try AVAudioFile(forWriting: url, settings: format.settings, commonFormat: .pcmFormatInt16, interleaved: false)
+        let part = 1 << 16
+        var at = 0
+        while at < samples.count {
+            let count = min(part, samples.count - at)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else { break }
+            buffer.frameLength = AVAudioFrameCount(count)
+            samples.withUnsafeBufferPointer { source in
+                buffer.int16ChannelData![0].update(from: source.baseAddress! + at, count: count)
+            }
+            try file.write(from: buffer)
+            at += count
+        }
+    }
+
+    /// Puts what was heard at its place in the capture. Only a song that plays at its own speed is kept, since a faster
+    /// or slower one would land stretched.
+    private func keepWhole(_ samples: [Float], start: Double, end: Double, rate: Double, sampleRate: Double) {
+        guard abs(rate - 1) < 0.02, waveform.duration > 0, waveform.duration <= Self.captureLimit else { return }
+        if capture.isEmpty || captureRate != sampleRate {
+            captureRate = sampleRate
+            capture = [Int16](repeating: 0, count: Int((waveform.duration * sampleRate).rounded(.up)))
+            captured = [Bool](repeating: false, count: waveform.levels.count)
+            capturedCount = 0
+        }
+        let first = Int((start * sampleRate).rounded())
+        let from = max(0, -first), to = min(samples.count, capture.count - first)
+        guard to > from else { return }
+        for i in from ..< to { capture[first + i] = Int16(max(-1, min(1, samples[i])) * 32767) }
+        // A slot counts once the capture has the moment in its middle, which falls in exactly one buffer.
+        let lowest = max(0, Int((start * SongWaveform.rate - 0.5).rounded(.up)))
+        let highest = min(captured.count - 1, Int((end * SongWaveform.rate - 0.5).rounded(.up)) - 1)
+        if lowest <= highest {
+            for slot in lowest ... highest where !captured[slot] {
+                captured[slot] = true
+                capturedCount += 1
+            }
+        }
+    }
+
     /// What was drawn so far, and whether anything changed since the last call.
     func take() -> (waveform: SongWaveform, changed: Bool) {
         lock.withLock {
@@ -303,6 +386,7 @@ final class WaveformRecorder: @unchecked Sendable {
             let end = position.seconds + (now - position.at) * position.rate
             let start = end - Double(samples.count) / sampleRate * position.rate
             keep(samples, end: end, rate: position.rate, sampleRate: sampleRate)
+            keepWhole(samples, start: start, end: end, rate: position.rate, sampleRate: sampleRate)
             let perSlot = sampleRate / SongWaveform.rate / position.rate
             let slots = waveform.levels.count
             var first = Int((max(0, start) * SongWaveform.rate).rounded(.down))

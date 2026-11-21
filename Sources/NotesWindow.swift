@@ -39,12 +39,15 @@ enum NotesFormat: String, CaseIterable, Identifiable {
 /// One notes window: the song, the stem, how far the transcription got, and the notes placed on the song's beats.
 /// A step of a transcription, in the order that they run.
 enum NotesStep: Int, CaseIterable, Comparable {
+    /// A song from another app plays to its end, so that Muskey hears all of it.
+    case capture
     case beats, stems, notes
 
-    var name: String { ["Beats", "Stems", "Notes"][rawValue] }
+    var name: String { ["Song", "Beats", "Stems", "Notes"][rawValue] }
 
-    /// The part of the work that the step takes until this Mac has timed it: separating every stem takes longest.
-    var share: Double { [0.05, 0.55, 0.4][rawValue] }
+    /// The part of the work that the step takes until this Mac has timed it: separating every stem takes longest, and
+    /// hearing the rest of a song takes longer still.
+    var share: Double { [1, 0.05, 0.55, 0.4][rawValue] }
 
     static func < (a: NotesStep, b: NotesStep) -> Bool { a.rawValue < b.rawValue }
 }
@@ -145,11 +148,20 @@ final class NotesModel: ObservableObject {
     /// The seconds left at the last estimate, and when it was made. The time left counts down between estimates.
     private var left: (seconds: Double, at: Date)?
 
+    /// The seconds of song that the capture step waits to hear, which is its length.
+    var captureSeconds = 0.0
+
+    /// The seconds that a step takes, when this Mac timed it. The capture takes as long as the song has left to play.
+    private func seconds(_ step: NotesStep) -> Double? {
+        step == .capture ? captureSeconds : NotesTiming.rate(step).map { $0 * max(duration, 1) }
+    }
+
+    /// Every step was timed on this Mac.
+    private var timed: Bool { steps.allSatisfy { seconds($0) != nil } }
+
     /// The weight of each step in the bar: the seconds it takes on this Mac when every step was timed, or its share.
     private var weights: [Double] {
-        let rates = steps.map(NotesTiming.rate)
-        if rates.allSatisfy({ $0 != nil }) { return rates.map { $0! * max(duration, 1) } }
-        return steps.map(\.share)
+        timed ? steps.map { seconds($0)! } : steps.map(\.share)
     }
 
     private func rawProgress(at date: Date) -> Double {
@@ -188,7 +200,7 @@ final class NotesModel: ObservableObject {
         var seconds: Double?
         if elapsed >= 3, moved >= 0.03 {
             seconds = elapsed / (moved * weights[index]) * rest
-        } else if steps.allSatisfy({ NotesTiming.rate($0) != nil }) {
+        } else if timed {
             seconds = rest
         }
         guard let seconds else { return }
@@ -208,6 +220,12 @@ final class NotesModel: ObservableObject {
         left = nil
         phase = .working(self.steps[0], 0)
         rebuild()
+    }
+
+    /// The capture is done and the steps after it start, which keeps the capture in the steps row, ticked.
+    func carryOn(_ rest: [NotesStep]) {
+        steps = [.capture] + (rest.isEmpty ? [.notes] : rest)
+        phase = .working(steps[1], 0)
     }
 
     var done: Bool { phase == .ready }
@@ -1093,6 +1111,7 @@ private struct NotesProgressCard: View {
 
     private var title: String {
         switch model.phase.step ?? .notes {
+        case .capture: "Capturing the song"
         case .beats: "Finding the beats"
         case .stems: "Separating stems"
         case .notes: "Transcribing \(model.stem.name.lowercased())"
@@ -1816,9 +1835,11 @@ enum NotesStore {
 struct NotesPicking: Equatable {
     var stems: [Stem]
     var selected: Stem
-    /// The song plays in Muskey Player, which has the file that the stems are separated from.
+    /// The song can be transcribed: a file in Muskey Player, or a song from another app short enough for its capture.
     var available: Bool
     var duration: Double?
+    /// For a song from another app, the seconds of it that Muskey heard, which is what gets transcribed.
+    var heard: Double?
     /// The bytes of the models that are still missing.
     var missing: Int?
     var downloading: Double?
@@ -1830,6 +1851,8 @@ struct NotesStemPicker: View {
     let palette: Palette
     let select: (Stem) -> Void
     let start: () -> Void
+    /// A song from another app plays to its end first, and is transcribed once it ends.
+    var startFull: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
 
     private let columns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
@@ -1851,22 +1874,65 @@ struct NotesStemPicker: View {
                     // The download button needs the whole row.
                     button.frame(maxWidth: .infinity)
                 } else if picking.available {
-                    Text(picking.duration.map { "Whole song · \(NotesTime.time($0))" } ?? "Whole song")
+                    Text(heardText)
                         .foregroundStyle(palette.muted)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    button
+                    // With nothing heard yet, only Capture Full Song can work.
+                    if heardEnough { button }
                 } else {
-                    Text("Only for songs in Muskey Player")
+                    Text(picking.heard == nil ? "Only for songs in Muskey Player" : "Only for songs up to 20 minutes")
                         .foregroundStyle(palette.muted)
                         .frame(maxWidth: .infinity)
                 }
             }
             .font(.system(size: 12, weight: .semibold, design: .rounded))
-            KeyHintsRow(hints: picking.available ? [(["1–\(picking.stems.count)"], "stem"), (["↩"], "transcribe"), (["esc"], "close")] : [(["esc"], "close")],
-                        palette: palette)
+            if partlyHeard { fullButton }
+            KeyHintsRow(hints: picking.available
+                ? [(["1–\(picking.stems.count)"], "stem")] + (heardEnough ? [(["↩"], "transcribe")] : []) + (partlyHeard ? [(["⌥", "↩"], "full song")] : []) + [(["esc"], "close")]
+                : [(["esc"], "close")],
+                palette: palette)
         }
         .frame(width: 330)
+    }
+
+    /// A song from another app that Muskey heard only part of, so it can be heard to its end first.
+    private var partlyHeard: Bool {
+        guard picking.available, picking.missing == nil, picking.downloading == nil, !picking.failed, let heard = picking.heard else { return false }
+        return heard < (picking.duration ?? 0) * 0.97
+    }
+
+    /// Enough of the song was heard to transcribe it now: a file, or a few seconds of a song from another app.
+    private var heardEnough: Bool { (picking.heard ?? .infinity) >= 5 }
+
+    private var heardText: String {
+        let length = picking.duration.map { NotesTime.time($0) }
+        guard let heard = picking.heard, partlyHeard else { return length.map { "Whole song · \($0)" } ?? "Whole song" }
+        guard heard >= 5 else { return "Nothing heard yet" }
+        return "Heard \(NotesTime.time(heard))" + (length.map { " of \($0)" } ?? "")
+    }
+
+    /// Plays the rest of a song from another app, and transcribes it once it ends.
+    private var fullButton: some View {
+        let honey = StripColors.text(.honey, colorScheme)
+        return Button(action: startFull) {
+            HStack(spacing: 6) {
+                Text("Capture Full Song")
+                Keycap(text: "⌥", palette: palette, small: true)
+                Keycap(text: "↩", palette: palette, small: true)
+            }
+            .font(.system(size: 12, weight: .heavy, design: .rounded))
+            .fixedSize()
+            .foregroundStyle(honey)
+            .padding(.leading, 12)
+            .padding(.trailing, 6)
+            .padding(.vertical, 4)
+            .overlay(Capsule().strokeBorder(honey.opacity(0.8), lineWidth: 1.5))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     private func tile(_ stem: Stem, number: Int) -> some View {
@@ -1985,12 +2051,12 @@ extension NotesModel {
     if let spec = TestFlags.value("--notes-progress") {
         let parts = spec.split(separator: ":")
         let step = NotesStep.allCases.first { $0.name.lowercased() == parts.first?.lowercased() } ?? .notes
-        model.begin(NotesStep.allCases)
+        model.begin(NotesStep.allCases.filter { $0 != .capture || step == .capture })
         model.phase = .working(step, parts.count > 1 ? Double(parts[1]) ?? 0 : 0)
         if let left = TestFlags.value("--notes-left").flatMap(Double.init) { model.showLeft(left) }
     }
     if TestFlags.has("--notes-failed") {
-        model.begin(NotesStep.allCases)
+        model.begin([.beats, .stems, .notes])
         model.phase = .failed
     }
     for view in NotesView.allCases {
