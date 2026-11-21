@@ -189,6 +189,40 @@ struct Voice {
     }
 };
 
+// The voices' input as it went in, kept for longer than any voice runs behind it. At the original key a voice changes
+// nothing, so the output plays the song from here instead, at the moment that the voice it replaces would have played.
+// Used on the audio thread only.
+struct DryLine {
+    std::vector<float> data; // interleaved stereo
+    size_t capacity, mask;
+
+    // A power of two, so that a frame's place in the buffer is a mask rather than a division.
+    static size_t roundUp(size_t frames) {
+        size_t capacity = 1;
+        while (capacity < frames) capacity <<= 1;
+        return capacity;
+    }
+
+    explicit DryLine(size_t frames) : data(roundUp(frames) * 2), capacity(roundUp(frames)), mask(roundUp(frames) - 1) {}
+
+    // Frames `at` to `at + frames` of the voices' input, counted as PSShifter::fed counts them.
+    void write(uint64_t at, const float *left, const float *right, size_t frames) {
+        for (size_t i = 0; i < frames; i++) {
+            size_t index = size_t((at + i) & mask) * 2;
+            data[index] = left[i];
+            data[index + 1] = right[i];
+        }
+    }
+
+    void read(uint64_t at, float *left, float *right, size_t frames) const {
+        for (size_t i = 0; i < frames; i++) {
+            size_t index = size_t((at + i) & mask) * 2;
+            left[i] = data[index];
+            right[i] = data[index + 1];
+        }
+    }
+};
+
 // A song from another player, slowed down. The player plays at its own speed, so the tap's audio waits in a backlog,
 // and this reads it back slower with a windowed-sinc resampler, the way a record played slower sounds: lower too, and
 // the voices raise it back by the correction that the app sets. The backlog grows while the song plays; the app moves
@@ -414,6 +448,27 @@ struct PSShifter {
     size_t faded = 0, fadeFrames, maxWarmFrames;
     std::atomic<float> playingSemitones{0};
 
+    // At the original key, Rubber Band would cost a stretcher's CPU for every buffer and change nothing, so once a
+    // voice at +0 plays, the output plays the voices' input from the dry line in its place, and no stretcher runs.
+    // The dry line is read at the input frame that the voice was playing, so it runs exactly as far behind as the
+    // voice did, and the song neither skips nor repeats when it takes over. Another key starts a voice that warms up
+    // while the dry line plays, joins at the dry line's moment and fades in, as it would from the voice at +0.
+    //
+    // Only a voice at +0 hands over to the dry line. A voice at another key goes back to the original key through a
+    // voice at +0, as between any two keys: Rubber Band runs further behind at a bigger shift, the join brings the
+    // timing back to what a voice at +0 has, and the dry line then keeps that timing rather than the bigger lag.
+    DryLine dry;
+    // The output plays the dry line in place of voices[active].
+    bool bypass = false;
+    // The fade under way goes from the voice at +0 to the dry line, rather than to the other voice.
+    bool toDry = false;
+    // The input frame that the next frame played from the dry line was made from, as Voice::playing() is for a voice.
+    uint64_t dryAt = 0;
+    // The voice at +0 and the dry line are the same audio, lined up, so they cross in amplitude over a short window
+    // that only has to hide the small differences that the stretcher leaves. Two keys cross with equal power over
+    // fadeFrames.
+    size_t dryFadeFrames;
+
     // Tap input waits here until the output side reads it. Both sides run in the same IOProc, so the FIFOs are
     // plain; only the counters are read from another thread.
     Fifo input;
@@ -581,7 +636,10 @@ struct PSShifter {
 
     PSShifter(double rate, bool planar, double recordSeconds)
         : planar(planar), voices{Voice(rate), Voice(rate)}, fadeFrames(size_t(rate * 0.2)),
-          maxWarmFrames(size_t(rate * 0.5)), input(size_t(rate) * 2),
+          maxWarmFrames(size_t(rate * 0.5)),
+          // A voice runs behind its input by its output FIFO at most, two seconds, plus the stretcher's own delay.
+          dry(size_t(rate * 2.5) + maxChunk), dryFadeFrames(size_t(rate * 0.02)),
+          input(size_t(rate) * 2),
           // The tap writes and the output reads in the same IOProc, so the input cushion only has to cover the few
           // frames that drift compensation adds or drops per callback. The output cushion covers Rubber Band's hops,
           // with room to spare at every buffer size that the self-test plays.
@@ -1136,16 +1194,25 @@ struct PSShifter {
         std::fill(inRight.begin() + got, inRight.begin() + n, 0.0f);
     }
 
+    // The key that the output plays while no fade runs: the dry line is the original key.
+    float playingKey() const { return bypass ? 0.0f : voices[active].semitones; }
+
+    // The input frame that the next frame played was made from, from the dry line or from the playing voice.
+    int64_t playingFrame() { return bypass ? int64_t(dryAt) : voices[active].playing(); }
+
     // A new target starts the other voice. A target changed while that voice warms up starts it over, and one
-    // changed during the fade waits for the fade to end.
+    // changed during the fade waits for the fade to end. At the original key, a voice at +0 that plays fades to the
+    // dry line.
     void retarget(float target) {
-        Voice &now = voices[active], &next = voices[1 - active];
-        if (phase == Phase::steady && target != now.semitones) {
+        if (phase == Phase::fading) return;
+        Voice &next = voices[1 - active];
+        if (target == 0 && !bypass && voices[active].semitones == 0 && fadeToDry()) return;
+        if (phase == Phase::steady && target != playingKey()) {
             next.restart(target, fed);
             warmed = 0;
             phase = Phase::warming;
         } else if (phase == Phase::warming && target != next.semitones) {
-            if (target == now.semitones) {
+            if (target == playingKey()) {
                 phase = Phase::steady;
             } else {
                 next.restart(target, fed);
@@ -1154,15 +1221,36 @@ struct PSShifter {
         }
     }
 
-    // The incoming voice joins at the moment the playing voice is at, once that moment lies a full analysis
-    // window past its start. Rubber Band runs further behind the bigger the shift, so a voice with a bigger shift
-    // may not have that moment ready with a cushion after it, and one with a smaller shift has more than it needs. The skip is kept to between one and two
-    // cushions of frames left over, and the timing moves by the difference, during the fade.
+    // Starts the fade from the playing voice to the dry line, read at the frame that the voice plays next. A voice that
+    // is still priming, or that ran dry, has no such frame yet, and keeps playing until it has one.
+    bool fadeToDry() {
+        Voice &now = voices[active];
+        if (now.priming) return false;
+        int64_t at = now.playing();
+        if (at < 0 || uint64_t(at) > fed || fed - uint64_t(at) + maxChunk > dry.capacity) return false;
+        dryAt = uint64_t(at);
+        toDry = true;
+        faded = 0;
+        phase = Phase::fading;
+        return true;
+    }
+
+    // Plays `n` frames of the dry line into left and right.
+    void playDry(float *left, float *right, size_t n) {
+        dry.read(dryAt, left, right, n);
+        dryAt += n;
+    }
+
+    // The incoming voice joins at the moment the playing voice or the dry line is at, once that moment lies a full
+    // analysis window past its start. Rubber Band runs further behind the bigger the shift, so a voice with a bigger
+    // shift may not have that moment ready with a cushion after it, and one with a smaller shift has more than it
+    // needs. The skip is kept to between one and two cushions of frames left over, and the timing moves by the
+    // difference, during the fade.
     bool join(size_t n) {
-        Voice &now = voices[active], &next = voices[1 - active];
+        Voice &next = voices[1 - active];
         int64_t fill = int64_t(next.output.fill());
         int64_t need = int64_t(n + cushionFrames);
-        int64_t skip = std::clamp(now.playing() - next.playing(), fill - need - int64_t(cushionFrames), fill - need);
+        int64_t skip = std::clamp(playingFrame() - next.playing(), fill - need - int64_t(cushionFrames), fill - need);
         bool settled = next.playing() + skip >= int64_t(next.start + next.stretcher.getPreferredStartPad());
         if (skip < 0 || !settled) {
             // Never stuck warming: join as close to that moment as the frames allow.
@@ -1176,36 +1264,52 @@ struct PSShifter {
         return true;
     }
 
-    // Runs `n` frames through the voices and leaves `n` frames to play in outLeft/outRight.
+    // Runs `n` frames through the voices, or past them at the original key, and leaves `n` frames to play in
+    // outLeft/outRight.
     void shift(size_t n) {
         const float *ins[2] = {inLeft.data(), inRight.data()};
         float *scratch[2] = {nextLeft.data(), nextRight.data()};
         Voice &now = voices[active], &next = voices[1 - active];
 
-        now.feed(ins, n, scratch);
-        if (phase != Phase::steady) next.feed(ins, n, scratch);
+        // Every frame goes into the dry line, whether a voice plays or not, so that it can take over from any voice.
+        dry.write(fed, inLeft.data(), inRight.data(), n);
+        if (!bypass) now.feed(ins, n, scratch);
+        bool nextRuns = phase == Phase::warming || (phase == Phase::fading && !toDry);
+        if (nextRuns) next.feed(ins, n, scratch);
         fed += n;
         if (phase == Phase::warming) {
             warmed += n;
             join(n);
         }
 
-        if (!now.play(outLeft.data(), outRight.data(), n, cushionFrames))
+        if (bypass) playDry(outLeft.data(), outRight.data(), n);
+        else if (!now.play(outLeft.data(), outRight.data(), n, cushionFrames))
             underruns.fetch_add(1, std::memory_order_relaxed);
         if (phase != Phase::fading) return;
 
-        // Equal power: the two keys share little, so their powers add.
-        next.play(nextLeft.data(), nextRight.data(), n, 0);
+        if (toDry) playDry(nextLeft.data(), nextRight.data(), n);
+        else next.play(nextLeft.data(), nextRight.data(), n, 0);
         constexpr float quarter = float(M_PI / 2);
+        size_t length = toDry ? dryFadeFrames : fadeFrames;
         for (size_t f = 0; f < n; f++) {
-            float x = std::min(1.0f, float(faded + f) / float(fadeFrames));
-            float in = std::sin(x * quarter), out = std::cos(x * quarter);
+            float x = std::min(1.0f, float(faded + f) / float(length));
+            // Equal power for two keys: they share little, so their powers add. The voice at +0 and the dry line are
+            // the same audio lined up, which adds up in amplitude, along a raised cosine that starts and ends smoothly.
+            float in = toDry ? 0.5f - 0.5f * std::cos(x * float(M_PI)) : std::sin(x * quarter);
+            float out = toDry ? 1 - in : std::cos(x * quarter);
             outLeft[f] = outLeft[f] * out + nextLeft[f] * in;
             outRight[f] = outRight[f] * out + nextRight[f] * in;
         }
         faded += n;
-        if (faded >= fadeFrames) {
-            active = 1 - active;
+        if (faded >= length) {
+            if (toDry) {
+                // The voice that faded out stops here. A voice that plays again starts over with Voice::restart.
+                bypass = true;
+            } else {
+                active = 1 - active;
+                bypass = false;
+            }
+            toDry = false;
             phase = Phase::steady;
         }
     }
@@ -1576,7 +1680,9 @@ void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *out
         }
         done += n;
     }
-    float playing = s->phase == PSShifter::Phase::steady ? s->voices[s->active].semitones : NAN;
+    // The fade from the voice at +0 to the dry line keeps the original key throughout.
+    bool sameKey = s->phase == PSShifter::Phase::fading && s->toDry;
+    float playing = s->phase == PSShifter::Phase::steady || sameKey ? s->playingKey() : NAN;
     s->playingSemitones.store(playing, std::memory_order_relaxed);
 }
 
