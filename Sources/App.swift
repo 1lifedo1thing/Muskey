@@ -5137,16 +5137,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.loop?.end = end
             model.loop?.endPress = now
             log(String(format: "region loop ends at %.2f s", end))
-            if snapping, lines == nil { snap(.end, at: end) } else { applyLoop() }
+            if snapping, lines == nil, let score = loopNotes { snapToNotes(.end, at: end, in: score) }
+            else if snapping, lines == nil { snap(.end, at: end) } else { applyLoop() }
         } else {
             var start = now
             if let lines, let line = model.lyricLine, lines.indices.contains(line) { start = lines[line].time }
             model.loop = LoopRegion(start: start, end: nil, startPress: now)
             loopSong = track.song
             log(String(format: "region loop starts at %.2f s", start))
-            if snapping, lines == nil { snap(.start, at: start) }
+            if snapping, lines == nil, let score = loopNotes { snapToNotes(.start, at: start, in: score) }
+            else if snapping, lines == nil { snap(.start, at: start) }
         }
         forgetLoopPresses()
+    }
+
+    /// The notes of the song in the notes window, once they are done: R then snaps the ends of the loop to them instead of
+    /// to the attacks in the audio.
+    private var loopNotes: Score? {
+        guard let notes = notesWindow.model, notes.done, notes.now() != nil else { return nil }
+        return notes.score
+    }
+
+    /// Moves an end of the loop to the notes: the start to the nearest note within half a beat, the end to the next note
+    /// within a beat, or to the nearest sixteenth when no note is that close. Then the loop widens to cover any note that
+    /// it would cut.
+    private func snapToNotes(_ end: LoopEnd, at time: Double, in score: Score) {
+        guard var loop = model.loop else { return }
+        loopSnap?.cancel()
+        let position = Score.position(of: time, in: score.beats)
+        let onsets = score.onsets
+        let sixteenth = (position * 4).rounded() / 4
+        switch end {
+        case .start:
+            let onset = onsets.min { abs($0 - position) < abs($1 - position) }.flatMap { abs($0 - position) <= 0.5 ? $0 : nil } ?? sixteenth
+            let start = score.encompassing(from: onset, to: onset).start
+            loop.start = loop.end.map { min(score.time(at: start), $0 - 0.25) } ?? score.time(at: start)
+        case .end:
+            let from = Score.position(of: loop.start, in: score.beats)
+            let onset = onsets.first { $0 >= position - 0.125 && $0 <= position + 1 && $0 > from } ?? max(sixteenth, from + 0.25)
+            let widened = score.encompassing(from: from, to: onset)
+            loop.start = score.time(at: widened.start)
+            loop.end = max(score.time(at: widened.end), loop.start + 0.25)
+        }
+        log(String(format: "region loop: %@ snapped to the notes from %.2f s to %.2f s", end == .start ? "start" : "end",
+                   time, end == .start ? loop.start : loop.end ?? 0))
+        withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .spring(duration: 0.32, bounce: 0.35)) { model.loop = loop }
+        applyLoop()
     }
 
     /// The timed lines of the lyrics, while they show in place of the key row or as karaoke.

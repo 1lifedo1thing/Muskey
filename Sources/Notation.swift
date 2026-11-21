@@ -212,6 +212,28 @@ struct Score: Sendable {
         return widths[min(widths.count - 1, widths.count * 4 / 5)]
     }
 
+    /// The places in beats where notes start, in order.
+    var onsets: [Double] { Set(notes.map { Double($0.bar * Self.beatsPerBar) + $0.beat }).sorted() }
+
+    /// A region loop from `start` to `end` in beats, widened so that no note crosses either end: a note that sounds at
+    /// the start moves the start back to where the note starts, and a note that sounds at the end moves the end to where
+    /// it stops. A widened end can reach into another note, so it widens again, a few times at most.
+    func encompassing(from start: Double, to end: Double) -> (start: Double, end: Double) {
+        let spans = notes.map { note -> (from: Double, to: Double) in
+            let from = Double(note.bar * Self.beatsPerBar) + note.beat
+            return (from, from + note.length)
+        }
+        var start = start, end = end
+        for _ in 0 ..< 8 {
+            let earlier = spans.filter { $0.from < start - 0.01 && $0.to > start + 0.01 }.map(\.from).min() ?? start
+            let later = spans.filter { $0.from < end - 0.01 && $0.to > end + 0.01 }.map(\.to).max() ?? end
+            guard earlier != start || later != end else { break }
+            start = earlier
+            end = later
+        }
+        return (max(0, start), end)
+    }
+
     /// The notes of each bar, in one pass.
     var notesByBar: [[Note]] {
         var byBar = [[Note]](repeating: [], count: bars.count)

@@ -851,6 +851,26 @@ struct NotesPainter {
 
     // MARK: Overlays
 
+    /// The x of an edge of a region at `position` beats on `line`: on the bar line at the start of a bar, and elsewhere
+    /// between the notes at that position and the sixteenth before them, so that the edge never crosses a fret number or
+    /// a note head. Notes of the piano roll start where their place is, so the edge sits there.
+    private func edgeX(_ position: Double, line: Int) -> CGFloat {
+        let first = line * layout.barsPerLine
+        let inLine = position - Double(first * Score.beatsPerBar)
+        let bar = Int((inLine / Double(Score.beatsPerBar) + 0.0001).rounded(.down))
+        let beat = max(0, inLine - Double(bar * Score.beatsPerBar))
+        let start = barX(first + bar, first)
+        guard beat > 0.001 else { return start }
+        switch staff.view {
+        case .roll:
+            return start + layout.barWidth * CGFloat(beat / Double(Score.beatsPerBar))
+        case .tab, .sheet:
+            let pad: CGFloat = staff.view == .tab ? 10 : 14
+            let sixteenth = (layout.barWidth - pad * 1.6) / CGFloat(Score.beatsPerBar * 4)
+            return noteX(first + bar, first, beat: beat, pad: pad) - max(sixteenth / 2, staff.view == .tab ? 7 : 8)
+        }
+    }
+
     /// The rectangles of a region from `start` to `end` in beats on the lines of a page half.
     func region(from start: Double, to end: Double, page: Int, rows: Range<Int>) -> [CGRect] {
         var rects: [CGRect] = []
@@ -860,10 +880,9 @@ struct NotesPainter {
             let lineStart = Double(line) * perLine, lineEnd = lineStart + perLine
             let from = max(start, lineStart), to = min(end, lineEnd)
             guard to > from else { continue }
-            let beatWidth = layout.barWidth / CGFloat(Score.beatsPerBar)
             let top = layout.top(ofRow: row) + staff.linesTop - 8
-            rects.append(CGRect(x: layout.x0 + CGFloat(from - lineStart) * beatWidth, y: top,
-                                width: CGFloat(to - from) * beatWidth, height: staff.linesHeight + 16))
+            let left = edgeX(from, line: line), right = edgeX(to, line: line)
+            rects.append(CGRect(x: left, y: top, width: max(0, right - left), height: staff.linesHeight + 16))
         }
         return rects
     }
@@ -1194,7 +1213,7 @@ private struct NotesPageView: View {
     /// The region loop on the lines of one half of a page, in the coordinates of that half.
     @ViewBuilder private func region(_ painter: NotesPainter, page: Int, top: Bool) -> some View {
         let beats = model.score.beats
-        let loop: (Double, Double)? = drag.map { (min($0.from, $0.to), max($0.from, $0.to)) }
+        let loop: (Double, Double)? = drag.map { model.score.encompassing(from: min($0.from, $0.to), to: max($0.from, $0.to)) }
             ?? model.loop.flatMap { loop in loop.end.map { (Score.position(of: loop.start, in: beats), Score.position(of: $0, in: beats)) } }
         if let (start, end) = loop {
             let honey = NotesAccent.color(colorScheme)
@@ -1223,7 +1242,9 @@ private struct NotesPageView: View {
             .onEnded { value in
                 defer { drag = nil }
                 if let drag, abs(drag.to - drag.from) >= 1 {
-                    let start = model.score.time(at: min(drag.from, drag.to)), end = model.score.time(at: max(drag.from, drag.to))
+                    // The loop covers every note that it would cut, as the drag already showed.
+                    let beats = model.score.encompassing(from: min(drag.from, drag.to), to: max(drag.from, drag.to))
+                    let start = model.score.time(at: beats.start), end = model.score.time(at: beats.end)
                     model.onLoop(start, end)
                 } else if hypot(value.translation.width, value.translation.height) <= 4 {
                     model.onSeek(max(0, model.score.time(at: position(value.location, layout).rounded(.down))))
@@ -1923,6 +1944,12 @@ extension NotesModel {
     if let shift = TestFlags.value("--notes-shift").flatMap(Int.init) { model.shift = shift }
     if let loop = TestFlags.value("--notes-loop")?.split(separator: "-").compactMap({ Double($0) }), loop.count == 2 {
         model.loop = LoopRegion(start: loop[0], end: loop[1], startPress: nil)
+    }
+    // `--notes-loop-beats A-B` sets the loop that a drag from beat A to beat B sets, widened to the notes it would cut.
+    if let beats = TestFlags.value("--notes-loop-beats")?.split(separator: "-").compactMap({ Double($0) }), beats.count == 2 {
+        let widened = model.score.encompassing(from: beats[0], to: beats[1])
+        model.loop = LoopRegion(start: model.score.time(at: widened.start), end: model.score.time(at: widened.end), startPress: nil)
+        print(String(format: "loop beats %.2f-%.2f widened to %.2f-%.2f", beats[0], beats[1], widened.start, widened.end))
     }
     // `--notes-progress STEP:F` shows the transcription at F of a step (beats, stems or notes), with `--notes-left S`
     // seconds left, and `--notes-failed` shows a failed one.
