@@ -2234,6 +2234,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_: Notification) {
         if let dir = Self.stringOption("--render") { return renderPreviews(to: dir) }
         if TestFlags.has("--log-playhead") { WaveformView.trace = { [weak self] in self?.log(String(format: "playhead %.3f", $0)) } }
+        if TestFlags.has("--log-notes-frames") {
+            notesFrameLog = { [weak self] count, gap in self?.log(String(format: "notes frames: %d in a second, longest wait %.0f ms", count, gap * 1000)) }
+        }
         if let path = Self.stringOption("--render-menubar") {
             StatusItem.renderSheet(to: path)
             return NSApp.terminate(nil)
@@ -2594,6 +2597,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.syncTrack()
             self?.startOnKnownKey()
             self?.syncSongKey()
+            self?.syncNotesPlaying()
         }
         // The keys over the record differ from the ones over the rest of the HUD.
         overRecordChange = model.$overRecord.removeDuplicates().sink { [weak self] _ in
@@ -3027,7 +3031,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notesSinks = []
         model.$shift.sink { [weak notes] in notes?.shift = $0 }.store(in: &notesSinks)
         model.$loop.sink { [weak notes] in notes?.loop = $0 }.store(in: &notesSinks)
-        model.$playing.sink { [weak notes] in notes?.playing = $0 }.store(in: &notesSinks)
+        syncNotesPlaying()
+    }
+
+    /// The notes window takes the play state from the player's reports, because the HUD's state only changes while the
+    /// HUD shows. A window that took a playing song for paused held its line still between the redraws of other views.
+    private func syncNotesPlaying() {
+        guard let notes = notesWindow.model else { return }
+        let playing = notes.now() != nil && nowPlaying.track?.playing == true
+        if notes.playing != playing { notes.playing = playing }
     }
 
     /// A drag across the notes: the region loop from one beat to another.

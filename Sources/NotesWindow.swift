@@ -575,9 +575,8 @@ struct NotesPainter {
     /// shortest note.
     /// A lit chord takes the colour of its light and glows, over the ink chord of the page; `draw` false only keeps
     /// the accidentals of the bar up to date.
-    private func chord(_ canvas: inout GraphicsContext, _ notes: [Score.Note], x: CGFloat, clef: Clef, spelling: Spelling, shown: inout [Int: String],
+    private func chord(_ context: inout GraphicsContext, _ notes: [Score.Note], x: CGFloat, clef: Clef, spelling: Spelling, shown: inout [Int: String],
                        alpha: Double, light: Light? = nil, draw: Bool = true) {
-        var context = canvas
         let gap = NotesStaff.staffGap
         let color = light?.tint ?? ink.opacity(alpha)
         // Guitar and bass are written an octave above where they sound.
@@ -619,8 +618,7 @@ struct NotesPainter {
         }
         guard draw else { return }
         if let light, let low = ys.max(), let high = ys.min() {
-            halo(&canvas, at: CGPoint(x: x, y: (low + high) / 2), radius: 10 + 7 * min(1.35, light.level) + (low - high) / 2, light: light)
-            context.addFilter(.shadow(color: light.glow.opacity(min(1, 0.85 * light.level)), radius: 1.5 + 5 * min(1.35, light.level)))
+            halo(&context, at: CGPoint(x: x, y: (low + high) / 2), radius: 10 + 7 * min(1.35, light.level) + (low - high) / 2, light: light)
         }
         for (index, note) in spelled.enumerated() {
             let y = ys[index]
@@ -749,9 +747,11 @@ struct NotesPainter {
         let alpha = (light.dark ? 0.34 : 0.3) * min(1.35, light.level)
         var glow = context
         if light.dark { glow.blendMode = .plusLighter }
+        // A bright core and a soft falloff, drawn as one gradient: a blur filter on every frame cost frames.
         let gradient = Gradient(stops: [
-            .init(color: light.glow.opacity(alpha), location: 0),
-            .init(color: light.glow.opacity(alpha * 0.5), location: 0.4),
+            .init(color: light.glow.opacity(min(1, alpha * 1.8)), location: 0),
+            .init(color: light.glow.opacity(alpha * 0.9), location: 0.22),
+            .init(color: light.glow.opacity(alpha * 0.35), location: 0.55),
             .init(color: light.glow.opacity(0), location: 1),
         ])
         glow.fill(Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)),
@@ -783,9 +783,7 @@ struct NotesPainter {
                     halo(&context, at: CGPoint(x: note.x, y: note.y), radius: 9 + 7 * min(1.35, note.light.level), light: note.light)
                 }
                 for note in lit {
-                    var glyph = context
-                    glyph.addFilter(.shadow(color: note.light.glow.opacity(min(1, 0.85 * note.light.level)), radius: 1.5 + 5 * min(1.35, note.light.level)))
-                    glyph.draw(text("\(note.fret)", size: 9.5, weight: .heavy, color: note.light.tint), at: CGPoint(x: note.x, y: note.y))
+                    context.draw(text("\(note.fret)", size: 9.5, weight: .heavy, color: note.light.tint), at: CGPoint(x: note.x, y: note.y))
                 }
             case .sheet:
                 let clefs = clefs(top: top)
@@ -821,9 +819,7 @@ struct NotesPainter {
                         let width = max(3, min(end - x, layout.barWidth * CGFloat(note.length / Double(Score.beatsPerBar))) - 1.5)
                         let rect = CGRect(x: x + 0.5, y: top + CGFloat(staff.high - pitch) * rowHeight + 0.4, width: width, height: rowHeight - 0.8)
                         halo(&context, at: CGPoint(x: rect.minX + min(rect.width / 2, 8), y: rect.midY), radius: 8 + 6 * min(1.35, light.level), light: light)
-                        var glyph = context
-                        glyph.addFilter(.shadow(color: light.glow.opacity(min(1, 0.85 * light.level)), radius: 1.5 + 5 * min(1.35, light.level)))
-                        glyph.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(light.tint))
+                        context.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(light.tint))
                     }
                 }
             }
@@ -1232,6 +1228,22 @@ private struct NotesPageView: View {
 /// each one. The notes light like phosphor as it passes: a note barely stirs as the line comes close, flashes a little
 /// past full brightness when the line touches it, and keeps an afterglow that fades over about a second of the song.
 /// The light comes from the song's time alone, so it holds still while the song is paused and is right after a seek.
+/// `--log-notes-frames` logs how many frames the line drew in each second and the longest wait between two frames.
+nonisolated(unsafe) var notesFrameLog: ((Int, Double) -> Void)?
+nonisolated(unsafe) private var notesFrames = (start: Date.distantPast, count: 0, last: Date.distantPast, gap: 0.0)
+
+private func countNotesFrame(_ report: (Int, Double) -> Void) {
+    let now = Date()
+    let since = now.timeIntervalSince(notesFrames.last)
+    if since < 1 { notesFrames.gap = max(notesFrames.gap, since) }
+    notesFrames.count += 1
+    notesFrames.last = now
+    if now.timeIntervalSince(notesFrames.start) >= 1 {
+        if notesFrames.count > 1 { report(notesFrames.count, notesFrames.gap) }
+        notesFrames = (now, 0, now, 0)
+    }
+}
+
 private struct NotesPlayhead: View {
     @ObservedObject var model: NotesModel
     let painter: NotesPainter
@@ -1241,8 +1253,13 @@ private struct NotesPlayhead: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        TimelineView(.animation(paused: !model.playing)) { _ in
+        TimelineView(.animation(paused: !model.playing)) { timeline in
+            // The frame's date goes into the drawing, so that the canvas draws again on every frame: with nothing in it
+            // that changed, the canvas only drew when another view made it.
+            let frame = timeline.date
             Canvas { context, _ in
+                _ = frame
+                if let notesFrameLog { countNotesFrame(notesFrameLog) }
                 let layout = painter.layout
                 guard let time = model.now(), let spot = layout.spot(at: time, in: model.score) else { return }
                 let dark = colorScheme == .dark
@@ -1263,10 +1280,13 @@ private struct NotesPlayhead: View {
                 let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
                 let rect = CGRect(x: spot.x - 1, y: top, width: 2, height: layout.staff.linesHeight + 14)
                 let honey = StripColors.text(.honey, colorScheme)
-                context.drawLayer { layer in
-                    layer.addFilter(.shadow(color: honey.opacity(0.7), radius: 4))
-                    layer.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(honey))
-                }
+                // The glow is a band of honey that fades out on both sides, which costs nothing like a shadow filter.
+                let band = rect.insetBy(dx: -6, dy: 0)
+                context.fill(Path(roundedRect: band, cornerRadius: 6), with: .linearGradient(
+                    Gradient(stops: [.init(color: honey.opacity(0), location: 0), .init(color: honey.opacity(dark ? 0.32 : 0.24), location: 0.5),
+                                     .init(color: honey.opacity(0), location: 1)]),
+                    startPoint: CGPoint(x: band.minX, y: band.midY), endPoint: CGPoint(x: band.maxX, y: band.midY)))
+                context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(honey))
             }
         }
         .allowsHitTesting(false)
