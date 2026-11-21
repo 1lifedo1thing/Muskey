@@ -259,10 +259,10 @@ private struct GeneralPane: View {
             }
             Section("Menu bar icon") {
                 HStack(spacing: 14) {
-                    ChoiceTile(title: "Always", selected: prefs.menuBarIcon == .always) { prefs.menuBarIcon = .always } preview: {
+                    ChoiceTile(title: "Always", selected: prefs.menuBarIcon == .always, wallpaper: true) { prefs.menuBarIcon = .always } preview: {
                         MiniMenuBar(idle: true)
                     }
-                    ChoiceTile(title: "During a pitch change", selected: prefs.menuBarIcon == .pitchChange) { prefs.menuBarIcon = .pitchChange } preview: {
+                    ChoiceTile(title: "During a pitch change", selected: prefs.menuBarIcon == .pitchChange, wallpaper: true) { prefs.menuBarIcon = .pitchChange } preview: {
                         MiniMenuBar(idle: false)
                     }
                 }
@@ -779,7 +779,10 @@ private struct ChoiceTile<Preview: View>: View {
                     .frame(height: height)
                     .background {
                         if wallpaper, let image = Wallpaper.image {
+                            // The top of the wallpaper, which is what the menu bar sits on, and close enough for the HUD.
                             Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                                .frame(maxHeight: .infinity, alignment: .top)
+                                .clipped()
                         } else {
                             MiniGlass.backdrop(scheme)
                         }

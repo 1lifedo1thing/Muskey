@@ -855,6 +855,8 @@ final class MiniPlayerPanel: NSPanel {
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        // The popover role tells window switchers like rcmd that this panel isn't a window to switch to or focus.
+        setAccessibilityRole(.popover)
         let hosting = FirstClickHostingView(rootView: MiniPlayerView(model: model, mini: mini))
         hosting.sizingOptions = []
         contentView = hosting
@@ -1015,7 +1017,16 @@ struct MiniLayoutEditor: View {
             })
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(red: 0.16, green: 0.13, blue: 0.14)))
+            // The Mac's wallpaper behind the player, as it floats over the desktop, which also shows how its background
+            // reads there.
+            .background {
+                if let image = Wallpaper.image {
+                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(red: 0.16, green: 0.13, blue: 0.14))
+                }
+            }
             FlowRow(spacing: 6) {
                 ForEach(MiniElement.allCases) { element in
                     let placed = prefs.miniLayout.place(of: element) != nil
