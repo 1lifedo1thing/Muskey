@@ -289,12 +289,72 @@ private struct MiniPlayerPane: View {
                 Toggle("Artist", isOn: $prefs.miniLayout.artist)
                 Toggle("Album", isOn: $prefs.miniLayout.album)
             }
+            Section("Background") {
+                MiniBackgroundRows(background: $prefs.miniBackground)
+            }
             Section("Elements") {
                 MiniLayoutEditor(prefs: prefs)
                     .padding(.vertical, 4)
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Settings > Mini player > Background, in three rows at most: the material, its tint or colour with the opacity, and
+/// the roundness. Rows that don't apply to the material are left out. It takes a binding so renders can show it
+/// without touching the saved settings.
+struct MiniBackgroundRows: View {
+    @Binding var background: MiniBackground
+
+    var body: some View {
+        LabeledContent("Material") {
+            Picker("Material", selection: $background.material) {
+                ForEach(MiniMaterial.groups.indices, id: \.self) { index in
+                    if index > 0 { Divider() }
+                    ForEach(MiniMaterial.groups[index], id: \.self) { Text($0.title).tag($0) }
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
+        if background.material.tintable || background.material == .colour {
+            let fill = background.material == .colour
+            let on = fill || background.tinted
+            LabeledContent(fill ? "Colour" : "Tint") {
+                HStack(spacing: 10) {
+                    ColorPicker("Colour", selection: $background.color, supportsOpacity: false)
+                        .labelsHidden()
+                        .disabled(!on)
+                    Slider(value: $background.opacity, in: 0 ... 1) { Text("Opacity") }
+                        .labelsHidden()
+                        .frame(width: 120)
+                        .disabled(!on)
+                    Text("\(Int((background.opacity * 100).rounded()))%")
+                        .monospacedDigit()
+                        .frame(width: 36, alignment: .trailing)
+                        .foregroundStyle(on ? .primary : .secondary)
+                    if !fill {
+                        Toggle("Tint", isOn: $background.tinted)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+                }
+            }
+        }
+        if background.visible {
+            LabeledContent("Roundness") {
+                Slider(value: $background.roundness, in: 0 ... 1) {
+                    Text("Roundness")
+                } minimumValueLabel: {
+                    Image(systemName: "square")
+                } maximumValueLabel: {
+                    Image(systemName: "circle")
+                }
+                .labelsHidden()
+                .frame(width: 200)
+            }
+        }
     }
 }
 

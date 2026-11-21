@@ -86,6 +86,152 @@ struct MiniLayout: Codable, Equatable {
     }
 }
 
+/// What fills the background of the mini player: Liquid Glass, one of the system's blur materials from the thinnest to
+/// the thickest, or a flat colour.
+enum MiniMaterial: String, Codable, CaseIterable {
+    case none, glass, clearGlass, ultraThin, thin, regular, thick, ultraThick, colour
+
+    var title: String {
+        switch self {
+        case .none: "None"
+        case .glass: "Glass"
+        case .clearGlass: "Clear glass"
+        case .ultraThin: "Ultra thin"
+        case .thin: "Thin"
+        case .regular: "Regular"
+        case .thick: "Thick"
+        case .ultraThick: "Ultra thick"
+        case .colour: "Colour"
+        }
+    }
+
+    /// The groups of the picker in Settings, which a divider separates.
+    static let groups: [[MiniMaterial]] = [[.none], [.glass, .clearGlass], [.ultraThin, .thin, .regular, .thick, .ultraThick], [.colour]]
+
+    var glass: Glass? {
+        switch self {
+        case .glass: .regular
+        case .clearGlass: .clear
+        default: nil
+        }
+    }
+
+    var material: Material? {
+        switch self {
+        case .ultraThin: .ultraThinMaterial
+        case .thin: .thinMaterial
+        case .regular: .regularMaterial
+        case .thick: .thickMaterial
+        case .ultraThick: .ultraThickMaterial
+        default: nil
+        }
+    }
+
+    /// Glass and the blur materials take a tint over them. Colour is the tint itself.
+    var tintable: Bool { glass != nil || material != nil }
+}
+
+/// The background behind the record and the song (Settings > Mini player > Background). The tint and the colour fill
+/// share one colour and one opacity, so switching between them keeps the colour that was picked.
+struct MiniBackground: Codable, Equatable {
+    var material = MiniMaterial.none
+    var tinted = false
+    var red = 0.09
+    var green = 0.07
+    var blue = 0.08
+    var opacity = 0.4
+    /// From 0, a rectangle with square corners, to 1, a circle around the record alone or a capsule with the song.
+    var roundness = 1.0
+
+    init() {}
+
+    /// Every field is optional in the saved JSON, so a background saved by an older version still loads.
+    init(from decoder: Decoder) throws {
+        let saved = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = MiniBackground()
+        material = (try? saved.decodeIfPresent(MiniMaterial.self, forKey: .material)) ?? fallback.material
+        tinted = (try? saved.decodeIfPresent(Bool.self, forKey: .tinted)) ?? fallback.tinted
+        red = (try? saved.decodeIfPresent(Double.self, forKey: .red)) ?? fallback.red
+        green = (try? saved.decodeIfPresent(Double.self, forKey: .green)) ?? fallback.green
+        blue = (try? saved.decodeIfPresent(Double.self, forKey: .blue)) ?? fallback.blue
+        opacity = (try? saved.decodeIfPresent(Double.self, forKey: .opacity)) ?? fallback.opacity
+        roundness = (try? saved.decodeIfPresent(Double.self, forKey: .roundness)) ?? fallback.roundness
+    }
+
+    var visible: Bool { material != .none }
+
+    var color: Color {
+        get { Color(.sRGB, red: red, green: green, blue: blue) }
+        set {
+            guard let rgb = NSColor(newValue).usingColorSpace(.sRGB) else { return }
+            red = Double(rgb.redComponent)
+            green = Double(rgb.greenComponent)
+            blue = Double(rgb.blueComponent)
+        }
+    }
+
+    /// The colour over glass and the materials, or nil when they show untinted.
+    var tint: Color? { material == .colour || (material.tintable && tinted) ? color.opacity(opacity) : nil }
+}
+
+/// The frame of the background around the record and the song, and the radius of its corners, in the coordinates of
+/// the frames it is made from.
+struct MiniBackdropShape: Equatable {
+    var rect: CGRect
+    var radius: CGFloat
+
+    /// The space between the song and the edge of the background, the same as the rim around the record.
+    static let padding: CGFloat = 12
+
+    /// `record` is the record with its rim, which the background circles. `text` is the frame of the song, `lines` the
+    /// frames of its lines and pills, and `side` the side of the record that the song is on. With the song, the
+    /// background first takes the rectangle around both, then grows away from the record until each corner of each line
+    /// is `padding` inside the rounded corners. A capsule at full roundness would otherwise cut through a line that is
+    /// wider than the record. The lines are checked one by one, since the corners of the song's frame are often empty:
+    /// a long title is wide at the top while the pills under it are narrow.
+    init(record: CGRect, text: CGRect?, lines: [CGRect] = [], side: MiniTextSide, roundness: CGFloat) {
+        let roundness = min(max(roundness, 0), 1)
+        guard let text, !text.isEmpty else {
+            rect = record
+            radius = roundness * min(record.width, record.height) / 2
+            return
+        }
+        let padding = Self.padding
+        var rect = record.union(text.insetBy(dx: -padding, dy: -padding))
+        let corners = (lines.isEmpty ? [text] : lines).filter { !$0.isEmpty }.flatMap { line in
+            [CGPoint(x: line.minX, y: line.minY), CGPoint(x: line.maxX, y: line.minY), CGPoint(x: line.minX, y: line.maxY), CGPoint(x: line.maxX, y: line.maxY)]
+        }
+        let vertical = side == .above || side == .below
+        // Growing along the side changes the radius while that side is the short one, so this repeats until the
+        // corners fit, which takes a few rounds at most.
+        for _ in 0 ..< 24 {
+            let radius = roundness * min(rect.width, rect.height) / 2
+            let inner = rect.insetBy(dx: radius, dy: radius)
+            let reach = max(radius - padding, 0)
+            var grow: CGFloat = 0
+            for corner in corners {
+                let across = vertical ? max(inner.minX - corner.x, corner.x - inner.maxX, 0) : max(inner.minY - corner.y, corner.y - inner.maxY, 0)
+                let beyond = switch side {
+                case .below: corner.y - inner.maxY
+                case .above: inner.minY - corner.y
+                case .right: corner.x - inner.maxX
+                case .left: inner.minX - corner.x
+                }
+                grow = max(grow, beyond - max(reach * reach - across * across, 0).squareRoot())
+            }
+            guard grow > 0.1 else { break }
+            switch side {
+            case .below: rect.size.height += grow
+            case .above: rect.origin.y -= grow; rect.size.height += grow
+            case .right: rect.size.width += grow
+            case .left: rect.origin.x -= grow; rect.size.width += grow
+            }
+        }
+        self.rect = rect
+        radius = roundness * min(rect.width, rect.height) / 2
+    }
+}
+
 /// The side of the record that the song goes on.
 enum MiniTextSide: Equatable {
     case below, above, left, right
@@ -125,11 +271,14 @@ final class MiniState: ObservableObject {
     @Published var key: DetectedKey?
     @Published var side = MiniTextSide.below
     @Published var layout = Preferences.shared.miniLayout
+    @Published var background = Preferences.shared.miniBackground
     /// The size of the song's text, which decides which sides have room for it.
     var textSize = CGSize(width: 180, height: 60)
     /// The record and the text, in the coordinates of the panel from its top left, which take the pointer. The rest
     /// of the panel lets clicks through to the windows under it.
     var hitFrames: [String: CGRect] = [:]
+    /// The frame of the background, which takes the pointer too while a background shows.
+    var backdropFrame: CGRect?
     var onHide: () -> Void = {}
     var onShowHUD: () -> Void = {}
     var onSettings: () -> Void = {}
@@ -153,8 +302,52 @@ struct MiniPlayerView: View {
     static let sideWidth: CGFloat = 190
     static let stackWidth: CGFloat = 230
     static let textHeight: CGFloat = 70
-    /// The panel has room for the text on every side, so the record stays where it is when the text moves.
-    static var panelSize: CGSize { CGSize(width: box + (sideWidth + 6) * 2, height: box + (textHeight + 6) * 2) }
+    private static let textGap: CGFloat = 6
+
+    /// The place of the song on each side, from the middle of the record.
+    static func textPlace(_ side: MiniTextSide) -> CGRect {
+        let width = side == .left || side == .right ? sideWidth + margin : stackWidth
+        let offset = switch side {
+        case .below: CGSize(width: 0, height: box / 2 + textGap + textHeight / 2 - margin + 4)
+        case .above: CGSize(width: 0, height: -(box / 2 + textGap + textHeight / 2 - margin + 4))
+        case .right: CGSize(width: box / 2 + width / 2 - margin + textGap, height: 0)
+        case .left: CGSize(width: -(box / 2 + width / 2 - margin + textGap), height: 0)
+        }
+        return CGRect(x: offset.width - width / 2, y: offset.height - textHeight / 2, width: width, height: textHeight)
+    }
+
+    /// As far as the song can reach from the middle of the record, which the background stops at: its place, a little
+    /// further away from the record for a line of pills under it, and taller beside the record, where the pills wrap
+    /// into rows (three lines and three rows of pills).
+    static func textReach(_ side: MiniTextSide) -> CGRect {
+        let place = textPlace(side)
+        switch side {
+        case .below: return CGRect(x: place.minX, y: place.minY, width: place.width, height: place.height + 10)
+        case .above: return CGRect(x: place.minX, y: place.minY - 10, width: place.width, height: place.height + 10)
+        case .left, .right: return place.insetBy(dx: 0, dy: -25)
+        }
+    }
+
+    /// The record with its rim, from its middle.
+    private static var recordBox: CGRect { CGRect(x: -box / 2, y: -box / 2, width: box, height: box) }
+
+    /// The panel has room for the text on every side, so the record stays where it is when the text moves, and for
+    /// the background around the widest and tallest song at full roundness, which is the largest it gets.
+    static let panelSize: CGSize = {
+        var half = CGSize(width: box / 2 + sideWidth + textGap, height: box / 2 + textHeight + textGap)
+        for side in [MiniTextSide.below, .above, .left, .right] {
+            let reach = textReach(side)
+            for fraction in [0.4, 0.6, 0.8, 1.0] {
+                let text = side == .left || side == .right
+                    ? CGRect(x: side == .right ? reach.minX : reach.maxX - reach.width * fraction, y: reach.minY, width: reach.width * fraction, height: reach.height)
+                    : CGRect(x: -reach.width * fraction / 2, y: reach.minY, width: reach.width * fraction, height: reach.height)
+                let shape = MiniBackdropShape(record: recordBox, text: text, side: side, roundness: 1)
+                half.width = max(half.width, -shape.rect.minX, shape.rect.maxX)
+                half.height = max(half.height, -shape.rect.minY, shape.rect.maxY)
+            }
+        }
+        return CGSize(width: (half.width + 1).rounded(.up) * 2, height: (half.height + 1).rounded(.up) * 2)
+    }()
 
     @State private var target: MiniPlace?
 
@@ -163,11 +356,13 @@ struct MiniPlayerView: View {
     var body: some View {
         if editing {
             // Settings stacks the song under the record, with the places drawn.
-            VStack(spacing: 2) {
+            MiniEditorStack(background: mini.background) {
                 vinyl
+                    .transformAnchorPreference(key: MiniFrames.self, value: .bounds) { $0["record"] = $1 }
                 text
+                    .transformAnchorPreference(key: MiniFrames.self, value: .bounds) { $0["text"] = $1 }
             }
-            .frame(width: Self.stackWidth)
+            .backgroundPreferenceValue(MiniFrames.self) { frames in backdrop(frames, side: .below) }
             .environment(\.colorScheme, .dark)
         } else {
             player
@@ -177,11 +372,13 @@ struct MiniPlayerView: View {
     private var player: some View {
         ZStack {
             vinyl
+                .transformAnchorPreference(key: MiniFrames.self, value: .bounds) { $0["record"] = $1 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mini.hitFrames["record"] = $0 }
             if hasText {
                 // A long title is cut at the width of the text's place, so it never runs past the edge of the panel.
                 text
                     .fixedSize(horizontal: false, vertical: true)
+                    .transformAnchorPreference(key: MiniFrames.self, value: .bounds) { $0["text"] = $1 }
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { mini.textSize = $0 }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mini.hitFrames["text"] = $0 }
                     .frame(width: textWidth, height: Self.textHeight, alignment: textAlignment)
@@ -190,11 +387,39 @@ struct MiniPlayerView: View {
             }
         }
         .frame(width: Self.panelSize.width, height: Self.panelSize.height)
+        // The frames come from this same layout pass, so the background follows the song's size and side as they
+        // change, with no state in between.
+        .backgroundPreferenceValue(MiniFrames.self) { frames in backdrop(frames, side: mini.side) }
         .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }, scroll: model.scroll, scrub: model.scrub,
                                                     seek: { model.onSeekFraction($0) }, seekable: model.seekable))
         .environment(\.recordPlaying, model.playing)
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.colorScheme, .dark)
+    }
+
+    // MARK: The background
+
+    @ViewBuilder private func backdrop(_ frames: [String: Anchor<CGRect>], side: MiniTextSide) -> some View {
+        if mini.background.visible, let recordAnchor = frames["record"] {
+            GeometryReader { proxy in
+                let record = proxy[recordAnchor]
+                let center = CGPoint(x: record.midX, y: record.midY)
+                // The panel has room for the song as far as its reach, so the background stops there too and never
+                // meets the edge of the panel. The editor has no such edge.
+                let reach = Self.textReach(side).offsetBy(dx: center.x, dy: center.y)
+                let clamp = { (frame: CGRect) in editing ? frame : frame.intersection(reach) }
+                let text = frames["text"].map { clamp(proxy[$0]) }
+                let lines = frames.filter { $0.key.hasPrefix("line ") }.map { clamp(proxy[$0.value]) }
+                let shape = MiniBackdropShape(record: record, text: text, lines: lines, side: side, roundness: mini.background.roundness)
+                MiniBackdrop(background: mini.background, radius: shape.radius)
+                    .frame(width: shape.rect.width, height: shape.rect.height)
+                    .contentShape(RoundedRectangle(cornerRadius: shape.radius))
+                    .contextMenu { menu }
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mini.backdropFrame = $0 }
+                    .position(x: shape.rect.midX, y: shape.rect.midY)
+                    .animation(.easeOut(duration: 0.15), value: side)
+            }
+        }
     }
 
     // MARK: The record
@@ -210,13 +435,15 @@ struct MiniPlayerView: View {
         .padding(Self.margin)
         .overlay(alignment: .top) { pill(at: .top).padding(.top, Self.margin - 10) }
         .overlay(alignment: .bottom) { pill(at: .bottom).padding(.bottom, Self.margin - 10) }
-        .contextMenu {
-            if !editing {
-                Button("Show HUD") { mini.onShowHUD() }
-                Button("Mini Player Settings…") { mini.onSettings() }
-                Divider()
-                Button("Hide Mini Player") { mini.onHide() }
-            }
+        .contextMenu { menu }
+    }
+
+    @ViewBuilder private var menu: some View {
+        if !editing {
+            Button("Show HUD") { mini.onShowHUD() }
+            Button("Mini Player Settings…") { mini.onSettings() }
+            Divider()
+            Button("Hide Mini Player") { mini.onHide() }
         }
     }
 
@@ -258,18 +485,13 @@ struct MiniPlayerView: View {
     }
 
     /// Beside the record, the text may also use the panel's margin on its outer side.
-    private var textWidth: CGFloat { mini.side == .left || mini.side == .right ? Self.sideWidth + Self.margin : Self.stackWidth }
+    private var textWidth: CGFloat { Self.textPlace(mini.side).width }
 
     /// Where the text box sits against the record in the middle of the panel.
     private var textOffset: CGSize {
         if editing { return .zero }
-        let gap: CGFloat = 6
-        switch mini.side {
-        case .below: return CGSize(width: 0, height: Self.box / 2 + gap + Self.textHeight / 2 - Self.margin + 4)
-        case .above: return CGSize(width: 0, height: -(Self.box / 2 + gap + Self.textHeight / 2 - Self.margin + 4))
-        case .right: return CGSize(width: Self.box / 2 + textWidth / 2 - Self.margin + gap, height: 0)
-        case .left: return CGSize(width: -(Self.box / 2 + textWidth / 2 - Self.margin + gap), height: 0)
-        }
+        let place = Self.textPlace(mini.side)
+        return CGSize(width: place.midX, height: place.midY)
     }
 
     private var text: some View {
@@ -280,28 +502,35 @@ struct MiniPlayerView: View {
         // Beside the record, the pills wrap at the width of the song's text, so they never reach further from the
         // record than the song does.
         let beside = !editing && (mini.side == .left || mini.side == .right)
+        // Each line and pill reports its frame, for the background to fit around.
+        func line(_ name: String) -> (Anchor<CGRect>) -> [String: Anchor<CGRect>] { { ["line \(name)": $0] } }
         return MiniSongLayout(alignment: alignment, wrap: beside) {
             if let title {
                 Text(title).font(.system(size: 13.5, weight: .heavy, design: .rounded))
+                    .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line("title"))
             }
             if let artist {
                 Text(artist)
                     .font(.system(size: 11.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.9))
+                    .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line("artist"))
             }
             if let album {
                 Text(album)
                     .font(.system(size: 11.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.62))
+                    .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line("album"))
             }
             if editing {
                 slot(.line, filled: !layout.line.isEmpty) {
                     HStack(spacing: 4) { ForEach(layout.line) { chip($0, removable: true, small: true) } }
                 }
+                .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line("places"))
                 .padding(.top, 4)
             } else {
                 ForEach(layout.line.compactMap { element in value(element).map { (element, $0) } }, id: \.0) { element, value in
                     MiniChip(text: value, hue: element.hue, small: true)
+                        .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line(element.rawValue))
                         .layoutValue(key: MiniSongLayout.Pill.self, value: true)
                 }
             }
@@ -473,6 +702,88 @@ struct MiniChip: View {
     }
 }
 
+/// The editor of Settings: the record, and the song 2 points under it, as wide as the widest song, in a frame that
+/// holds the background around them too. The editor is as tall as the background with its current roundness, so it
+/// grows and shrinks at its bottom while the roundness changes, under the rows of Settings that change it.
+private struct MiniEditorStack: Layout {
+    var background: MiniBackground
+
+    private func frames(_ subviews: Subviews) -> (record: CGRect, text: CGRect, bounds: CGRect) {
+        let box = MiniPlayerView.box
+        let width = MiniPlayerView.stackWidth
+        let record = CGRect(x: -box / 2, y: -box / 2, width: box, height: box)
+        let size = subviews.count > 1 ? subviews[1].sizeThatFits(ProposedViewSize(width: width, height: nil)) : .zero
+        let text = CGRect(x: -size.width / 2, y: record.maxY + 2, width: size.width, height: size.height)
+        var bounds = CGRect(x: -width / 2, y: record.minY, width: width, height: text.maxY - record.minY)
+        if background.visible {
+            bounds = bounds.union(MiniBackdropShape(record: record, text: text, side: .below, roundness: background.roundness).rect)
+        }
+        return (record, text, bounds)
+    }
+
+    func sizeThatFits(proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
+        frames(subviews).bounds.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
+        let frames = frames(subviews)
+        let dx = bounds.minX - frames.bounds.minX, dy = bounds.minY - frames.bounds.minY
+        for (subview, frame) in zip(subviews, [frames.record, frames.text]) {
+            subview.place(at: CGPoint(x: frame.minX + dx, y: frame.minY + dy), proposal: ProposedViewSize(frame.size))
+        }
+    }
+}
+
+/// The frames of the record and the song, which the background is drawn around.
+struct MiniFrames: PreferenceKey {
+    static let defaultValue: [String: Anchor<CGRect>] = [:]
+
+    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+/// The background of the mini player in its shape: glass, a blur material, or a flat colour, with the tint over glass
+/// and the materials.
+struct MiniBackdrop: View {
+    let background: MiniBackground
+    let radius: CGFloat
+    @Environment(\.renderingPreview) private var renderingPreview
+
+    var body: some View {
+        // Circular corners, since the space kept around the song is worked out for circular arcs, and at full
+        // roundness they make an exact circle or capsule.
+        let shape = RoundedRectangle(cornerRadius: radius, style: .circular)
+        if renderingPreview {
+            standIn(shape)
+        } else if let glass = background.material.glass {
+            Color.clear.glassEffect(background.tint.map { glass.tint($0) } ?? glass, in: shape)
+        } else if let material = background.material.material {
+            shape.fill(material).overlay { if let tint = background.tint { shape.fill(tint) } }
+        } else {
+            shape.fill(background.color.opacity(background.opacity))
+        }
+    }
+
+    /// ImageRenderer draws neither glass nor materials, so renders get a flat fill that comes close to each over a
+    /// dark scheme: frosted white for glass, darker grey for each thicker material.
+    private func standIn(_ shape: RoundedRectangle) -> some View {
+        let base: Color = switch background.material {
+        case .glass: .white.opacity(0.18)
+        case .clearGlass: .white.opacity(0.07)
+        case .ultraThin: Color(white: 0.14).opacity(0.3)
+        case .thin: Color(white: 0.14).opacity(0.45)
+        case .regular: Color(white: 0.14).opacity(0.6)
+        case .thick: Color(white: 0.14).opacity(0.75)
+        case .ultraThick: Color(white: 0.14).opacity(0.88)
+        case .colour, .none: .clear
+        }
+        return shape.fill(base)
+            .overlay { if let tint = background.tint { shape.fill(tint) } }
+            .overlay { if background.material.glass != nil { shape.strokeBorder(.white.opacity(0.35), lineWidth: 1) } }
+    }
+}
+
 /// The panel of the mini player, above other windows on every Space. A drag anywhere on the record or the song moves
 /// it, and the song moves to the side that the new place has room for once the drag ends.
 final class MiniPlayerPanel: NSPanel {
@@ -552,7 +863,10 @@ final class MiniPlayerPanel: NSPanel {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
         let point = CGPoint(x: center.x - visible.minX, y: visible.maxY - center.y)
-        let side = MiniTextSide.choose(center: point, screen: visible.size, record: MiniPlayerView.box, text: mini.textSize)
+        // A background reaches past the song by its padding, which needs room on the screen too.
+        let padding = mini.background.visible ? MiniBackdropShape.padding : 0
+        let text = CGSize(width: mini.textSize.width + padding, height: mini.textSize.height + padding)
+        let side = MiniTextSide.choose(center: point, screen: visible.size, record: MiniPlayerView.box, text: text)
         if mini.side != side { mini.side = side }
     }
 
@@ -574,7 +888,7 @@ final class MiniPlayerPanel: NSPanel {
         updatePassThrough()
     }
 
-    /// The panel takes the pointer only over the record and the song.
+    /// The panel takes the pointer only over the record, the song and the background around them.
     private func updatePassThrough() {
         guard !draggingPanel else { return }
         let mouse = NSEvent.mouseLocation
@@ -583,7 +897,12 @@ final class MiniPlayerPanel: NSPanel {
             hypot(point.x - frame.midX, point.y - frame.midY) <= MiniPlayerView.record / 2 + 4
                 || CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height).insetBy(dx: frame.width * 0.3, dy: 0).contains(point)
         } ?? false
-        let over = record || (mini.hitFrames["text"]?.insetBy(dx: -4, dy: -4).contains(point) ?? false)
+        let backdrop = mini.background.visible && mini.backdropFrame.map { frame in
+            // CGPath refuses corners wider than half the side, which full roundness reaches exactly.
+            let radius = max(0, min(max(mini.background.roundness, 0), 1) * min(frame.width, frame.height) / 2 - 0.01)
+            return CGPath(roundedRect: frame, cornerWidth: radius, cornerHeight: radius, transform: nil).contains(point)
+        } == true
+        let over = record || backdrop || (mini.hitFrames["text"]?.insetBy(dx: -4, dy: -4).contains(point) ?? false)
         if ignoresMouseEvents == over { ignoresMouseEvents = !over }
         setHovering(over)
     }
@@ -690,8 +1009,12 @@ struct MiniLayoutEditor: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear { mini.layout = prefs.miniLayout }
+        .onAppear {
+            mini.layout = prefs.miniLayout
+            mini.background = prefs.miniBackground
+        }
         .onChange(of: prefs.miniLayout) { _, layout in mini.layout = layout }
+        .onChange(of: prefs.miniBackground) { _, background in mini.background = background }
     }
 }
 

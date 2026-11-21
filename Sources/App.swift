@@ -2360,6 +2360,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.mini.layout = layout
             DispatchQueue.main.async { self?.miniPanel.chooseSide() }
         }.store(in: &prefChanges)
+        prefs.$miniBackground.dropFirst().sink { [weak self] background in
+            self?.mini.background = background
+            DispatchQueue.main.async { self?.miniPanel.chooseSide() }
+        }.store(in: &prefChanges)
         model.$track.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.syncMini() } }.store(in: &prefChanges)
         model.$lyricsShown.dropFirst().removeDuplicates().sink { [weak self] _ in DispatchQueue.main.async { self?.syncChords() } }.store(in: &prefChanges)
         mini.onHide = { [weak self] in self?.prefs.miniPlayer = false }
@@ -6720,20 +6724,47 @@ extension EnvironmentValues {
     model.tempo = SongTempo(song: nil, bpm: 124)
     model.queue = HUDSample.queue
     model.queueCurrent = model.queue[1].id
-    let variants: [(String, MiniTextSide, MiniLayout)] = [
-        ("below", .below, MiniLayout()),
-        ("above", .above, MiniLayout()),
-        ("right", .right, MiniLayout()),
-        ("left", .left, MiniLayout()),
-        ("pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [.next])),
-        ("plain", .below, MiniLayout(line: [], track: false, artist: false, album: false)),
-        ("tempo-only", .below, MiniLayout(bottom: .tempo, line: [], track: false, artist: false, album: false)),
-        ("left-long", .left, MiniLayout()),
-        ("right-long", .right, MiniLayout(line: [.key, .tempo, .timeLeft])),
-        ("left-short", .left, MiniLayout()),
-        ("below-long", .below, MiniLayout()),
+    func makeBackground(_ material: MiniMaterial, roundness: Double = 1, tint: (Double, Double, Double, Double)? = nil) -> MiniBackground {
+        var background = MiniBackground()
+        background.material = material
+        background.roundness = roundness
+        if let tint {
+            background.tinted = true
+            (background.red, background.green, background.blue, background.opacity) = tint
+        }
+        return background
+    }
+    let plain = MiniLayout(line: [], track: false, artist: false, album: false)
+    let teal = (0.2, 0.49, 0.49, 0.55)
+    let ember = (0.36, 0.09, 0.15, 0.4)
+    // Every variant sets its background, so none of them shows the one saved in Settings.
+    let variants: [(String, MiniTextSide, MiniLayout, MiniBackground)] = [
+        ("below", .below, MiniLayout(), MiniBackground()),
+        ("above", .above, MiniLayout(), MiniBackground()),
+        ("right", .right, MiniLayout(), MiniBackground()),
+        ("left", .left, MiniLayout(), MiniBackground()),
+        ("pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [.next]), MiniBackground()),
+        ("plain", .below, plain, MiniBackground()),
+        ("tempo-only", .below, MiniLayout(bottom: .tempo, line: [], track: false, artist: false, album: false), MiniBackground()),
+        ("left-long", .left, MiniLayout(), MiniBackground()),
+        ("right-long", .right, MiniLayout(line: [.key, .tempo, .timeLeft]), MiniBackground()),
+        ("left-short", .left, MiniLayout(), MiniBackground()),
+        ("below-long", .below, MiniLayout(), MiniBackground()),
+        ("bg-glass-below", .below, MiniLayout(), makeBackground(.glass)),
+        ("bg-glass-below-long", .below, MiniLayout(), makeBackground(.glass)),
+        ("bg-glass-above-long", .above, MiniLayout(), makeBackground(.glass, tint: ember)),
+        ("bg-thick-right", .right, MiniLayout(), makeBackground(.thick)),
+        ("bg-thin-right-long", .right, MiniLayout(line: [.key, .tempo, .timeLeft]), makeBackground(.thin, roundness: 0.5)),
+        ("bg-colour-left-short", .left, MiniLayout(), makeBackground(.colour, roundness: 0, tint: teal)),
+        ("bg-thick-left-short", .left, MiniLayout(line: [.key, .tempo, .timeLeft]), makeBackground(.ultraThick)),
+        ("bg-colour-left-long", .left, MiniLayout(), makeBackground(.colour, roundness: 0, tint: teal)),
+        ("bg-clear-pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [.next]), makeBackground(.clearGlass, roundness: 0.35, tint: ember)),
+        ("bg-plain-circle", .below, plain, makeBackground(.glass)),
+        ("bg-glass-pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [.next]), makeBackground(.glass)),
+        ("bg-glass-plain-pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [], track: false, artist: false, album: false), makeBackground(.glass)),
+        ("bg-plain-square", .below, MiniLayout(bottom: .tempo, line: [], track: false, artist: false, album: false), makeBackground(.colour, roundness: 0.25, tint: teal)),
     ]
-    for (name, side, layout) in variants {
+    for (name, side, layout, background) in variants {
         let sample = HUDSample.track
         model.track = name.hasSuffix("-long")
             ? NowPlaying.Track(title: "Paper Lanterns (feat. Someone With a Long Name and Another One)", artist: sample.artist, album: sample.album,
@@ -6746,6 +6777,7 @@ extension EnvironmentValues {
         mini.key = DetectedKey(pitchClass: 1, minor: true)
         mini.side = side
         mini.layout = layout
+        mini.background = background
         let view = MiniPlayerView(model: model, mini: mini)
             .background(LinearGradient(colors: [Color(red: 0.36, green: 0.42, blue: 0.5), Color(red: 0.62, green: 0.55, blue: 0.5)], startPoint: .top, endPoint: .bottom))
             .environment(\.renderingPreview, true)
@@ -6755,16 +6787,32 @@ extension EnvironmentValues {
             try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-\(name).png"))
         }
     }
-    let mini = MiniState()
-    mini.layout = MiniLayout(top: .key, line: [.tempo, .pitch])
-    let editor = MiniPlayerView(model: model, mini: mini, editing: true)
-        .padding(18)
-        .background(Color(red: 0.16, green: 0.13, blue: 0.14))
-        .environment(\.renderingPreview, true)
-    let renderer = ImageRenderer(content: editor)
-    renderer.scale = 2
-    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-        try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-editor.png"))
+    for (name, background) in [("mini-editor", MiniBackground()), ("mini-editor-bg", makeBackground(.glass, roundness: 0.6, tint: ember))] {
+        let mini = MiniState()
+        mini.layout = MiniLayout(top: .key, line: [.tempo, .pitch])
+        mini.background = background
+        let editor = MiniPlayerView(model: model, mini: mini, editing: true)
+            .padding(18)
+            .background(Color(red: 0.16, green: 0.13, blue: 0.14))
+            .environment(\.renderingPreview, true)
+        let renderer = ImageRenderer(content: editor)
+        renderer.scale = 2
+        if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name).png"))
+        }
+    }
+    // Settings > Mini player > Background for a tinted glass, a colour and none. Its pickers, sliders and switches are
+    // AppKit controls, which ImageRenderer leaves out, so these go through a window that never shows on screen.
+    for scheme in [ColorScheme.light, .dark] {
+        for (name, value) in [("glass", makeBackground(.glass, roundness: 0.6, tint: ember)), ("glass-untinted", makeBackground(.thin)),
+                              ("colour", makeBackground(.colour, roundness: 0.3, tint: teal)), ("none", MiniBackground())] {
+            let form = Form {
+                Section("Background") { MiniBackgroundRows(background: .constant(value)) }
+            }
+            .formStyle(.grouped)
+            renderOffscreen(form, size: CGSize(width: 520, height: 210), scheme: scheme,
+                            to: URL(fileURLWithPath: dir).appending(path: "mini-background-\(name)-\(scheme == .dark ? "dark" : "light").png"))
+        }
     }
     // The whole editor of Settings > Mini player, with its tray, in both schemes.
     for scheme in [ColorScheme.light, .dark] {
@@ -6780,6 +6828,24 @@ extension EnvironmentValues {
             try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-settings-\(scheme == .dark ? "dark" : "light").png"))
         }
     }
+}
+
+/// Draws a view in a window that never shows on screen. Unlike ImageRenderer, this also draws AppKit controls.
+@MainActor func renderOffscreen(_ view: some View, size: CGSize, scheme: ColorScheme, to url: URL) {
+    let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height))
+    host.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+    let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -10000, y: -10000), size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    host.layoutSubtreeIfNeeded()
+    // The Form lays its rows out over a few turns of the run loop.
+    RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    host.layoutSubtreeIfNeeded()
+    if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+        host.cacheDisplay(in: host.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
+    window.contentView = nil
 }
 
 @MainActor func renderPreviews(to dir: String) {

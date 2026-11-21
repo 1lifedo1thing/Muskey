@@ -236,6 +236,10 @@ final class Preferences: ObservableObject {
     @Published var miniLayout: MiniLayout {
         didSet { defaults.set(try? JSONEncoder().encode(miniLayout), forKey: "miniLayout") }
     }
+    /// The background behind the mini player's record and song (Settings > Mini player > Background).
+    @Published var miniBackground: MiniBackground {
+        didSet { defaults.set(try? JSONEncoder().encode(miniBackground), forKey: "miniBackground") }
+    }
 
     private init() {
         defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true])
@@ -266,6 +270,7 @@ final class Preferences: ObservableObject {
         waveformLanes = (defaults.array(forKey: "waveformLanes") as? [Int]).map { Set($0.compactMap(Stem.init)) } ?? [.vocals, .guitar]
         miniPlayer = defaults.bool(forKey: "miniPlayer")
         miniLayout = defaults.data(forKey: "miniLayout").flatMap { try? JSONDecoder().decode(MiniLayout.self, from: $0) } ?? MiniLayout()
+        miniBackground = defaults.data(forKey: "miniBackground").flatMap { try? JSONDecoder().decode(MiniBackground.self, from: $0) } ?? MiniBackground()
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }
