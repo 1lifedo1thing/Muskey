@@ -6520,7 +6520,12 @@ extension EnvironmentValues {
 }
 
 @MainActor func renderPreviews(to dir: String) {
-    renderMiniPreviews(to: dir)
+    // `--render-only TEXT` renders only the states whose file name holds TEXT, and `--render-waveform FILE` draws the
+    // waveform from a file of the waveform cache instead of the made-up one, for comparing a few variants on real songs.
+    let only = TestFlags.value("--render-only")
+    let realWaveform = TestFlags.value("--render-waveform").flatMap { FileManager.default.contents(atPath: $0) }
+        .flatMap { try? JSONDecoder().decode(SongWaveform.self, from: $0) }
+    if only == nil { renderMiniPreviews(to: dir) }
     let csm = EKResult(pitchClass: 1, minor: 1, strength: 0.8)
     let a = EKResult(pitchClass: 9, minor: 0, strength: 0.8)
     // Name, phase, key, progress, shift, picking, relative, Lock Key.
@@ -6582,6 +6587,7 @@ extension EnvironmentValues {
             let lightCover = variant.hasPrefix("-skip") && suffix == "-nocover"
             if !variant.isEmpty, !["picking-Csm-3", "picking-A-to-Cm"].contains(name) || (suffix != "-song" && !noRecord && !karaokeSong && !lightCover) || layout.hasSuffix("-shortcuts") { continue }
             if variant.hasPrefix("-lyrics") || variant.hasPrefix("-stems"), name != "picking-Csm-3" { continue }
+            if let only, !"\(name)\(suffix)\(layout)\(variant)".contains(only) { continue }
         for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
             let model = HUDModel()
             // The renders show both rows, and the "-clean" ones the single row that new installs start with.
@@ -6656,7 +6662,7 @@ extension EnvironmentValues {
             model.artwork = artwork
             // The made-up waveform, whole, zoomed in, in the lanes of the stems, or half heard as a song from another
             // player is while it plays.
-            if song != nil {
+            if var song {
                 var waveform = HUDSample.waveform
                 if variant == "-waveform-lanes" || variant == "-waveform-hover-stems" || variant.hasPrefix("-lanes") {
                     // The guitar is silent for the first third of the song, and the winds are only the bleed of the
@@ -6671,6 +6677,12 @@ extension EnvironmentValues {
                     })
                 }
                 if variant == "-waveform-streamed" { for i in Int(Double(waveform.levels.count) * 0.46) ..< waveform.levels.count { waveform.levels[i] = 0 } }
+                if let realWaveform {
+                    waveform = realWaveform
+                    song.duration = realWaveform.duration
+                    song.elapsed = realWaveform.duration * 0.43
+                    model.track = song
+                }
                 model.wave.waveform = waveform
             }
             model.waveformShown = variant != "-waveform-off"

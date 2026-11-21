@@ -240,10 +240,13 @@ struct WaveformView: View {
             let h = max(1.5, CGFloat(value) * (lane.height - 3))
             context.fill(Path(roundedRect: CGRect(x: x, y: mid - h / 2, width: Self.barWidth, height: h), cornerRadius: 1), with: .color(color))
         }
+        // The name is in ink, not in the stem's colour: over loud bars of the same colour the letters blurred into them.
+        // A capsule behind the name read well but hid the first bars and repeated the chips under the lanes, and dimming
+        // the bars under the name made the stem look quiet where it was loud. The bars and the chip carry the colour.
         var label = context
         label.addFilter(.shadow(color: (scheme == .dark ? Color.black : .white).opacity(0.9), radius: 1.5))
         label.draw(Text(stem.name).font(.system(size: 8.5, weight: .bold, design: .rounded))
-            .foregroundStyle(isMuted ? palette.ink.opacity(0.45) : stem.color(scheme)),
+            .foregroundStyle(palette.ink.opacity(isMuted ? 0.45 : 0.85)),
             at: CGPoint(x: lane.minX + 4, y: lane.minY + 1), anchor: .topLeading)
     }
 
