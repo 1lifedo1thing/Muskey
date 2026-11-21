@@ -62,6 +62,9 @@ enum MenuBarIcon: String, CaseIterable {
 /// calmer record keeps the same ratio to it.
 enum RecordSpeed: Double, CaseIterable {
     case still = 0
+    case crawl = 2
+    case slowest = 4
+    case slower = 8.333
     case slow = 16.667
     case standard = 33.333
     case fast = 45
@@ -70,6 +73,9 @@ enum RecordSpeed: Double, CaseIterable {
     var title: String {
         switch self {
         case .still: "Still"
+        case .crawl: "2 rpm"
+        case .slowest: "4 rpm"
+        case .slower: "8⅓ rpm"
         case .slow: "16⅔ rpm"
         case .standard: "33⅓ rpm"
         case .fast: "45 rpm"
@@ -240,6 +246,10 @@ final class Preferences: ObservableObject {
     @Published var miniBackground: MiniBackground {
         didSet { defaults.set(try? JSONEncoder().encode(miniBackground), forKey: "miniBackground") }
     }
+    /// Whether the song goes beside the record, above or below it, or where the screen has room (Settings > Mini player > Direction).
+    @Published var miniDirection: MiniDirection {
+        didSet { defaults.set(miniDirection.rawValue, forKey: "miniDirection") }
+    }
 
     private init() {
         defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true])
@@ -264,13 +274,14 @@ final class Preferences: ObservableObject {
         autoHide = defaults.bool(forKey: "autoHide")
         autoHideSeconds = min(max(defaults.integer(forKey: "autoHideSeconds"), 1), 3600)
         cacheCleanup = CacheCleanup(rawValue: defaults.double(forKey: "cacheCleanup")) ?? .weekly
-        recordSpeed = defaults.object(forKey: "recordSpeed") == nil ? .standard : RecordSpeed(rawValue: defaults.double(forKey: "recordSpeed")) ?? .standard
+        recordSpeed = defaults.object(forKey: "recordSpeed") == nil ? .slow : RecordSpeed(rawValue: defaults.double(forKey: "recordSpeed")) ?? .slow
         waveform = defaults.bool(forKey: "waveform")
         waveformStyle = defaults.string(forKey: "waveformStyle").flatMap(WaveformStyle.init) ?? .ribbon
         waveformLanes = (defaults.array(forKey: "waveformLanes") as? [Int]).map { Set($0.compactMap(Stem.init)) } ?? [.vocals, .guitar]
         miniPlayer = defaults.bool(forKey: "miniPlayer")
         miniLayout = defaults.data(forKey: "miniLayout").flatMap { try? JSONDecoder().decode(MiniLayout.self, from: $0) } ?? MiniLayout()
         miniBackground = defaults.data(forKey: "miniBackground").flatMap { try? JSONDecoder().decode(MiniBackground.self, from: $0) } ?? MiniBackground()
+        miniDirection = defaults.string(forKey: "miniDirection").flatMap(MiniDirection.init) ?? .automatic
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }

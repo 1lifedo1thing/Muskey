@@ -29,7 +29,7 @@ enum MiniElement: String, Codable, CaseIterable, Identifiable {
         case .key: "G major"
         case .tempo: "124 BPM"
         case .pitch: "+2"
-        case .speed: "90%"
+        case .speed: "0.9×"
         case .loop: "↻ 0:42–0:58"
         case .timeLeft: "−2:41"
         case .vocals: "Vocals off"
@@ -172,6 +172,33 @@ struct MiniBackground: Codable, Equatable {
 
     /// The colour over glass and the materials, or nil when they show untinted.
     var tint: Color? { material == .colour || (material.tintable && tinted) ? color.opacity(opacity) : nil }
+
+    /// About how light the background shows, as a luminance from 0 to 1, over a desktop of luminance `behind`. Nil
+    /// without a background, where the song's text keeps its shadow over whatever is behind it.
+    func luminance(behind: Double) -> Double? {
+        guard visible else { return nil }
+        // How much of the desktop each material lets through.
+        let through: Double = switch material {
+        case .clearGlass: 0.85
+        case .glass: 0.55
+        case .ultraThin: 0.65
+        case .thin: 0.5
+        case .regular: 0.35
+        case .thick: 0.2
+        case .ultraThick: 0.1
+        case .colour, .none: 1
+        }
+        // Clear glass shows in the light scheme, with a faint white haze. The rest is near black.
+        let base = behind * through + (material == .clearGlass ? 0.8 : 0.02) * (1 - through)
+        guard tint != nil else { return base }
+        return opacity * Self.luminance(red: red, green: green, blue: blue) + (1 - opacity) * base
+    }
+
+    /// The relative luminance of an sRGB colour.
+    static func luminance(red: Double, green: Double, blue: Double) -> Double {
+        func linear(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+    }
 }
 
 /// The frame of the background around the record and the song, and the radius of its corners, in the coordinates of
@@ -252,15 +279,30 @@ struct MiniBackdropShape: Equatable {
     }
 }
 
+/// Where the song goes around the record (Settings > Mini player > Direction): wherever the screen suits it, always
+/// beside the record, or always above or below it.
+enum MiniDirection: String, CaseIterable {
+    case automatic, horizontal, vertical
+
+    var title: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .horizontal: "Horizontal"
+        case .vertical: "Vertical"
+        }
+    }
+}
+
 /// The side of the record that the song goes on.
 enum MiniTextSide: Equatable {
     case below, above, left, right
 
-    /// The screen is cut in thirds each way. In a corner, the song goes along the long side of the screen, away from
-    /// the edges: beside the record on a landscape screen, above or below it on a portrait or nearly square one. Near
-    /// the bottom edge it goes above, and everywhere else below. A side without room for the song gives its place to
-    /// the next one. `center` is the middle of the record, in points from the top left of the visible screen.
-    static func choose(center: CGPoint, screen: CGSize, record: CGFloat, text: CGSize) -> MiniTextSide {
+    /// Beside the record, the song goes on the side away from the nearer edge of the screen. Above or below, it goes
+    /// below, and above in the bottom third of the screen. Automatic puts it beside the record only in a corner: close
+    /// to a side edge and in the top or bottom third, on a landscape screen. Anywhere else it stays above or below,
+    /// however close the record is to the top or bottom edge. A side without room for the song gives its place to the
+    /// next one. `center` is the middle of the record, in points from the top left of the visible screen.
+    static func choose(center: CGPoint, screen: CGSize, record: CGFloat, text: CGSize, direction: MiniDirection = .automatic) -> MiniTextSide {
         let gap: CGFloat = 6
         let half = record / 2
         let fits: [MiniTextSide: Bool] = [
@@ -269,18 +311,24 @@ enum MiniTextSide: Equatable {
             .right: screen.width - (center.x + half) >= text.width + gap,
             .left: center.x - half >= text.width + gap,
         ]
-        let column = center.x < screen.width / 3 ? -1 : center.x > screen.width * 2 / 3 ? 1 : 0
+        let beside: MiniTextSide = center.x < screen.width / 2 ? .right : .left
+        let across: MiniTextSide = beside == .right ? .left : .right
         let row = center.y < screen.height / 3 ? -1 : center.y > screen.height * 2 / 3 ? 1 : 0
-        let landscape = screen.width / max(1, screen.height) >= 1.4
+        let stacked: MiniTextSide = row > 0 ? .above : .below
         var order: [MiniTextSide]
-        if column != 0, row != 0 {
-            let side: MiniTextSide = column < 0 ? .right : .left
-            let vertical: MiniTextSide = row < 0 ? .below : .above
-            order = landscape ? [side, vertical] : [vertical, side]
-        } else {
-            order = row > 0 ? [.above] : [.below]
+        switch direction {
+        case .horizontal:
+            order = [beside, across]
+        case .vertical:
+            order = [stacked, stacked == .below ? .above : .below]
+        case .automatic:
+            // Thirds of the width made a corner of a third of a wide screen, so a record far from the side edges
+            // turned the song sideways as it neared the top. A corner starts within two records of a side edge.
+            let nearSide = min(center.x, screen.width - center.x) < record * 2
+            let landscape = screen.width / max(1, screen.height) >= 1.4
+            order = nearSide && row != 0 ? (landscape ? [beside, stacked] : [stacked, beside]) : [stacked]
         }
-        order += [.below, .above, column > 0 ? .left : .right, column > 0 ? .right : .left]
+        order += [.below, .above, beside, across]
         return order.first { fits[$0] == true } ?? .below
     }
 }
@@ -292,6 +340,8 @@ final class MiniState: ObservableObject {
     @Published var side = MiniTextSide.below
     @Published var layout = Preferences.shared.miniLayout
     @Published var background = Preferences.shared.miniBackground
+    /// The luminance of the wallpaper under the player, which shows through glass and the lighter materials.
+    @Published var behind = 0.2
     /// The size of the song's text, which decides which sides have room for it.
     var textSize = CGSize(width: 180, height: 60)
     /// The record and the text, in the coordinates of the panel from its top left, which take the pointer. The rest
@@ -529,8 +579,16 @@ struct MiniPlayerView: View {
         return (Self.record - (Self.record - target) * eased).rounded()
     }
 
+    /// Dark text over a light background, and the usual light text with its shadow everywhere else.
+    private var darkText: Bool {
+        let behind = editing ? Wallpaper.luminance() ?? 0.2 : mini.behind
+        return (mini.background.luminance(behind: behind) ?? 0) > 0.4
+    }
+
     private var text: some View {
         let track = editing ? HUDSample.track : model.track
+        let dark = darkText
+        let ink = dark ? Color(red: 0.08, green: 0.07, blue: 0.07) : Color(red: 0.96, green: 0.95, blue: 0.93)
         let title = layout.track ? track?.title.flatMap { $0.isEmpty ? nil : $0 } : nil
         let album = layout.album ? track?.album.flatMap { $0.isEmpty ? nil : $0 } : nil
         let artist = layout.artist ? track?.artist.flatMap { $0.isEmpty ? nil : $0 } : nil
@@ -547,13 +605,13 @@ struct MiniPlayerView: View {
             if let artist {
                 Text(artist)
                     .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(ink.opacity(0.9))
                     .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line("artist"))
             }
             if let album {
                 Text(album)
                     .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.62))
+                    .foregroundStyle(ink.opacity(dark ? 0.7 : 0.62))
                     .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line("album"))
             }
             if editing {
@@ -564,7 +622,7 @@ struct MiniPlayerView: View {
                 .padding(.top, 4)
             } else {
                 ForEach(layout.line.compactMap { element in value(element).map { (element, $0) } }, id: \.0) { element, value in
-                    MiniChip(text: value, hue: element.hue, small: true)
+                    pill(element, value)
                         .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line(element.rawValue))
                         .layoutValue(key: MiniSongLayout.Pill.self, value: true)
                 }
@@ -572,15 +630,31 @@ struct MiniPlayerView: View {
         }
         .lineLimit(1)
         .truncationMode(.tail)
-        .foregroundStyle(Color(red: 0.96, green: 0.95, blue: 0.93))
+        .foregroundStyle(ink)
         .multilineTextAlignment(alignment == .leading ? .leading : alignment == .trailing ? .trailing : .center)
-        .shadow(color: .black.opacity(0.75), radius: 6, y: 1)
+        .shadow(color: dark ? .white.opacity(0.25) : .black.opacity(0.75), radius: dark ? 3 : 6, y: dark ? 0 : 1)
+        .animation(.easeOut(duration: 0.2), value: dark)
+    }
+
+    /// A pill of the line under the song. Time left counts down on its own clock, ticking as each second of the
+    /// song passes, since the player's view only draws again when something else changes.
+    @ViewBuilder private func pill(_ element: MiniElement, _ value: String) -> some View {
+        if element == .timeLeft, !editing, let track = model.track, track.playing, let duration = track.duration, let position = track.position(at: Date()) {
+            let rate = max(track.rate ?? 1, 0.05)
+            let left = max(0, duration - position)
+            let next = Date().addingTimeInterval((left - left.rounded(.down)) / rate + 0.02)
+            TimelineView(.periodic(from: next, by: 1 / rate)) { context in
+                MiniChip(text: self.value(element, at: context.date) ?? value, hue: element.hue, small: true)
+            }
+        } else {
+            MiniChip(text: value, hue: element.hue, small: true)
+        }
     }
 
     // MARK: Elements
 
     /// The element's live value, or nil when it has nothing to show, like the speed of a song at its own tempo.
-    private func value(_ element: MiniElement) -> String? {
+    private func value(_ element: MiniElement, at date: Date = Date()) -> String? {
         switch element {
         case .key:
             return mini.key?.name
@@ -590,12 +664,12 @@ struct MiniPlayerView: View {
         case .pitch:
             return model.shift == 0 ? nil : Shift.short(model.shift)
         case .speed:
-            return abs(model.speed - 1) < 0.005 ? nil : "\(Int((model.speed * 100).rounded()))%"
+            return abs(model.speed - 1) < 0.005 ? nil : Self.speed(model.speed) + "×"
         case .loop:
             guard let loop = model.loop, let end = loop.end else { return nil }
             return "↻ \(Self.time(loop.start))–\(Self.time(end))"
         case .timeLeft:
-            guard let track = model.track, let duration = track.duration, let position = track.position(at: Date()) else { return nil }
+            guard let track = model.track, let duration = track.duration, let position = track.position(at: date) else { return nil }
             return "−" + Self.time(max(0, duration - position))
         case .vocals:
             return model.stemsMuted.contains(.vocals) ? "Vocals off" : nil
@@ -603,6 +677,14 @@ struct MiniPlayerView: View {
             guard let current = model.queueCurrent, let index = model.queue.firstIndex(where: { $0.id == current }), index + 1 < model.queue.count else { return nil }
             return "⏭ " + model.queue[index + 1].title
         }
+    }
+
+    /// A speed as a multiple of the song's tempo, with as few decimals as it needs: 0.9, 0.85, 1.25.
+    static func speed(_ speed: Double) -> String {
+        var text = String(format: "%.2f", speed)
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text
     }
 
     static func time(_ seconds: Double) -> String {
@@ -792,7 +874,13 @@ struct MiniBackdrop: View {
         if renderingPreview {
             standIn(shape)
         } else if let glass = background.material.glass {
-            Color.clear.glassEffect(background.tint.map { glass.tint($0) } ?? glass, in: shape)
+            // The glass is applied to a fill of the tint, which tints regular and clear glass alike. Glass.tint gave
+            // regular glass a brownish grey here, whatever the colour, while clear glass took it. Clear glass keeps the
+            // light scheme, since in the dark one it dims what is behind it, and the song's text turns dark over a
+            // light desktop instead.
+            shape.fill(background.tint ?? .clear)
+                .glassEffect(glass, in: shape)
+                .environment(\.colorScheme, background.material == .clearGlass ? .light : .dark)
         } else if let material = background.material.material {
             shape.fill(material).overlay { if let tint = background.tint { shape.fill(tint) } }
         } else {
@@ -903,8 +991,11 @@ final class MiniPlayerPanel: NSPanel {
         // A background reaches past the song by its padding, which needs room on the screen too.
         let padding = mini.background.visible ? MiniBackdropShape.padding : 0
         let text = CGSize(width: mini.textSize.width + padding, height: mini.textSize.height + padding)
-        let side = MiniTextSide.choose(center: point, screen: visible.size, record: MiniPlayerView.box, text: text)
+        let side = MiniTextSide.choose(center: point, screen: visible.size, record: MiniPlayerView.box, text: text, direction: Preferences.shared.miniDirection)
         if mini.side != side { mini.side = side }
+        // The wallpaper around the record, for the colour of the song's text over glass and the lighter materials.
+        let around = CGRect(x: center.x - MiniPlayerView.box, y: center.y - MiniPlayerView.box, width: MiniPlayerView.box * 2, height: MiniPlayerView.box * 2)
+        if mini.background.visible, let behind = Wallpaper.luminance(under: around, on: screen), abs(behind - mini.behind) > 0.01 { mini.behind = behind }
     }
 
     // MARK: Clicks through the empty parts

@@ -178,4 +178,48 @@ struct HUDSampleView: View {
         else { return nil }
         return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
     }()
+
+    /// Small thumbnails of each screen's wallpaper, by the wallpaper's file, for reading how light a part of it is.
+    private static var thumbnails: [URL: CGImage] = [:]
+
+    private static func thumbnail(for screen: NSScreen) -> CGImage? {
+        guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else { return nil }
+        if let cached = thumbnails[url] { return cached }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                                                          kCGImageSourceThumbnailMaxPixelSize: 400] as CFDictionary)
+        else { return nil }
+        thumbnails[url] = image
+        return image
+    }
+
+    /// The average luminance, from 0 to 1, of the wallpaper under `rect` (in screen points, as NSScreen frames are),
+    /// or of the main screen's whole wallpaper. The wallpaper is taken to fill its screen, which is how macOS shows it
+    /// unless it was set to fit or to tile.
+    static func luminance(under rect: CGRect? = nil, on screen: NSScreen? = nil) -> Double? {
+        guard let screen = screen ?? NSScreen.main, let image = thumbnail(for: screen) else { return nil }
+        let frame = screen.frame
+        let width = CGFloat(image.width), height = CGFloat(image.height)
+        var crop = CGRect(x: 0, y: 0, width: width, height: height)
+        if let rect {
+            let scale = max(width / frame.width, height / frame.height)
+            let left = (width - frame.width * scale) / 2, top = (height - frame.height * scale) / 2
+            crop = CGRect(x: left + (rect.minX - frame.minX) * scale, y: top + (frame.maxY - rect.maxY) * scale,
+                          width: rect.width * scale, height: rect.height * scale).intersection(crop).integral
+        }
+        guard !crop.isEmpty, let part = image.cropping(to: crop) else { return nil }
+        // Drawn down to 4 by 4 pixels, which averages the part well enough for a choice of text colour.
+        var pixels = [UInt8](repeating: 0, count: 4 * 4 * 4)
+        guard let context = CGContext(data: &pixels, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 16,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(part, in: CGRect(x: 0, y: 0, width: 4, height: 4))
+        var total = 0.0
+        for index in 0 ..< 16 {
+            let pixel = index * 4
+            total += MiniBackground.luminance(red: Double(pixels[pixel]) / 255, green: Double(pixels[pixel + 1]) / 255, blue: Double(pixels[pixel + 2]) / 255)
+        }
+        return total / 16
+    }
 }

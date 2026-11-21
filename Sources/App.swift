@@ -2368,6 +2368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.mini.background = background
             DispatchQueue.main.async { self?.miniPanel.chooseSide() }
         }.store(in: &prefChanges)
+        prefs.$miniDirection.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.miniPanel.chooseSide() } }.store(in: &prefChanges)
         model.$track.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.syncMini() } }.store(in: &prefChanges)
         model.$lyricsShown.dropFirst().removeDuplicates().sink { [weak self] _ in DispatchQueue.main.async { self?.syncChords() } }.store(in: &prefChanges)
         mini.onHide = { [weak self] in self?.hideMiniPlayer() }
@@ -4630,11 +4631,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startSave(SaveJob(name: name, source: source, changes: changes, url: url, format: format))
     }
 
-    /// The title, and what changed in parentheses: `Bine (C minor, 90%, no vocals)`.
+    /// The title, and what changed in parentheses: `Bine (C minor, 0.9x, no vocals)`.
     private func fileName(_ name: String, _ changes: SongChanges) -> String {
         var parts: [String] = []
         if changes.semitones != 0, let base = shiftBase { parts.append(model.shown(base.transposed(by: changes.semitones)).name) }
-        if abs(changes.speed - 1) > 0.001 { parts.append("\(Int((changes.speed * 100).rounded()))%") }
+        if abs(changes.speed - 1) > 0.001 { parts.append(MiniPlayerView.speed(changes.speed) + "x") }
         if let gains = changes.stemGains {
             let muted = Stem.shown.filter { gains[$0.rawValue] == 0 }, playing = Stem.shown.filter { gains[$0.rawValue] > 0 }
             if muted.isEmpty {
@@ -6782,6 +6783,8 @@ extension EnvironmentValues {
         ("bg-glass-pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [.next]), makeBackground(.glass)),
         ("bg-glass-plain-pills", .below, MiniLayout(top: .key, bottom: .tempo, line: [], track: false, artist: false, album: false), makeBackground(.glass)),
         ("bg-plain-square", .below, MiniLayout(bottom: .tempo, line: [], track: false, artist: false, album: false), makeBackground(.colour, roundness: 0.25, tint: teal)),
+        ("bg-mint-below", .below, MiniLayout(line: [.key, .speed, .timeLeft]), makeBackground(.colour, roundness: 0.35, tint: (0.9, 1, 0.93, 1))),
+        ("bg-yellow-right", .right, MiniLayout(), makeBackground(.thick, roundness: 0.6, tint: (1, 0.85, 0.3, 0.85))),
     ]
     for (name, side, layout, background) in variants {
         let sample = HUDSample.track
@@ -6832,6 +6835,16 @@ extension EnvironmentValues {
             renderOffscreen(form, size: CGSize(width: 520, height: 210), scheme: scheme,
                             to: URL(fileURLWithPath: dir).appending(path: "mini-background-\(name)-\(scheme == .dark ? "dark" : "light").png"))
         }
+    }
+    // Settings > Mini player > Direction, with the wallpaper behind each tile.
+    for scheme in [ColorScheme.light, .dark] {
+        var direction = MiniDirection.automatic
+        let form = Form {
+            Section("Direction") { MiniDirectionTiles(direction: Binding(get: { direction }, set: { direction = $0 })) }
+        }
+        .formStyle(.grouped)
+        renderOffscreen(form, size: CGSize(width: 520, height: 200), scheme: scheme,
+                        to: URL(fileURLWithPath: dir).appending(path: "mini-direction-\(scheme == .dark ? "dark" : "light").png"))
     }
     // The whole editor of Settings > Mini player, with its tray, in both schemes.
     for scheme in [ColorScheme.light, .dark] {

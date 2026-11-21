@@ -289,6 +289,9 @@ private struct MiniPlayerPane: View {
                 Toggle("Artist", isOn: $prefs.miniLayout.artist)
                 Toggle("Album", isOn: $prefs.miniLayout.album)
             }
+            Section("Direction") {
+                MiniDirectionTiles(direction: $prefs.miniDirection)
+            }
             Section("Background") {
                 MiniBackgroundRows(background: $prefs.miniBackground)
             }
@@ -298,6 +301,69 @@ private struct MiniPlayerPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Settings > Mini player > Direction: a picture tile for each direction. It takes a binding so renders can show it
+/// without touching the saved settings.
+struct MiniDirectionTiles: View {
+    @Binding var direction: MiniDirection
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach(MiniDirection.allCases, id: \.self) { choice in
+                ChoiceTile(title: choice.title, selected: direction == choice, height: 96, wallpaper: true) {
+                    direction = choice
+                } preview: {
+                    MiniDirectionPreview(direction: choice)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// A small record with three lines of song beside it or under it, and for Automatic, a screen with one of each: beside
+/// the record in a corner, and over it at the bottom edge.
+private struct MiniDirectionPreview: View {
+    let direction: MiniDirection
+
+    var body: some View {
+        switch direction {
+        case .horizontal:
+            HStack(spacing: 8) { record(34); lines(.leading, 38) }
+        case .vertical:
+            VStack(spacing: 6) { record(34); lines(.center, 44) }
+        case .automatic:
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .strokeBorder(.white.opacity(0.7), lineWidth: 1.5)
+                .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(.black.opacity(0.18)))
+                .frame(width: 118, height: 74)
+                .overlay(alignment: .topLeading) {
+                    HStack(spacing: 4) { record(18); lines(.leading, 22, small: true) }.padding(6)
+                }
+                .overlay(alignment: .bottom) {
+                    VStack(spacing: 3) { lines(.center, 26, small: true); record(18) }.padding(.bottom, 5)
+                }
+        }
+    }
+
+    private func record(_ size: CGFloat) -> some View {
+        Circle()
+            .fill(Color(white: 0.08))
+            .overlay(Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5).padding(size * 0.12))
+            .overlay(Circle().fill(Color(red: 0.95, green: 0.62, blue: 0.3)).frame(width: size * 0.36, height: size * 0.36))
+            .frame(width: size, height: size)
+            .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+    }
+
+    private func lines(_ alignment: HorizontalAlignment, _ width: CGFloat, small: Bool = false) -> some View {
+        VStack(alignment: alignment, spacing: small ? 2 : 3) {
+            Capsule().fill(.white).frame(width: width, height: small ? 3 : 4.5)
+            Capsule().fill(.white.opacity(0.8)).frame(width: width * 0.72, height: small ? 2.5 : 3.5)
+            Capsule().fill(.white.opacity(0.5)).frame(width: width * 0.86, height: small ? 2.5 : 3.5)
+        }
+        .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
     }
 }
 
@@ -332,7 +398,9 @@ struct MiniBackgroundRows: View {
                         .disabled(!on)
                     Text("\(Int((background.opacity * 100).rounded()))%")
                         .monospacedDigit()
-                        .frame(width: 36, alignment: .trailing)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .frame(minWidth: 40, alignment: .trailing)
                         .foregroundStyle(on ? .primary : .secondary)
                     if !fill {
                         Toggle("Tint", isOn: $background.tinted)
