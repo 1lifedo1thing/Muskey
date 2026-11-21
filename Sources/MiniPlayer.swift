@@ -319,8 +319,8 @@ enum MiniTextSide: Equatable {
         }
     }
 
-    /// A fixed direction keeps its side, and gives way to the opposite side only when the song doesn't fit on the
-    /// screen there. Automatic puts the song beside the record only in a corner: close to a side edge and in the top or
+    /// A fixed direction always keeps its side: the panel keeps the record far enough from the edge for the song to
+    /// fit there (`MiniPlayerPanel.fit`). Automatic puts the song beside the record only in a corner: close to a side edge and in the top or
     /// bottom third, on a landscape screen, on the side away from the edge. Anywhere else it goes below, or above in
     /// the bottom third of the screen, however close the record is to the top or bottom edge. A side without room for
     /// the song gives its place to the next one. `center` is the middle of the record, in points from the top left of
@@ -338,10 +338,9 @@ enum MiniTextSide: Equatable {
         let across: MiniTextSide = beside == .right ? .left : .right
         let row = center.y < screen.height / 3 ? -1 : center.y > screen.height * 2 / 3 ? 1 : 0
         let stacked: MiniTextSide = row > 0 ? .above : .below
+        if let side = direction.side { return side }
         var order: [MiniTextSide]
-        if let side = direction.side {
-            order = [side, side.opposite]
-        } else {
+        do {
             // Thirds of the width made a corner of a third of a wide screen, so a record far from the side edges
             // turned the song sideways as it neared the top. A corner starts within two records of a side edge.
             let nearSide = min(center.x, screen.width - center.x) < record * 2
@@ -363,7 +362,11 @@ final class MiniState: ObservableObject {
     /// The luminance of the wallpaper under the player, which shows through glass and the lighter materials.
     @Published var behind = 0.2
     /// The size of the song's text, which decides which sides have room for it.
-    var textSize = CGSize(width: 180, height: 60)
+    var textSize = CGSize(width: 180, height: 60) {
+        didSet { if abs(textSize.width - oldValue.width) > 1 || abs(textSize.height - oldValue.height) > 1 { onTextSize() } }
+    }
+    /// A longer title or another pill made the song bigger, which can take it past the edge on a fixed side.
+    var onTextSize: () -> Void = {}
     /// The record and the text, in the coordinates of the panel from its top left, which take the pointer. The rest
     /// of the panel lets clicks through to the windows under it.
     var hitFrames: [String: CGRect] = [:]
@@ -970,6 +973,7 @@ final class MiniPlayerPanel: NSPanel {
         contentView = hosting
         keepOnScreen()
         place()
+        mini.onTextSize = { [weak self] in DispatchQueue.main.async { self?.refit() } }
     }
 
     override var canBecomeKey: Bool { false }
@@ -1003,15 +1007,62 @@ final class MiniPlayerPanel: NSPanel {
         center = CGPoint(x: visible.maxX - 130, y: visible.minY + 150)
     }
 
-    /// The side of the record that the song goes on, by where the record is on its screen.
+    /// The song's size with the background's padding around it, which needs room on the screen too.
+    private var songSize: CGSize {
+        let padding = mini.background.visible ? MiniBackdropShape.padding : 0
+        return CGSize(width: mini.textSize.width + padding, height: mini.textSize.height + padding)
+    }
+
+    /// With a fixed direction, the record stops short of an edge where the song on its side would leave the screen,
+    /// so the song never moves to another side. Automatic leaves the record anywhere and moves the song instead.
+    private func fit(_ point: CGPoint) -> CGPoint {
+        guard let side = Preferences.shared.miniDirection.side, hasSong,
+              let visible = (NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main)?.visibleFrame
+        else { return point }
+        let half = MiniPlayerView.box / 2, gap: CGFloat = 6, song = songSize
+        var x = point.x, y = point.y
+        func clamp(_ value: CGFloat, _ low: CGFloat, _ high: CGFloat) -> CGFloat { low > high ? value : min(max(value, low), high) }
+        switch side {
+        case .below:
+            y = max(y, visible.minY + half + gap + song.height)
+            x = clamp(x, visible.minX + song.width / 2, visible.maxX - song.width / 2)
+        case .above:
+            y = min(y, visible.maxY - half - gap - song.height)
+            x = clamp(x, visible.minX + song.width / 2, visible.maxX - song.width / 2)
+        case .right:
+            x = min(x, visible.maxX - half - gap - song.width)
+            y = clamp(y, visible.minY + song.height / 2, visible.maxY - song.height / 2)
+        case .left:
+            x = max(x, visible.minX + half + gap + song.width)
+            y = clamp(y, visible.minY + song.height / 2, visible.maxY - song.height / 2)
+        }
+        return CGPoint(x: x, y: y)
+    }
+
+    /// Whether the player shows any of the song's lines or pills beside the record.
+    private var hasSong: Bool {
+        let layout = mini.layout
+        return layout.track || layout.artist || layout.album || !layout.line.isEmpty
+    }
+
+    /// Moves the record in from the edge when the song grew past it on a fixed side. Automatic keeps the side it
+    /// picked until the next move, since a new side changes the song's size again.
+    private func refit() {
+        let fitted = fit(center)
+        guard fitted != center else { return }
+        center = fitted
+        UserDefaults.standard.set([Double(center.x), Double(center.y)], forKey: "miniPlayerCenter")
+        if isVisible { place() }
+    }
+
+    /// The side of the record that the song goes on, by where the record is on its screen. A fixed direction moves the
+    /// record in from the edge when the song wouldn't fit on its side.
     func chooseSide() {
+        refit()
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
         let point = CGPoint(x: center.x - visible.minX, y: visible.maxY - center.y)
-        // A background reaches past the song by its padding, which needs room on the screen too.
-        let padding = mini.background.visible ? MiniBackdropShape.padding : 0
-        let text = CGSize(width: mini.textSize.width + padding, height: mini.textSize.height + padding)
-        let side = MiniTextSide.choose(center: point, screen: visible.size, record: MiniPlayerView.box, text: text, direction: Preferences.shared.miniDirection)
+        let side = MiniTextSide.choose(center: point, screen: visible.size, record: MiniPlayerView.box, text: songSize, direction: Preferences.shared.miniDirection)
         if mini.side != side { mini.side = side }
         // The wallpaper around the record, for the colour of the song's text over glass and the lighter materials.
         let around = CGRect(x: center.x - MiniPlayerView.box, y: center.y - MiniPlayerView.box, width: MiniPlayerView.box * 2, height: MiniPlayerView.box * 2)
@@ -1076,7 +1127,7 @@ final class MiniPlayerPanel: NSPanel {
                 guard hypot(dx, dy) >= 4 else { break }
                 draggingPanel = true
             }
-            center = CGPoint(x: start.center.x + dx, y: start.center.y + dy)
+            center = fit(CGPoint(x: start.center.x + dx, y: start.center.y + dy))
             place()
             return
         case .leftMouseUp:
@@ -1129,10 +1180,12 @@ struct MiniLayoutEditor: View {
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity)
             // The Mac's wallpaper behind the player, as it floats over the desktop, which also shows how its background
-            // reads there.
+            // reads there. The image fills a clear view of the editor's size and is clipped to it: clipped on its own,
+            // the filled image kept its own height and reached past the editor, under the tray.
             .background {
                 if let image = Wallpaper.image {
-                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                    Color.clear
+                        .overlay { Image(nsImage: image).resizable().aspectRatio(contentMode: .fill) }
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 } else {
                     RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(red: 0.16, green: 0.13, blue: 0.14))
