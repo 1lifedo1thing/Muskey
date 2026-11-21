@@ -6574,6 +6574,7 @@ extension EnvironmentValues {
     // `--render-only TEXT` renders only the states whose file name holds TEXT, and `--render-waveform FILE` draws the
     // waveform from a file of the waveform cache instead of the made-up one, for comparing a few variants on real songs.
     let only = TestFlags.value("--render-only")
+    if let style = TestFlags.value("--key-style").flatMap(KeyChip.SelectedStyle.init) { KeyChip.selectedStyle = style }
     let realWaveform = TestFlags.value("--render-waveform").flatMap { FileManager.default.contents(atPath: $0) }
         .flatMap { try? JSONDecoder().decode(SongWaveform.self, from: $0) }
     if only == nil { renderMiniPreviews(to: dir) }
@@ -6638,7 +6639,8 @@ extension EnvironmentValues {
             let lightCover = variant.hasPrefix("-skip") && suffix == "-nocover"
             if !variant.isEmpty, !["picking-Csm-3", "picking-A-to-Cm"].contains(name) || (suffix != "-song" && !noRecord && !karaokeSong && !lightCover) || layout.hasSuffix("-shortcuts") { continue }
             if variant.hasPrefix("-lyrics") || variant.hasPrefix("-stems"), name != "picking-Csm-3" { continue }
-            if let only, !"\(name)\(suffix)\(layout)\(variant)".contains(only) { continue }
+            // A trailing $ asks for that one state alone.
+            if let only, only.hasSuffix("$") ? "\(name)\(suffix)\(layout)\(variant)" != only.dropLast() : !"\(name)\(suffix)\(layout)\(variant)".contains(only) { continue }
         for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
             let model = HUDModel()
             // The renders show both rows, and the "-clean" ones the single row that new installs start with.
