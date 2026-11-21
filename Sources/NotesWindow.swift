@@ -1058,14 +1058,8 @@ private struct NotesTopBar: View {
             .frame(minWidth: 90, alignment: .leading)
             .layoutPriority(1)
             Spacer(minLength: 0)
-            if model.view == .tab, model.hasTab, model.done { NotesCapo(model: model, palette: palette) }
+            // The state of the song sits in the status bar at the bottom, so the top bar only holds what changes the page.
             NotesViewSwitch(view: $model.view, palette: palette)
-            // A narrow window keeps the pills that it has room for, the transpose first.
-            ViewThatFits(in: .horizontal) {
-                NotesStatus(model: model, palette: palette, tempo: true, key: true)
-                NotesStatus(model: model, palette: palette, tempo: false, key: true)
-                NotesStatus(model: model, palette: palette, tempo: false, key: false)
-            }
             RoundButton(symbol: "rectangle.portrait.rotate", help: "Portrait or landscape page", palette: palette, action: model.onTurnPage)
             Menu {
                 Section("Save the notes as") {
@@ -1099,25 +1093,21 @@ private struct NotesTopBar: View {
     }
 }
 
-/// The capo of the tab, with buttons that move it a fret down or up, in a capsule like the pills of the HUD.
+/// The capo of the tab, with round buttons that move it a fret down or up, sized for the status bar.
 private struct NotesCapo: View {
     @ObservedObject var model: NotesModel
     let palette: Palette
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 4) {
             step("minus", by: -1).disabled(model.capo == 0)
             Text(model.capo == 0 ? "No capo" : "Capo \(model.capo)")
-                .font(.system(size: 11.5, weight: .heavy, design: .rounded))
                 .monospacedDigit()
-                .foregroundStyle(model.capo == 0 ? palette.muted : palette.ink)
+                .foregroundStyle(model.capo == 0 ? palette.muted : palette.ink.opacity(0.8))
                 .contentTransition(.numericText(value: Double(model.capo)))
                 .fixedSize()
             step("plus", by: 1).disabled(model.capo >= 11)
         }
-        .padding(.horizontal, 3)
-        .padding(.vertical, 2)
-        .background(Capsule().fill(palette.ink.opacity(0.1)))
         .help("Capo (⌥↑ ⌥↓)")
         .animation(.snappy(duration: 0.2), value: model.capo)
     }
@@ -1125,9 +1115,10 @@ private struct NotesCapo: View {
     private func step(_ symbol: String, by amount: Int) -> some View {
         Button { model.onCapo(amount) } label: {
             Image(systemName: symbol)
-                .font(.system(size: 9, weight: .heavy))
+                .font(.system(size: 8, weight: .heavy))
                 .foregroundStyle(palette.ink)
-                .frame(width: 18, height: 18)
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(palette.ink.opacity(0.08)))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1163,32 +1154,68 @@ private struct NotesViewSwitch: View {
     }
 }
 
-/// The key and the tempo once the notes are done. The progress and a failure show on the page.
-private struct NotesStatus: View {
+/// The bar along the bottom of the window: the keys on the left, and on the right the state of the song once the notes
+/// are done (the key, the tempo, the pitch change and the capo), as plain text between hairlines.
+private struct NotesStatusBar: View {
     @ObservedObject var model: NotesModel
     let palette: Palette
-    var tempo = true
-    var key = true
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 0) {
+            // A narrow window keeps the hints that it has room for, and the state of the song always.
+            ViewThatFits(in: .horizontal) {
+                if model.view == .tab, model.hasTab {
+                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["⌥", "↑", "↓"], "capo"), (["esc"], "close")])
+                }
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["esc"], "close")])
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["←", "→"], "page"), (["↑", "↓"], "transpose")])
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["↑", "↓"], "transpose")])
+                hints([(["R"], "region loop")])
+                Color.clear.frame(width: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if model.done {
-                if model.shift != 0 { pill(Shift.text(model.shift), color: NotesAccent.color(colorScheme)) }
-                if key, let shown = model.key?.transposed(by: model.shift) { pill(shown.name, color: palette.ink) }
-                if tempo { pill("\(Int(model.bpm.rounded())) BPM", color: palette.ink) }
+                HStack(spacing: 0) {
+                    if let shown = model.key?.transposed(by: model.shift) { item { Text(shown.name) } }
+                    item { Text("\(Int(model.bpm.rounded())) BPM") }
+                    if model.shift != 0 { item(color: NotesAccent.color(colorScheme)) { Text(Shift.text(model.shift)) } }
+                    if model.view == .tab, model.hasTab { item { NotesCapo(model: model, palette: palette) } }
+                }
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
+        .padding(.leading, 20)
+        .padding(.trailing, 8)
+        .frame(height: 30)
+        .background(UnevenRoundedRectangle(bottomLeadingRadius: 26, bottomTrailingRadius: 26).fill(palette.ink.opacity(0.03)))
+        .overlay(alignment: .top) { Rectangle().fill(palette.ink.opacity(0.08)).frame(height: 1) }
     }
 
-    private func pill(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 11.5, weight: .bold, design: .rounded))
-            .foregroundStyle(color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(color.opacity(0.12)))
-            .fixedSize()
+    private func item(color: Color? = nil, @ViewBuilder _ content: () -> some View) -> some View {
+        content()
+            .font(.system(size: 11, weight: .heavy, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(color ?? palette.ink.opacity(0.8))
+            .padding(.horizontal, 12)
+            .frame(maxHeight: .infinity)
+            .overlay(alignment: .leading) { Rectangle().fill(palette.ink.opacity(0.08)).frame(width: 1) }
+    }
+
+    private func hints(_ list: [([String], String)]) -> some View {
+        HStack(spacing: 12) {
+            ForEach(list, id: \.1) { keys, name in
+                HStack(spacing: 5) {
+                    HStack(spacing: 3) { ForEach(keys, id: \.self) { Keycap(text: $0, palette: palette, small: true) } }
+                    Text(name)
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(palette.muted)
+                        .fixedSize()
+                }
+            }
+        }
+        .opacity(0.6)
+        .fixedSize()
     }
 }
 
@@ -1960,42 +1987,15 @@ private struct NotesFooter: View {
     let palette: Palette
 
     var body: some View {
-        HStack(spacing: 14) {
-            NotesTime(model: model, palette: palette)
-            // A stem without notes has no pages to move through.
-            if model.phase != .quiet, model.phase != .empty { NotesPager(model: model, palette: palette) }
-            Spacer(minLength: 0)
-            // A narrow window keeps the hints that it has room for.
-            ViewThatFits(in: .horizontal) {
-                if model.view == .tab, model.hasTab {
-                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["⌥", "↑", "↓"], "capo"), (["esc"], "close")])
-                }
-                hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["esc"], "close")])
-                hints([(["space"], "play or pause"), (["R"], "region loop"), (["←", "→"], "page"), (["↑", "↓"], "transpose")])
-                hints([(["space"], "play or pause"), (["R"], "region loop"), (["↑", "↓"], "transpose")])
-                hints([(["R"], "region loop")])
-                Color.clear.frame(width: 0)
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                NotesTime(model: model, palette: palette)
+                // A stem without notes has no pages to move through.
+                if model.phase != .quiet, model.phase != .empty { NotesPager(model: model, palette: palette) }
             }
-        }
-        .padding(.horizontal, 20)
-        .frame(height: 52)
-    }
-
-    private func hints(_ list: [([String], String)]) -> some View {
-        HStack(spacing: 10) {
-            ForEach(list, id: \.1) { keys, name in hint(keys, name) }
-        }
-        .opacity(0.62)
-        .fixedSize()
-    }
-
-    private func hint(_ keys: [String], _ name: String) -> some View {
-        HStack(spacing: 5) {
-            HStack(spacing: 3) { ForEach(keys, id: \.self) { Keycap(text: $0, palette: palette, small: true) } }
-            Text(name)
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(palette.muted)
-                .fixedSize()
+            .padding(.horizontal, 20)
+            .frame(height: 50)
+            NotesStatusBar(model: model, palette: palette)
         }
     }
 }
@@ -2070,7 +2070,9 @@ private struct NotesTime: View {
                     .contentShape(Rectangle())
                     .onTapGesture { point in model.onSeek(model.duration * Double(point.x / max(1, geometry.size.width))) }
                 }
-                .frame(width: 150, height: 16)
+                // The bar takes the width that the pager leaves, so a click lands on a finer time.
+                .frame(minWidth: 60, maxWidth: .infinity)
+                .frame(height: 16)
                 Text(Self.time(model.duration)).foregroundStyle(palette.muted).fixedSize()
             }
             .font(.system(size: 11.5, weight: .bold, design: .rounded))
