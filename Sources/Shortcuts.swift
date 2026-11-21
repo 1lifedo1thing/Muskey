@@ -111,6 +111,7 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("←"), .key("→")], name: "previous or next page", condition: "in the notes window"),
             Row(caps: [.key("↑"), .key("↓")], name: "transpose", condition: "in the notes window"),
             Row(caps: [.key("⌥"), .key("↑"), .key("↓")], name: "capo", condition: "in the notes window's Tab view"),
+            Row(caps: [.gesture("click on notes", symbol: "cursorarrow.click")], name: "play from there"),
             Row(caps: [.gesture("drag on notes", symbol: "arrow.left.and.right")], name: "region loop"),
         ])
         let pointer = KeyGroup(name: "Mouse and trackpad", symbol: "computermouse", hue: 58, rows: [

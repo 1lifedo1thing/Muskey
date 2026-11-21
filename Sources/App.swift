@@ -2767,12 +2767,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--open PATH_OR_LINK` plays a file or a link, as a drop on the HUD does.
         if let text = Self.stringOption("--open"), let url = FilePlayer.url(from: text) { open([url]) }
         // `--notes-open STEM` opens the notes window on that stem of the song that `--open` plays, once it plays.
+        // `--notes-fixture FILE` puts the notes of a fixture in the cache for that song first, for a Mac without them.
         if let name = Self.stringOption("--notes-open"), let stem = Stem.allCases.first(where: { $0.name.lowercased() == name.lowercased() }) {
             Task { @MainActor [weak self] in
                 for _ in 0 ..< 40 {
                     try? await Task.sleep(for: .seconds(0.5))
                     guard let self else { return }
                     if playsInFilePlayer, let path = filePlayer.current?.path, let track = nowPlaying.track {
+                        if let file = Self.stringOption("--notes-fixture"), let data = try? Data(contentsOf: URL(fileURLWithPath: file)),
+                           let fixture = try? JSONDecoder().decode(NotesFixture.self, from: data) {
+                            NotesStore.save(fixture, path: path, stem: stem)
+                        }
                         return openNotes(path: path, track: track, stem: stem)
                     }
                 }
@@ -3251,6 +3256,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let notes = notesWindow.model else { return }
         let playing = notes.now() != nil && (playGuess?.playing ?? (nowPlaying.track?.playing == true))
         if notes.playing != playing { notes.playing = playing }
+        // The line only draws on the frames of a playing song, so a seek while paused draws it again where it moved.
+        if !playing, let time = notes.now(), abs(time - notes.pausedAt) > 0.005 { notes.pausedAt = time }
     }
 
     /// A drag across the notes: the region loop from one beat to another.

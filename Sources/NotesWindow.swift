@@ -139,6 +139,8 @@ final class NotesModel: ObservableObject {
     @Published var view: NotesView
     @Published var loop: LoopRegion?
     @Published var playing = false
+    /// The time that a paused song is at, which a seek changes.
+    @Published var pausedAt = 0.0
     @Published var artwork: NSImage?
     @Published private(set) var score: Score
 
@@ -409,11 +411,56 @@ struct NotesLayout: Equatable {
 
     func rows(top: Bool) -> Range<Int> { top ? 0 ..< topLines : topLines ..< linesPerPage }
 
-    /// The page, the line on it and the x of the moment `time`.
-    func spot(at time: Double, in score: Score) -> (page: Int, row: Int, x: CGFloat)? {
+    /// The page, the line on it, the bar on the line and the x of the moment `time`.
+    func spot(at time: Double, in score: Score) -> (page: Int, row: Int, slot: Int, x: CGFloat)? {
         guard let place = score.place(at: time) else { return nil }
-        let line = place.bar / barsPerLine
-        return (line / linesPerPage, line % linesPerPage, x0 + (CGFloat(place.bar % barsPerLine) + CGFloat(place.fraction)) * barWidth)
+        let line = place.bar / barsPerLine, slot = place.bar % barsPerLine
+        return (line / linesPerPage, line % linesPerPage, slot, x(atBeats: (Double(slot) + place.fraction) * Double(Score.beatsPerBar)))
+    }
+
+    /// The margin that the notes keep after the bar line at the start of a bar: tab and sheet music draw their notes
+    /// inside it, and the piano roll from the bar line.
+    var notePad: CGFloat { staff.view == .tab ? 10 : staff.view == .sheet ? 14 : 0 }
+
+    /// The x of a place `beats` from the start of a line, where its notes are drawn, so that the line touches each note
+    /// as it starts. In the last sixteenth of a bar, the place crosses the margins at the bar line to the first place
+    /// of the next bar, so that the line never jumps.
+    func x(atBeats beats: Double) -> CGFloat {
+        let perBar = Double(Score.beatsPerBar), last = perBar - 0.25
+        let slot = min(barsPerLine - 1, max(0, Int((beats / perBar).rounded(.down))))
+        let beat = min(perBar, max(0, beats - Double(slot) * perBar))
+        let start = x0 + CGFloat(slot) * barWidth, pad = notePad, content = barWidth - pad * 1.6
+        if beat <= last { return start + pad + CGFloat(beat / perBar) * content }
+        let lastX = start + pad + CGFloat(last / perBar) * content
+        let next = slot == barsPerLine - 1 ? start + barWidth : start + barWidth + pad
+        return lastX + (next - lastX) * CGFloat((beat - last) / 0.25)
+    }
+
+    /// The place in beats from the start of a line at `x`, the opposite of `x(atBeats:)`. The margin before the first
+    /// note of a line belongs to its start.
+    func beats(atX x: CGFloat) -> Double {
+        let perBar = Double(Score.beatsPerBar), last = perBar - 0.25
+        let pad = notePad, content = max(1, barWidth - pad * 1.6)
+        var slot = Int(((x - x0) / barWidth).rounded(.down))
+        // The margin after a bar line is the end of the bar before it, which the line crosses in its last sixteenth.
+        if slot > 0, slot < barsPerLine, x < x0 + CGFloat(slot) * barWidth + pad { slot -= 1 }
+        slot = min(barsPerLine - 1, max(0, slot))
+        let start = x0 + CGFloat(slot) * barWidth
+        let lastX = start + pad + CGFloat(last / perBar) * content
+        let beat: Double
+        if x <= lastX {
+            beat = max(0, Double((x - start - pad) / content) * perBar)
+        } else {
+            let next = slot == barsPerLine - 1 ? start + barWidth : start + barWidth + pad
+            beat = last + min(1, Double((x - lastX) / max(1, next - lastX))) * 0.25
+        }
+        return Double(slot) * perBar + min(perBar - 0.001, beat)
+    }
+
+    /// The row of the half that a point is over.
+    func row(at point: CGPoint, top: Bool) -> Int {
+        let range = rows(top: top)
+        return min(range.upperBound - 1, max(range.lowerBound, Int(((point.y - Self.margin) / staff.height).rounded(.down))))
     }
 
     /// The page in each half while the song is at `time`: the top half shows the next page once the song reaches the
@@ -426,12 +473,8 @@ struct NotesLayout: Equatable {
 
     /// The place in beats under a point of the half that shows `page`.
     func position(at point: CGPoint, page: Int, top: Bool) -> Double {
-        let range = rows(top: top)
-        let row = min(range.upperBound - 1, max(range.lowerBound, Int(((point.y - Self.margin) / staff.height).rounded(.down))))
-        let line = page * linesPerPage + row
-        let offset = min(Double(barsPerLine) - 0.001, max(0, Double((point.x - x0) / barWidth)))
-        let bar = Double(line * barsPerLine) + offset
-        return min(Double(bars * Score.beatsPerBar), bar * Double(Score.beatsPerBar))
+        let line = page * linesPerPage + row(at: point, top: top)
+        return min(Double(bars * Score.beatsPerBar), Double(line * barsPerLine * Score.beatsPerBar) + beats(atX: point.x))
     }
 }
 
@@ -916,6 +959,8 @@ struct NotesPainter {
         let beat = max(0, inLine - Double(bar * Score.beatsPerBar))
         let start = barX(first + bar, first)
         guard beat > 0.001 else { return start }
+        // A place between the sixteenths, like the end of a drag that is still going, has its edge right there.
+        guard abs(beat * 4 - (beat * 4).rounded()) < 0.01 else { return layout.x(atBeats: inLine) }
         switch staff.view {
         case .roll:
             return start + layout.barWidth * CGFloat(beat / Double(Score.beatsPerBar))
@@ -1278,6 +1323,8 @@ private struct NotesPageView: View {
     @State private var drag: (from: Double, to: Double)?
     /// The halves that are turning, where the playhead waits until the new page lies flat.
     @State private var turning: Set<Bool> = []
+    /// The pages that a click or a drag on them left in place, which stay while the song plays on what they show.
+    @State private var pinned: (top: Int, bottom: Int)?
     @Environment(\.renderingPreview) private var renderingPreview
 
     private static let tick = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
@@ -1316,6 +1363,11 @@ private struct NotesPageView: View {
                     pageLabel(pages.top).offset(y: 4)
                     pageLabel(pages.bottom).offset(y: layout.middle + 6)
                 }
+                if model.done, !renderingPreview {
+                    NotesHoverLine(layout: layout, palette: palette, hidden: drag != nil || !turning.isEmpty) { point in
+                        target(at: point, layout).map { (x: $0.x, row: $0.row, time: model.score.time(at: $0.position)) }
+                    }
+                }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             .contentShape(Rectangle())
@@ -1329,6 +1381,7 @@ private struct NotesPageView: View {
             .animation(.easeOut(duration: 0.25), value: model.done)
             .onReceive(model.playing ? Self.tick : Self.slowTick) { _ in turn(layout) }
             .onChange(of: layout) {
+                pinned = nil
                 syncPages(layout)
                 turn(layout, animated: false)
             }
@@ -1368,41 +1421,47 @@ private struct NotesPageView: View {
     /// The region loop on the lines of one half of a page, in the coordinates of that half.
     @ViewBuilder private func region(_ painter: NotesPainter, page: Int, top: Bool) -> some View {
         let beats = model.score.beats
-        let loop: (Double, Double)? = drag.map { model.score.encompassing(from: min($0.from, $0.to), to: max($0.from, $0.to)) }
+        // A drag shows the region from the point where it started to the pointer. Once released, the region widens to
+        // the notes that it cuts, which the edges slide to.
+        let loop: (Double, Double)? = drag.map { (min($0.from, $0.to), max($0.from, $0.to)) }
             ?? model.loop.flatMap { loop in loop.end.map { (Score.position(of: loop.start, in: beats), Score.position(of: $0, in: beats)) } }
         if let (start, end) = loop {
             let honey = NotesAccent.color(colorScheme)
             let rects = painter.region(from: start, to: end, page: page, rows: painter.layout.rows(top: top))
             let dy = top ? 0 : painter.layout.middle
-            ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(honey.opacity(0.16))
-                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(honey.opacity(0.55), lineWidth: 1))
-                    .frame(width: rect.width, height: rect.height)
-                    .offset(x: rect.minX, y: rect.minY - dy)
-                    .allowsHitTesting(false)
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(honey.opacity(0.16))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(honey.opacity(0.55), lineWidth: 1))
+                        .frame(width: rect.width, height: rect.height)
+                        .offset(x: rect.minX, y: rect.minY - dy)
+                }
             }
+            .allowsHitTesting(false)
+            .animation(drag == nil ? .easeOut(duration: 0.18) : nil, value: [start, end])
         }
     }
 
-    /// A click moves the song to the beat under the pointer, and a drag sets the region loop between two beats.
+    /// A click moves the song to the place under the pointer, where the faint line over the notes shows it, and a drag
+    /// sets the region loop from where it started to where it ends. Neither turns a page.
     private func pointer(_ layout: NotesLayout) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard hypot(value.translation.width, value.translation.height) > 4 else { return }
-                let from = position(value.startLocation, layout).rounded()
-                let to = position(value.location, layout).rounded()
-                drag = (from, to)
+                drag = (position(value.startLocation, layout), position(value.location, layout))
             }
             .onEnded { value in
                 defer { drag = nil }
-                if let drag, abs(drag.to - drag.from) >= 1 {
-                    // The loop covers every note that it would cut, as the drag already showed.
+                if let drag, abs(drag.to - drag.from) >= 0.25 {
+                    // The loop covers every note that it would cut.
                     let beats = model.score.encompassing(from: min(drag.from, drag.to), to: max(drag.from, drag.to))
-                    let start = model.score.time(at: beats.start), end = model.score.time(at: beats.end)
-                    model.onLoop(start, end)
-                } else if hypot(value.translation.width, value.translation.height) <= 4 {
-                    model.onSeek(max(0, model.score.time(at: position(value.location, layout).rounded(.down))))
+                    pinned = shown
+                    model.onLoop(model.score.time(at: beats.start), model.score.time(at: beats.end))
+                } else if hypot(value.translation.width, value.translation.height) <= 4, let target = target(at: value.location, layout) {
+                    pinned = shown
+                    // A hundredth of a second later, so that the rounding of the player never lands before a note or a bar.
+                    model.onSeek(max(0, model.score.time(at: target.position) + 0.01))
                 }
             }
     }
@@ -1412,6 +1471,31 @@ private struct NotesPageView: View {
         return layout.position(at: point, page: top ? shown.top : shown.bottom, top: top)
     }
 
+    /// Where a click at a point moves the song: the place under it, or the start of a note when the point is within 7
+    /// points of where the note is drawn, so that a click on a note plays it from its start. Nil past the last line.
+    private func target(at point: CGPoint, _ layout: NotesLayout) -> (x: CGFloat, row: Int, position: Double)? {
+        let top = point.y < layout.middle
+        let row = layout.row(at: point, top: top)
+        let line = (top ? shown.top : shown.bottom) * layout.linesPerPage + row
+        guard line < layout.lines else { return nil }
+        let first = line * layout.barsPerLine, lineStart = Double(first * Score.beatsPerBar)
+        var beats = layout.beats(atX: point.x)
+        let byBar = model.score.notesByBar
+        var nearest: CGFloat = 7
+        for bar in first ..< min(byBar.count, first + layout.barsPerLine) {
+            for note in byBar[bar] {
+                let place = Double((bar - first) * Score.beatsPerBar) + note.beat
+                let distance = abs(layout.x(atBeats: place) - point.x)
+                if distance <= nearest {
+                    nearest = distance
+                    beats = place
+                }
+            }
+        }
+        let position = min(Double(layout.bars * Score.beatsPerBar), lineStart + beats)
+        return (layout.x(atBeats: beats), row, position)
+    }
+
     private func turn(_ layout: NotesLayout, animated: Bool = true) {
         // The first notes show at once, on the pages of the moment they arrive.
         guard model.done else { return placed = false }
@@ -1419,15 +1503,31 @@ private struct NotesPageView: View {
         // A page that the buttons asked for waits up to a second and a half for the player to report the seek, so the
         // pages and the number don't flick back to where the song was.
         if let asked = model.pageAsked {
+            if pinned != nil { pinned = nil }
             if pages.bottom != asked.page, Date().timeIntervalSince(asked.at) < 1.5 { return }
             model.pageAsked = nil
         }
         // State is only written when it changes, since this runs 10 times a second.
         defer { if !placed { placed = true } }
         if model.page != pages.bottom { model.page = pages.bottom }
+        if let pin = pinned {
+            if let time = model.now(), let spot = layout.spot(at: time, in: model.score), Self.keeps(pin, spot: spot, layout) { return }
+            pinned = nil
+        }
         guard pages != shown else { return }
         animateTurns = animated && placed
         shown = pages
+    }
+
+    /// The pages that a click or a drag left in place stay while the song plays on a line that they show. When the
+    /// other half doesn't show what the song plays next (the bottom of the same page under the top half, the next page
+    /// over the bottom half), it turns once the song reaches the last line of its half, so that it lies flat before the
+    /// song gets there.
+    private static func keeps(_ pin: (top: Int, bottom: Int), spot: (page: Int, row: Int, slot: Int, x: CGFloat), _ layout: NotesLayout) -> Bool {
+        let inTop = spot.row < layout.topLines
+        guard spot.page == (inTop ? pin.top : pin.bottom) else { return false }
+        let nextShown = inTop ? pin.bottom == spot.page : pin.top == min(layout.pages - 1, spot.page + 1)
+        return nextShown || spot.row != (inTop ? layout.topLines - 1 : layout.linesPerPage - 1)
     }
 
     private func pageLabel(_ page: Int) -> some View {
@@ -1448,7 +1548,9 @@ private struct NotesPageView: View {
         let count = layout.pages
         if model.pageCount != count { model.pageCount = count }
         let barsPerPage = layout.linesPerPage * layout.barsPerLine
-        model.pageStarts = (0 ..< count).map { model.score.time(at: Double($0 * barsPerPage * Score.beatsPerBar)) }
+        // A hundredth of a second into the page: the player rounds a seek to 1/600 of a second, and a seek that landed a
+        // hair before the first bar showed the last line of the page before.
+        model.pageStarts = (0 ..< count).map { model.score.time(at: Double($0 * barsPerPage * Score.beatsPerBar)) + 0.01 }
     }
 }
 
@@ -1508,8 +1610,7 @@ private struct NotesPlayhead: View {
         guard let time = model.now(), let spot = layout.spot(at: time, in: model.score) else { return nil }
         let inTop = spot.row < layout.topLines
         guard spot.page == (inTop ? shown.top : shown.bottom), !turning.contains(inTop) else { return nil }
-        let bar = min(max(0, ((spot.x - layout.x0) / layout.barWidth).rounded(.down)), CGFloat(layout.barsPerLine - 1))
-        return CGRect(x: layout.x0 + bar * layout.barWidth, y: layout.top(ofRow: spot.row) + layout.staff.linesTop - 7,
+        return CGRect(x: layout.x0 + CGFloat(spot.slot) * layout.barWidth, y: layout.top(ofRow: spot.row) + layout.staff.linesTop - 7,
                       width: layout.barWidth, height: layout.staff.linesHeight + 14)
     }
 
@@ -1551,10 +1652,49 @@ private struct NotesPlayhead: View {
             let span = layout.barWidth * 0.14, distance = onset.x - x
             return distance < span ? 0.16 * pow(1 - distance / span, 3) : 0
         }
-        let bars = Double(onset.line * layout.barsPerLine) + Double((onset.x - layout.x0) / layout.barWidth)
-        let age = time - score.time(at: bars * Double(Score.beatsPerBar))
+        let beats = Double(onset.line * layout.barsPerLine * Score.beatsPerBar) + layout.beats(atX: onset.x)
+        let age = time - score.time(at: beats)
         guard age >= 0, age < 5 else { return 0 }
         return exp(-age / 1.1) * (1 + 0.45 * exp(-age / 0.09))
+    }
+}
+
+/// A faint line where the pointer is over the notes, with the time that a click moves the song to.
+private struct NotesHoverLine: View {
+    let layout: NotesLayout
+    let palette: Palette
+    let hidden: Bool
+    let target: (CGPoint) -> (x: CGFloat, row: Int, time: Double)?
+    @State private var point: CGPoint?
+
+    var body: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                if case let .active(location) = phase { point = location } else { point = nil }
+            }
+            .overlay(alignment: .topLeading) {
+                if !hidden, let point, let spot = target(point) {
+                    let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
+                    ZStack(alignment: .topLeading) {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(palette.ink.opacity(0.4))
+                            .frame(width: 1.5, height: layout.staff.linesHeight + 14)
+                            .position(x: spot.x, y: top + (layout.staff.linesHeight + 14) / 2)
+                        Text(NotesTime.time(spot.time))
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(palette.ink.opacity(0.8))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(palette.ink.opacity(0.1)))
+                            .fixedSize()
+                            .position(x: spot.x, y: top - 9)
+                    }
+                    .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)
+                    .allowsHitTesting(false)
+                }
+            }
     }
 }
 
