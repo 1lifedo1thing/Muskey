@@ -15,6 +15,11 @@ enum WaveformStyle: String, CaseIterable {
     }
 }
 
+enum LaneNameStyle: String {
+    case glass
+    case thinMaterial = "thin"
+}
+
 /// The waveform of the whole song, with the played part filled in and a playhead that moves with the song. A click
 /// or a drag moves the song, as the time bar does. Zoomed in, a close-up of the moments around the playhead scrolls
 /// past a fixed playhead, over a thin strip of the whole song, and a region loop that fits in it holds still while
@@ -61,6 +66,8 @@ struct WaveformView: View {
     static let barWidth: CGFloat = 2
     /// `--log-playhead` logs the time that the playhead is drawn at, ten times a second, for testing.
     nonisolated(unsafe) static var trace: ((Double) -> Void)?
+    /// The capsule under a lane's stem name, until one of the two is picked (`--lane-name thin` renders the other one).
+    nonisolated(unsafe) static var laneNameStyle = LaneNameStyle.glass
     nonisolated(unsafe) private static var tracedAt = Date.distantPast
 
     private static func traced(_ seconds: Double, at date: Date) -> Bool {
@@ -229,25 +236,48 @@ struct WaveformView: View {
         let step = lane.width / CGFloat(max(1, values.count))
         let mid = lane.midY
         let isMuted = muted.contains(stem)
+        let dark = scheme == .dark
+        // The name sits on a translucent capsule in the stem's colour: in the colour alone, the letters blurred into loud
+        // bars of the same colour, and in ink they lost the link to the lane's stem.
+        let name = context.resolve(Text(stem.name).font(.system(size: 8.5, weight: .bold, design: .rounded))
+            .foregroundStyle(isMuted ? palette.ink.opacity(0.45) : stem.color(scheme)))
+        let size = name.measure(in: CGSize(width: 200, height: 20))
+        let origin = CGPoint(x: lane.minX + 4, y: lane.minY + 1)
+        let plate = CGRect(x: origin.x - 3, y: origin.y - 0.5, width: size.width + 6, height: size.height + 1)
+        let capsule = Path(roundedRect: plate, cornerRadius: plate.height / 2)
+        let thin = Self.laneNameStyle == .thinMaterial
+
         context.fill(Path(roundedRect: lane, cornerRadius: 3), with: .color(palette.ink.opacity(0.035)))
-        for (i, value) in values.enumerated() {
-            let x = lane.minX + CGFloat(i) * step + (step - Self.barWidth) / 2
-            let color = isMuted ? palette.ink.opacity(isPlayed(i) ? 0.3 : 0.14) : isPlayed(i) ? stem.color(scheme) : unplayed
-            guard value > 0.02 else {
-                context.fill(Path(CGRect(x: x, y: mid - 0.5, width: Self.barWidth, height: 1)), with: .color(color.opacity(0.6)))
-                continue
+        func drawBars(_ context: inout GraphicsContext) {
+            for (i, value) in values.enumerated() {
+                let x = lane.minX + CGFloat(i) * step + (step - Self.barWidth) / 2
+                let color = isMuted ? palette.ink.opacity(isPlayed(i) ? 0.3 : 0.14) : isPlayed(i) ? stem.color(scheme) : unplayed
+                guard value > 0.02 else {
+                    context.fill(Path(CGRect(x: x, y: mid - 0.5, width: Self.barWidth, height: 1)), with: .color(color.opacity(0.6)))
+                    continue
+                }
+                let h = max(1.5, CGFloat(value) * (lane.height - 3))
+                context.fill(Path(roundedRect: CGRect(x: x, y: mid - h / 2, width: Self.barWidth, height: h), cornerRadius: 1), with: .color(color))
             }
-            let h = max(1.5, CGFloat(value) * (lane.height - 3))
-            context.fill(Path(roundedRect: CGRect(x: x, y: mid - h / 2, width: Self.barWidth, height: h), cornerRadius: 1), with: .color(color))
         }
-        // The name is in ink, not in the stem's colour: over loud bars of the same colour the letters blurred into them.
-        // A capsule behind the name read well but hid the first bars and repeated the chips under the lanes, and dimming
-        // the bars under the name made the stem look quiet where it was loud. The bars and the chip carry the colour.
-        var label = context
-        label.addFilter(.shadow(color: (scheme == .dark ? Color.black : .white).opacity(0.9), radius: 1.5))
-        label.draw(Text(stem.name).font(.system(size: 8.5, weight: .bold, design: .rounded))
-            .foregroundStyle(palette.ink.opacity(isMuted ? 0.45 : 0.85)),
-            at: CGPoint(x: lane.minX + 4, y: lane.minY + 1), anchor: .topLeading)
+        if thin {
+            // Like an ultra thin material: the bars stay sharp around the capsule and blur under it.
+            var outside = context
+            outside.clip(to: capsule, options: .inverse)
+            drawBars(&outside)
+            var inside = context
+            inside.clip(to: capsule)
+            inside.drawLayer { layer in
+                layer.addFilter(.blur(radius: 2.5))
+                drawBars(&layer)
+            }
+            context.fill(capsule, with: .color(dark ? Color.black.opacity(0.34) : Color.white.opacity(0.5)))
+            context.stroke(capsule, with: .color(dark ? Color.white.opacity(0.1) : Color.black.opacity(0.06)), lineWidth: 0.5)
+        } else {
+            drawBars(&context)
+            context.fill(capsule, with: .color(dark ? Color.black.opacity(0.62) : Color.white.opacity(0.78)))
+        }
+        context.draw(name, at: origin, anchor: .topLeading)
     }
 
     /// Every picked stem in a lane of its own, over the whole song.
