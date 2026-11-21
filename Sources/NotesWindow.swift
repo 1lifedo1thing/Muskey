@@ -115,6 +115,8 @@ final class NotesModel: ObservableObject {
     @Published var shift = 0 { didSet { if shift != oldValue { rebuild() } } }
     /// The capo for the tab, the same one that the chords over the lyrics use.
     @Published var capo = 0 { didSet { if capo != oldValue { rebuild() } } }
+    /// The speed that Muskey plays the song at against its own tempo, 1 while the tempo isn't changed.
+    @Published var speed = 1.0
     /// The page that the song is on, counted from 0, and how many pages the notes take in this view and window size.
     @Published var page = 0
     @Published var pageCount = 1
@@ -1155,7 +1157,8 @@ private struct NotesViewSwitch: View {
 }
 
 /// The bar along the bottom of the window: the keys on the left, and on the right the state of the song once the notes
-/// are done (the key, the tempo, the pitch change and the capo), as plain text between hairlines.
+/// are done, as plain text between hairlines. The key carries the pitch change beside it and the tempo carries the
+/// change of speed, so neither takes a place of its own.
 private struct NotesStatusBar: View {
     @ObservedObject var model: NotesModel
     let palette: Palette
@@ -1177,9 +1180,23 @@ private struct NotesStatusBar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if model.done {
                 HStack(spacing: 0) {
-                    if let shown = model.key?.transposed(by: model.shift) { item { Text(shown.name) } }
-                    item { Text("\(Int(model.bpm.rounded())) BPM") }
-                    if model.shift != 0 { item(color: NotesAccent.color(colorScheme)) { Text(Shift.text(model.shift)) } }
+                    if model.key != nil || model.shift != 0 {
+                        item {
+                            HStack(spacing: 5) {
+                                if let shown = model.key?.transposed(by: model.shift) { Text(shown.name) }
+                                if model.shift != 0 { Text(Shift.short(model.shift)).foregroundStyle(NotesAccent.color(colorScheme)) }
+                            }
+                        }
+                    }
+                    item {
+                        // The tempo at the speed that the song plays, as the HUD shows it, with the change of speed.
+                        HStack(spacing: 5) {
+                            Text("\(Int((model.bpm * model.speed).rounded())) BPM")
+                            if let change = speedChange {
+                                Text(change).foregroundStyle(StripColors.text(model.speed < 1 ? StripColors.down : StripColors.up, colorScheme))
+                            }
+                        }
+                    }
                     if model.view == .tab, model.hasTab { item { NotesCapo(model: model, palette: palette) } }
                 }
                 .fixedSize(horizontal: true, vertical: false)
@@ -1192,11 +1209,17 @@ private struct NotesStatusBar: View {
         .overlay(alignment: .top) { Rectangle().fill(palette.ink.opacity(0.08)).frame(height: 1) }
     }
 
-    private func item(color: Color? = nil, @ViewBuilder _ content: () -> some View) -> some View {
+    /// The change of speed in whole percent, like the HUD's speed pill: −10% for a song slowed to 90 %.
+    private var speedChange: String? {
+        let percent = Int(((model.speed - 1) * 100).rounded())
+        return percent == 0 ? nil : "\(percent < 0 ? "−" : "+")\(abs(percent))%"
+    }
+
+    private func item(@ViewBuilder _ content: () -> some View) -> some View {
         content()
             .font(.system(size: 11, weight: .heavy, design: .rounded))
             .monospacedDigit()
-            .foregroundStyle(color ?? palette.ink.opacity(0.8))
+            .foregroundStyle(palette.ink.opacity(0.8))
             .padding(.horizontal, 12)
             .frame(maxHeight: .infinity)
             .overlay(alignment: .leading) { Rectangle().fill(palette.ink.opacity(0.08)).frame(width: 1) }
@@ -2467,6 +2490,7 @@ extension NotesModel {
     notesFoldInRenders = TestFlags.value("--notes-fold").flatMap(Double.init)
     if let shift = TestFlags.value("--notes-shift").flatMap(Int.init) { model.shift = shift }
     if let capo = TestFlags.value("--notes-capo").flatMap(Int.init) { model.capo = capo }
+    if let speed = TestFlags.value("--notes-speed").flatMap(Double.init) { model.speed = speed }
     if let loop = TestFlags.value("--notes-loop")?.split(separator: "-").compactMap({ Double($0) }), loop.count == 2 {
         model.loop = LoopRegion(start: loop[0], end: loop[1], startPress: nil)
     }

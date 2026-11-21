@@ -3250,6 +3250,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notesSinks = []
         model.$shift.sink { [weak notes] in notes?.shift = $0 }.store(in: &notesSinks)
         model.$capo.sink { [weak notes] in notes?.capo = $0 }.store(in: &notesSinks)
+        // The HUD shows a change of speed only for a song whose speed Muskey can change, and so does the notes window.
+        model.$speed.combineLatest(model.$speedAdjustable).sink { [weak notes] speed, adjustable in notes?.speed = adjustable ? speed : 1 }
+            .store(in: &notesSinks)
         notes.onCapo = { [weak self] step in
             guard let self else { return }
             setCapo(model.capo + step)
