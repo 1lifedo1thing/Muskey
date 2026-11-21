@@ -3056,7 +3056,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Writes what was heard to the file of the notes, and transcribes it like a file of Muskey Player.
     private func transcribeCapture(_ recorder: WaveformRecorder, notes: NotesModel) {
-        notes.partlyHeard = recorder.firstGap != nil
         do {
             try recorder.writeCapture(to: URL(fileURLWithPath: notes.path))
         } catch {
@@ -3158,7 +3157,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notesWork?.cancel()
         let next = NotesModel(path: notes.path, title: notes.title, artist: notes.artist, stem: stem, duration: notes.duration)
         next.key = notes.key
-        next.partlyHeard = notes.partlyHeard
         if let grid = grids[notes.path] { next.setGrid(beats: grid.beats, bpm: grid.bpm) }
         wireNotes(next, song: notes.song)
         notesWindow.show(next)

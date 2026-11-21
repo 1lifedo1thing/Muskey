@@ -126,8 +126,6 @@ final class NotesModel: ObservableObject {
     @Published var otherStems: [Stem] = []
     /// Transcribe Anyway was pressed, so the transcription runs even though the stem hardly plays.
     var forced = false
-    /// Part of a song from another app was heard, so the card speaks of the part heard instead of the song.
-    var partlyHeard = false
     /// The song from another app that the window's notes belong to, or nil for a song of Muskey Player.
     var song: [String?]?
 
@@ -1208,9 +1206,7 @@ private struct NotesProgressCard: View {
     }
 
     private var choiceTitle: String {
-        if model.phase == .empty { return "No notes to transcribe" }
-        let stem = model.stem.name.lowercased()
-        return model.partlyHeard ? "Hardly any \(stem) in the part heard" : "Hardly any \(stem) in this song"
+        model.phase == .empty ? "No notes to transcribe" : "\(model.stem.name) stem mostly silent"
     }
 
     /// Transcribe Anyway in the accent colour, with the key that presses it.
@@ -2281,11 +2277,10 @@ extension NotesModel {
         model.begin([.beats, .stems, .notes])
         model.phase = .failed
     }
-    // `--notes-quiet` shows the card of a stem that hardly plays, `--notes-empty` the card of a transcription that
-    // found no notes, and `--notes-partly` makes them speak of the part heard of a song from another app.
+    // `--notes-quiet` shows the card of a stem that hardly plays, and `--notes-empty` the card of a transcription that
+    // found no notes.
     if TestFlags.has("--notes-quiet") || TestFlags.has("--notes-empty") {
         model.otherStems = [Stem.guitar, .vocals, .piano, .winds, .other, .bass].filter { $0 != model.stem }
-        model.partlyHeard = TestFlags.has("--notes-partly")
         if TestFlags.has("--notes-empty") {
             model.finish([])
         } else {
