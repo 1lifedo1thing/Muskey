@@ -39,8 +39,9 @@ enum OpenStep: Equatable {
 /// What the HUD shows while Muskey opens a song, and the activity pill while the HUD is closed: the step that runs,
 /// or a failure with what recovers from it.
 enum OpenActivity: Equatable {
-    /// A link or a file on a network volume opens, with the title once yt-dlp names it, or the site before that.
-    case opening(step: OpenStep, name: String, progress: Double?)
+    /// A link or a file on a network volume opens, with the title and the artist as the record shows them later,
+    /// once yt-dlp names the song. Before that, the name is the site, or the name of the file.
+    case opening(step: OpenStep, name: String, artist: String? = nil, progress: Double?)
     /// yt-dlp downloads into Muskey's folder, after Install yt-dlp.
     case installing(progress: Double?)
     /// The download failed, and Retry tries it again.
@@ -216,7 +217,7 @@ final class FilePlayer {
             guard let file = item.file else { continue }
             // The queue and the HUD that shows it change on the main thread only.
             Task { @MainActor [weak self] in
-                let details = await QueueItem.details(file)
+                let details = await QueueItem.details(file, name: SongName.link(item.url))
                 guard let self, let at = queue.firstIndex(where: { $0.id == item.id }) else { return }
                 queue[at].apply(details)
             }
@@ -350,12 +351,15 @@ final class FilePlayer {
             }
             return play(Song(path: url.path))
         }
-        if let song = cache.song(for: url) {
+        if var song = cache.song(for: url) {
             log("opening a link that was downloaded before")
+            song.name = SongName.link(url)
             return play(song)
         }
-        let name = url.host().map { $0.replacingOccurrences(of: "www.", with: "") } ?? url.absoluteString
         let direct = LinkDownload.directExtensions.contains(url.pathExtension.lowercased())
+        let site = url.host().map { $0.replacingOccurrences(of: "www.", with: "") } ?? url.absoluteString
+        // A link to a file is named by the file, as its song is unless the file carries a title.
+        let name = direct ? SongName.link(url) ?? site : site
         guard direct || Downloader.find() != nil else {
             log("a link needs yt-dlp, which isn't installed")
             return show(.needsDownloader(name: name))
@@ -366,15 +370,20 @@ final class FilePlayer {
         download.log = log
         // A failure keeps the title that the download found.
         var known = name
-        download.onProgress = { [weak self, weak download] step, title, progress in
+        var artist: String?
+        download.onProgress = { [weak self, weak download] step, named, progress in
             guard let self, self.download === download else { return }
-            known = title ?? known
-            show(.opening(step: step, name: known, progress: progress))
+            if let title = named?.title {
+                known = title
+                artist = named?.artist
+            }
+            show(.opening(step: step, name: known, artist: artist, progress: progress))
         }
         download.start { [weak self, weak download] song in
             guard let self, self.download === download else { return }
             self.download = nil
-            guard let song else { return show(.failed(name: known)) }
+            guard var song else { return show(.failed(name: known)) }
+            song.name = SongName.link(url)
             cache.keep(song, for: url)
             if let at = queue.firstIndex(where: { $0.url == url }) { queue[at].apply(cached: song) }
             readDetails()
@@ -389,6 +398,9 @@ final class FilePlayer {
         var artist: String?
         var album: String?
         var artwork: String?
+        /// The name of the file that a link points to, which names a song whose file carries no title. Without it, such
+        /// a song is named by its file, which for a link is a file of Muskey's cache.
+        var name: String?
     }
 
     /// Counts the songs handed to Muskey Player and the cancels, so a song that was cancelled while the other players
@@ -398,13 +410,14 @@ final class FilePlayer {
     private var reading = false
 
     private func play(_ song: Song) {
-        guard FileManager.default.fileExists(atPath: song.path) else { return show(.unplayable(name: (song.path as NSString).lastPathComponent)) }
+        let shown = song.title ?? song.name ?? (song.path as NSString).lastPathComponent
+        guard FileManager.default.fileExists(atPath: song.path) else { return show(.unplayable(name: shown)) }
         guard let data = try? JSONEncoder().encode(song), let json = String(data: data, encoding: .utf8) else { return }
         handing += 1
         let current = handing
         pauseOthers { [weak self] in
             guard let self, handing == current else { return }
-            guard launch(), let input else { return show(.unplayable(name: (song.path as NSString).lastPathComponent)) }
+            guard launch(), let input else { return show(.unplayable(name: shown)) }
             log("opening \(song.title == nil ? "a file" : "a downloaded song") in Muskey Player")
             starting = song
             reading = true
@@ -482,7 +495,7 @@ final class FilePlayer {
             reading = false
             log("Muskey Player can't play the song: \(line.dropFirst(7))")
             current = nil
-            show(.unplayable(name: opening.map { $0.isFileURL ? $0.lastPathComponent : ($0.host() ?? $0.absoluteString) } ?? "Song"))
+            show(.unplayable(name: opening.map { $0.isFileURL ? $0.lastPathComponent : SongName.link($0) ?? $0.host() ?? $0.absoluteString } ?? "Song"))
         } else if line == "ended", currentID == nil ? resume < queue.count : index + 1 < queue.count {
             skip(1)
         } else if line.hasPrefix("moved "), let seconds = Double(line.dropFirst(6)) {
@@ -602,7 +615,8 @@ final class DownloaderInstall: NSObject, URLSessionDownloadDelegate {
 final class LinkDownload: NSObject, URLSessionDownloadDelegate {
     static let directExtensions: Set<String> = ["mp3", "m4a", "aac", "wav", "aif", "aiff", "flac", "caf", "mp4", "m4v", "mov"]
 
-    var onProgress: (OpenStep, String?, Double?) -> Void = { _, _, _ in }
+    /// The step, the song once the page names it, and the part done while it is known.
+    var onProgress: (OpenStep, FilePlayer.Song?, Double?) -> Void = { _, _, _ in }
     var log: (String) -> Void = { _ in }
     private let url: URL
     private let folder: URL
@@ -610,7 +624,8 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
     private var done: ((FilePlayer.Song?) -> Void)?
     private var process: Process?
     private var session: URLSession?
-    private var title: String?
+    /// The title and the artist of the page, once yt-dlp names them.
+    private var title: FilePlayer.Song?
     private var cancelled = false
 
     init(url: URL, folder: URL, direct: Bool) {
@@ -656,14 +671,15 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
     func urlSession(_: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { return finish(nil) }
-        let name = url.deletingPathExtension().lastPathComponent
         let target = folder.appending(path: "link-\(Self.key(url)).\(url.pathExtension.lowercased())")
         try? FileManager.default.removeItem(at: target)
         guard (try? FileManager.default.moveItem(at: location, to: target)) != nil else { return finish(nil) }
-        // The player reads the file's own title, and the name of the file when it has none.
+        // The file keeps the name of the link's file after its key, for a person who looks in the folder. The player
+        // reads the file's own title, and a file without one is named by the link (`Song.name`), never by this file.
+        let name = (SongName.link(url) ?? "").replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
         let named = folder.appending(path: "link-\(Self.key(url))-\(name.prefix(80)).\(url.pathExtension.lowercased())")
         try? FileManager.default.removeItem(at: named)
-        let path = (try? FileManager.default.moveItem(at: target, to: named)) != nil ? named.path : target.path
+        let path = !name.isEmpty && (try? FileManager.default.moveItem(at: target, to: named)) != nil ? named.path : target.path
         finish(FilePlayer.Song(path: path))
     }
 
@@ -679,6 +695,13 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
     /// Lines of yt-dlp's output that Muskey reads, from its `--print` and `--progress-template` options.
     private static let progressTag = "muskey-progress ", titleTag = "muskey-title ", fileTag = "muskey-file ", convertTag = "muskey-convert"
 
+    /// The title and the artist from what yt-dlp prints about a page before it downloads it, cleaned as they are for
+    /// the song that plays later.
+    static func named(_ json: String) -> FilePlayer.Song? {
+        guard let info = try? JSONDecoder().decode(PageInfo.self, from: Data(json.utf8)), let title = info.song.title, !title.isEmpty else { return nil }
+        return FilePlayer.Song(path: "", title: title, artist: info.song.artist)
+    }
+
     /// yt-dlp downloads the audio alone, in a format that AVFoundation plays. With ffmpeg, it converts any audio to
     /// M4A. The link comes after `--`, so a link can't pass options, and no config file or playlist is read.
     private func downloadPage(updated: Bool) {
@@ -688,7 +711,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
                          "-o", folder.appending(path: "\(base).download.%(ext)s").path,
                          "--progress", "--newline", "--progress-template",
                          "download:\(Self.progressTag)%(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
-                         "--print", "before_dl:\(Self.titleTag)%(title)s", "--print", "post_process:\(Self.convertTag)",
+                         "--print", "before_dl:\(Self.titleTag)%(.{title,track,artist,uploader,channel})j", "--print", "post_process:\(Self.convertTag)",
                          "--print", "after_move:\(Self.fileTag)%(filepath)s"]
         if let ffmpeg = Downloader.ffmpeg {
             arguments += ["--ffmpeg-location", ffmpeg, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"]
@@ -727,7 +750,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
                     pending.removeSubrange(pending.startIndex ... end)
                     lastLine = Date()
                     if line.hasPrefix(Self.titleTag) {
-                        self.title = String(line.dropFirst(Self.titleTag.count))
+                        self.title = Self.named(String(line.dropFirst(Self.titleTag.count)))
                         self.onProgress(.downloading, self.title, nil)
                     } else if line.hasPrefix(Self.convertTag) {
                         // The download is whole: ffmpeg takes the audio out of it, and then Muskey writes its M4A.

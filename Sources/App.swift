@@ -240,7 +240,14 @@ final class HUDModel: ObservableObject {
     @Published var saving: SavingState?
     /// A link or a file on a network volume that opens, which takes the HUD until the song plays.
     @Published var opening: OpeningState?
+    /// A song plays while another one opens, so its record stays and keeps turning beside the step that runs. It
+    /// holds until the song has opened, so a pause doesn't change the layout.
+    @Published var openingOverSong = false
+    /// The size of the glass when a song started to open over the record of the song that plays, which the glass
+    /// keeps until the song has opened.
+    @Published var openingGlass: CGSize?
     var onOpenCancel: () -> Void = {}
+    var onOpenBackground: () -> Void = {}
     var onOpenRetry: () -> Void = {}
     var onOpenInstall: () -> Void = {}
     /// The song plays, as the record and its tonearm show it. Space changes it before the player reports the change.
@@ -515,7 +522,7 @@ struct HUDView: View {
     /// How much taller the card gets when the stems take the place of the Separate instruments and vocals button.
     private static let cardStemsGrowth: CGFloat = 79.5
 
-    private var cardStemsOpen: Bool { model.card && model.saving == nil && model.opening == nil && !focus && showsStrip && model.stemsAvailable && model.stemsOpen && !model.shortcuts }
+    private var cardStemsOpen: Bool { model.card && model.saving == nil && (model.opening == nil || model.openingGlass != nil) && !focus && showsStrip && model.stemsAvailable && model.stemsOpen && !model.shortcuts }
 
     /// The ✕ closes the HUD while it stays up: with the key row, a listen, its result, or nothing playing. A failed
     /// listen closes by itself.
@@ -531,6 +538,13 @@ struct HUDView: View {
         if model.phase == .idle { return NowPlaying.Track() }
         guard model.phase == .listening || model.phase == .done, let track = model.track, track.title?.isEmpty == false else { return nil }
         return track
+    }
+
+    /// The record of the song that plays while another one opens.
+    private var openingDeck: OpeningDeck? {
+        guard model.openingOverSong, let track = model.track, track.title?.isEmpty == false else { return nil }
+        return OpeningDeck(track: track, artwork: model.artwork, playing: model.playing, spinning: model.shown && model.playing, flash: model.playFlash,
+                           glass: model.openingGlass, relativeKeys: model.relativeKeys)
     }
 
     /// The timing of karaoke's lyrics while they don't come with times, for the status in its top row. The key row
@@ -552,8 +566,8 @@ struct HUDView: View {
                     .transition(.opacity)
             } else if let opening = model.opening {
                 // A song that opens takes the HUD until it plays, in the shape of the layout that it plays in.
-                OpeningView(opening: opening, card: model.card, palette: palette, cancel: model.onOpenCancel, retry: model.onOpenRetry,
-                            install: model.onOpenInstall, dismiss: model.onOpenCancel)
+                OpeningView(opening: opening, card: model.card, palette: palette, deck: openingDeck, cancel: model.onOpenCancel,
+                            background: model.onOpenBackground, retry: model.onOpenRetry, install: model.onOpenInstall, dismiss: model.onOpenCancel)
                     .transition(.opacity)
             } else if model.shortcuts {
                 // Every key and gesture, in place of the layout that they work on, until ?, Escape or the ✕ closes
@@ -2230,6 +2244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.artwork !== nowPlaying.artwork { model.artwork = nowPlaying.artwork }
         if let track = nowPlaying.track, playGuess == nil || playGuess?.playing == track.playing {
             showPlaying(track.playing, flash: sameSong && Date().timeIntervalSince(shownAt) > 0.6)
+            syncOpeningRecord()
         }
         loadLyrics()
     }
@@ -2602,6 +2617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onOpenRetry = { [weak self] in self?.filePlayer.retry() }
         model.onOpenInstall = { [weak self] in self?.filePlayer.installDownloader() }
         model.onOpenCancel = { [weak self] in self?.cancelOpening() }
+        model.onOpenBackground = { [weak self] in self?.continueOpeningInBackground() }
         activityPill.onReveal = { [weak self] in
             guard let url = self?.savedURL else { return }
             NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -2960,7 +2976,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log(opening.map { "opening: \($0.step ?? "failed")" } ?? "opening: done")
         }
         let started = model.opening == nil && opening != nil
+        // The HUD shows the record of a song, which stays where it is: the glass keeps its size until the song has
+        // opened. Karaoke, the shortcuts and the stem picker of T have no record at that place.
+        if started, state != .idle, model.phase == .listening || model.phase == .done, model.track?.title?.isEmpty == false {
+            model.openingOverSong = true
+            let plain = !model.lyricsFocus && !model.shortcuts && model.notesPicking == nil && model.saving == nil
+            model.openingGlass = plain && model.glassFrame.width > 0 ? model.glassFrame.size : nil
+        }
         if model.opening != opening { model.opening = opening }
+        syncOpeningRecord()
         if opening != nil {
             if state == .idle, raisesHUD {
                 session += 1
@@ -2978,6 +3002,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         syncActivityPill()
         updateHoverKeys()
+    }
+
+    /// A song that plays while another one opens keeps its record in the HUD, from the moment that it plays until
+    /// the other song has opened. A HUD that the link opened learns the song a moment later.
+    private func syncOpeningRecord() {
+        guard model.opening != nil else {
+            if model.openingOverSong { model.openingOverSong = false }
+            if model.openingGlass != nil { model.openingGlass = nil }
+            return
+        }
+        if !model.openingOverSong, model.playing, model.track?.title?.isEmpty == false { model.openingOverSong = true }
+    }
+
+    /// Continue in Background, and Backspace: the HUD closes while the song keeps opening, the activity pill shows
+    /// the step, and the HUD opens again when the song plays.
+    private func continueOpeningInBackground() {
+        guard model.opening != nil else { return }
+        log("opening continues in the background")
+        dismiss()
     }
 
     /// The pill at the top right shows a song that opens only while the HUD doesn't, and a save once that is done.
@@ -4699,9 +4742,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if code == kVK_Escape { dismiss() }
             return true
         }
-        // A song that opens leaves it Escape too, which closes the HUD while the song keeps opening.
+        // A song that opens leaves it Escape, which cancels it as Cancel does, and Backspace, which closes the HUD
+        // while the song keeps opening, as Continue in Background does. On a failure, Escape dismisses it.
         if model.opening != nil {
-            if code == kVK_Escape { dismiss() }
+            if code == kVK_Escape { cancelOpening() }
+            if code == kVK_Delete { continueOpeningInBackground() }
             return true
         }
         // ? shows every key and gesture in place of the HUD, and closes them again, on whichever key types ? in the
@@ -6865,7 +6910,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysQuestion = LayoutKey.questionMark
         let question = hoverKeysQuestion.map { [($0.code, $0.modifiers)] } ?? []
         if lock != .none {
-            let keys = lock == .shortcuts ? [(kVK_Escape, 0)] + question : [(kVK_Escape, 0)]
+            let keys = lock == .shortcuts ? [(kVK_Escape, 0)] + question : lock == .opening ? [(kVK_Escape, 0), (kVK_Delete, 0)] : [(kVK_Escape, 0)]
             hoverKeys = keys.compactMap { code, modifiers in
                 try? HotKey(keyCode: code, modifiers: modifiers) { [weak self] in
                     self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
@@ -7798,7 +7843,7 @@ extension EnvironmentValues {
     }
     // The pill at the top right of the screen for a song that Muskey opens.
     let pills: [(String, OpenActivity)] = [
-        ("pill-downloading", .opening(step: .downloading, name: "Never Gonna Give You Up", progress: 0.45)),
+        ("pill-downloading", .opening(step: .downloading, name: "Never Gonna Give You Up", artist: "Rick Astley", progress: 0.45)),
         ("pill-starting", .opening(step: .reading, name: "youtube.com", progress: nil)),
         ("pill-installing", .installing(progress: 0.3)), ("pill-failed", .failed(name: "Never Gonna Give You Up")),
         ("pill-needs-downloader", .needsDownloader(name: "youtube.com")), ("pill-install-failed", .installFailed), ("pill-unplayable", .unplayable(name: "Concert.mkv")),
@@ -7834,26 +7879,40 @@ extension EnvironmentValues {
             }
         }
     }
-    // The HUD while a song opens, in the wide layout and on the card: each step, and each failure.
+    // The HUD while a song opens, in the wide layout and on the card: each step, and each failure. With `-song`, a
+    // song plays meanwhile and keeps its record, and with `-held`, the glass keeps the size that it had with that
+    // record, here the size of a result with its keys.
     let openings: [(String, OpenActivity)] = [
         ("opening-reading", .opening(step: .reading, name: "youtube.com", progress: nil)),
-        ("opening-downloading", .opening(step: .downloading, name: "Never Gonna Give You Up", progress: 0.45)),
-        ("opening-downloading-long", .opening(step: .downloading, name: "Paper Lanterns (Extended Version, Recorded Live at the Harbour Hall)", progress: 0.07)),
-        ("opening-converting", .opening(step: .converting, name: "Never Gonna Give You Up", progress: nil)),
+        ("opening-downloading", .opening(step: .downloading, name: "Never Gonna Give You Up", artist: "Rick Astley", progress: 0.45)),
+        ("opening-downloading-file", .opening(step: .downloading, name: "Moonlight Sonata", progress: 0.62)),
+        ("opening-downloading-long", .opening(step: .downloading, name: "Paper Lanterns (Extended Version, Recorded Live at the Harbour Hall)",
+                                              artist: "Mira Vale and the Low Tide Radio Orchestra of the Harbour Hall", progress: 0.07)),
+        ("opening-converting", .opening(step: .converting, name: "Never Gonna Give You Up", artist: "Rick Astley", progress: nil)),
         ("opening-network-file", .opening(step: .reading, name: "Harbour Hall rehearsal take 3", progress: nil)),
         ("opening-installing", .installing(progress: 0.3)), ("opening-updating", .opening(step: .updating, name: "youtube.com", progress: nil)),
         ("opening-failed", .failed(name: "Never Gonna Give You Up")), ("opening-needs-downloader", .needsDownloader(name: "youtube.com")),
         ("opening-install-failed", .installFailed), ("opening-unplayable", .unplayable(name: "Concert.mkv")),
         ("opening-failed-long", .failed(name: "Paper Lanterns (Extended Version, Recorded Live at the Harbour Hall)")),
     ]
+    let overSong: Set<String> = ["opening-reading", "opening-downloading", "opening-downloading-file", "opening-downloading-long", "opening-converting",
+                                 "opening-installing", "opening-failed", "opening-unplayable"]
     for (name, activity) in openings {
+        for song in ["", "-song", "-held"] where song.isEmpty || overSong.contains(name) && (song == "-song" || name.hasSuffix("downloading") || name.hasSuffix("failed")) {
         for layout in ["", "-card"] {
-            if let only, !"\(name)\(layout)".contains(only.hasSuffix("$") ? String(only.dropLast()) : only) { continue }
+            if let only, !"\(name)\(song)\(layout)".contains(only.hasSuffix("$") ? String(only.dropLast()) : only) { continue }
             for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
                 let model = HUDModel()
-                model.phase = .idle
+                model.phase = song.isEmpty ? .idle : .done
                 model.card = layout == "-card"
                 model.opening = OpeningState(activity)
+                if !song.isEmpty {
+                    model.track = HUDSample.track
+                    model.artwork = HUDSample.cover
+                    model.playing = true
+                    model.openingOverSong = true
+                    if song == "-held" { model.openingGlass = layout == "-card" ? CGSize(width: 344, height: 498) : CGSize(width: 786, height: 314) }
+                }
                 let view = HUDView(model: model)
                     .frame(width: HUDPanel.size.width, height: HUDPanel.size.height)
                     .background(backdrop)
@@ -7863,9 +7922,10 @@ extension EnvironmentValues {
                 renderer.scale = 2
                 if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
                    let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-                    try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)\(layout)-\(scheme).png"))
+                    try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)\(song)\(layout)-\(scheme).png"))
                 }
             }
+        }
         }
     }
     for (name, activity) in pills {

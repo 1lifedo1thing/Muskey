@@ -126,7 +126,8 @@ final class OpenLocationModel: ObservableObject {
 
         init(link: URL, song: FilePlayer.Song) {
             self.link = link
-            title = song.title ?? ((song.path as NSString).lastPathComponent as NSString).deletingPathExtension
+            // A song without a title is named by the file of its link, never by the file in Muskey's cache.
+            title = song.title ?? SongName.link(link) ?? ((song.path as NSString).lastPathComponent as NSString).deletingPathExtension
             artist = song.artist
             site = link.host().map { $0.replacingOccurrences(of: "www.", with: "") } ?? link.absoluteString
             cover = song.artwork.flatMap(NSImage.init(contentsOfFile:))

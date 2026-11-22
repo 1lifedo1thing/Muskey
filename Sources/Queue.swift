@@ -22,7 +22,9 @@ struct QueueItem: Identifiable, Equatable {
 
     init(url: URL, cached: FilePlayer.Song?) {
         self.url = url
-        title = url.isFileURL ? url.deletingPathExtension().lastPathComponent : (url.host() ?? url.absoluteString).replacingOccurrences(of: "www.", with: "")
+        // A link to a file is named by the file, and a page by its site until it is downloaded.
+        title = url.isFileURL ? url.deletingPathExtension().lastPathComponent
+            : SongName.link(url) ?? (url.host() ?? url.absoluteString).replacingOccurrences(of: "www.", with: "")
         if let cached { apply(cached: cached) }
     }
 
@@ -58,7 +60,8 @@ struct QueueItem: Identifiable, Equatable {
     }
 
     /// The title, artist, album, length and cover that a file carries. A link has them once it is downloaded.
-    static func details(_ url: URL) async -> Details? {
+    /// A file without a title is named by `name`, or by its file without one: a download is named by its link.
+    static func details(_ url: URL, name: String? = nil) async -> Details? {
         guard url.isFileURL else { return nil }
         let asset = AVURLAsset(url: url)
         let items = (try? await asset.load(.commonMetadata)) ?? []
@@ -79,10 +82,12 @@ struct QueueItem: Identifiable, Equatable {
         }
         // A file without a title is named after the file, and a name like `Artist - Title` gives both.
         if details.title == nil {
-            let name = url.deletingPathExtension().lastPathComponent
-            if details.artist == nil, let dash = name.range(of: " - ") {
-                details.artist = String(name[..<dash.lowerBound]).trimmingCharacters(in: .whitespaces)
-                details.title = String(name[dash.upperBound...]).trimmingCharacters(in: .whitespaces)
+            let named = SongName.split(name ?? url.deletingPathExtension().lastPathComponent)
+            if details.artist == nil, let artist = named.artist {
+                details.artist = artist
+                details.title = named.title
+            } else if name != nil {
+                details.title = name
             }
         }
         return details

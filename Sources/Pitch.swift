@@ -865,6 +865,7 @@ enum PitchSelfTest {
         }
 
         LyricsSelfTest.run(report: report)
+        SongName.selfTest(report: report)
 
         // Noiseblend's answers: every Camelot code back to its key, and which failures count as an unknown song.
         let keys = (0 ..< 24).map { DetectedKey(pitchClass: $0 % 12, minor: $0 >= 12) }

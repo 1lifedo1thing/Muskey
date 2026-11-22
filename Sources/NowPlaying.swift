@@ -26,6 +26,14 @@ final class NowPlaying {
         var playing: Bool { (rate ?? 0) > 0 }
         var label: String { [artist, title].compactMap { $0 }.joined(separator: " – ") }
 
+        /// A report of the helper. Browsers and video players name the song by its file, like `concert.mp4`, so the
+        /// title loses the extension of a media file here, before anything shows it or looks the song up by it.
+        static func decode(_ data: Data) -> Track? {
+            guard var track = try? JSONDecoder().decode(Track.self, from: data) else { return nil }
+            track.title = track.title.map(SongName.title)
+            return track
+        }
+
         /// Seconds into the song at `date`, moving on at the playback rate since the player last reported it.
         func position(at date: Date) -> Double? {
             guard let elapsed else { return nil }
@@ -198,7 +206,7 @@ final class NowPlaying {
         DispatchQueue.global(qos: .userInitiated).async {
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            finish(process.terminationStatus == 0 ? try? JSONDecoder().decode(Track.self, from: data) : nil)
+            finish(process.terminationStatus == 0 ? Track.decode(data) : nil)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             if process.isRunning { process.terminate() }
@@ -240,7 +248,7 @@ final class NowPlaying {
             while let end = buffer.firstIndex(of: 0x0A) {
                 let line = buffer[buffer.startIndex ..< end]
                 buffer.removeSubrange(buffer.startIndex ... end)
-                guard var track = try? JSONDecoder().decode(Track.self, from: line) else { continue }
+                guard var track = Track.decode(line) else { continue }
                 let cover = track.artwork.map(NowPlaying.cover)
                 track.artwork = nil
                 reports.append((track, cover))

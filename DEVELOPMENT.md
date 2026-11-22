@@ -56,7 +56,17 @@ The HUD opens at once on a link, and on a file on a network volume, and shows th
 | Installing yt-dlp | The download of yt-dlp, then its checks |
 | Updating yt-dlp | `yt-dlp -U`, after a download with Muskey's copy failed |
 
-**Cancel** stops the step that runs: it ends yt-dlp, the download or the install, and tells Muskey Player to drop a file that it still reads (`cancel` on its stdin). The song that plays goes on. A failure shows in the same place as a red pill with **Retry** or **Install yt-dlp**. While the HUD is closed, the pill at the top right of the screen shows the same state. A song of the queue that starts to download when the one before it ends doesn't open a closed HUD.
+Under the step, the HUD names the song as the record shows it once it plays. Before a download, yt-dlp prints the page's title, track, artist and channel as JSON, and Muskey cleans them the way it cleans them for Now Playing: `Artist - Song (Official Video)` shows as the song with its artist under it. A link to a file shows the name of the file.
+
+While nothing plays, the step shows beside an empty platter, and a ring around the platter fills with the part done. While a song plays, in Muskey Player or in another app, its record stays and keeps turning: the step takes the side of the key in the wide layout and the part under the record on the card. Muskey doesn't draw a ring around that record, since a ring would read as the progress of the song that plays, and a bar under the name fills instead. The glass keeps the size that it had with the record, so the record doesn't move.
+
+**Cancel**, and Escape, stop the step that runs: they end yt-dlp, the download or the install, and tell Muskey Player to drop a file that it still reads (`cancel` on its stdin). The song that plays goes on. **Continue in Background**, Backspace and the ✕ of the HUD close the HUD while the song keeps opening: the pill at the top right of the screen shows the same state, and the HUD opens again when the song plays. A failure shows in the place of the step as a red pill with **Retry** or **Install yt-dlp**, and Escape dismisses it. A song of the queue that starts to download when the one before it ends doesn't open a closed HUD.
+
+### Names of songs
+
+A song is named by its title tag. A file without one is named by its file name, and `Artist - Title` gives both. A link to a file without a title tag is named by the file in the link, with the percent escapes decoded and without the extension (`SongName.link`), never by the file in Muskey's cache: Muskey hands that name to Muskey Player with the song.
+
+Browsers and video players often report the name of a file as the title, like `concert.mp4`. A title from Now Playing loses the extension of a media file where the helper's report is decoded (`NowPlaying.Track.decode`), so the record, the lyrics search and the key lookup all get `concert`. A title that ends in anything else stays whole.
 
 **Open URL…** shows a field for a link or the path of a file, in a glass bar like the HUD's, with the songs downloaded from links before listed under it. Several files opened together play one after another. **Stop Playing**, in the menu bar menu and in the File menu while a song plays in Muskey Player, quits the player.
 

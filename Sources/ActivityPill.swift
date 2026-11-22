@@ -88,7 +88,7 @@ struct ActivityPillView: View {
 
     @ViewBuilder private func pill(_ activity: OpenActivity) -> some View {
         switch activity {
-        case let .opening(_, name, progress):
+        case let .opening(_, name, _, progress):
             working(name, progress: progress)
         case let .installing(progress):
             working("yt-dlp", progress: progress)

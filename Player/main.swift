@@ -30,6 +30,8 @@ struct Request: Decodable {
     var artist: String?
     var album: String?
     var artwork: String?
+    /// Names a song whose file carries no title: the name of the file that a link points to.
+    var name: String?
 }
 
 final class Player: NSObject, NSApplicationDelegate {
@@ -131,7 +133,7 @@ final class Player: NSObject, NSApplicationDelegate {
                 guard playable else { return say("failed not playable") }
                 let duration = try await asset.load(.duration).seconds
                 guard current == opened else { return }
-                let read = await Self.metadata(asset, url: url)
+                let read = await Self.metadata(asset, name: request.name ?? url.deletingPathExtension().lastPathComponent)
                 var info: [String: Any] = [
                     MPMediaItemPropertyTitle: request.title ?? read.title,
                     MPMediaItemPropertyPlaybackDuration: duration,
@@ -170,9 +172,9 @@ final class Player: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The title, artist, album and cover that the file carries. A file without a title is named after the file,
-    /// and a name like `Artist - Title` gives both.
-    private static func metadata(_ asset: AVURLAsset, url: URL) async -> (title: String, artist: String?, album: String?, artwork: NSImage?) {
+    /// The title, artist, album and cover that the file carries. A file without a title is named after the file, or
+    /// after the file that its link points to, and a name like `Artist - Title` gives both.
+    private static func metadata(_ asset: AVURLAsset, name: String) async -> (title: String, artist: String?, album: String?, artwork: NSImage?) {
         let items = (try? await asset.load(.commonMetadata)) ?? []
         func string(_ key: AVMetadataKey) async -> String? {
             guard let item = AVMetadataItem.metadataItems(from: items, withKey: key, keySpace: .common).first else { return nil }
@@ -189,7 +191,6 @@ final class Player: NSObject, NSApplicationDelegate {
             artwork = NSImage(data: data)
         }
         if title == nil {
-            let name = url.deletingPathExtension().lastPathComponent
             if artist == nil, let dash = name.range(of: " - ") {
                 artist = String(name[..<dash.lowerBound]).trimmingCharacters(in: .whitespaces)
                 title = String(name[dash.upperBound...]).trimmingCharacters(in: .whitespaces)
@@ -197,7 +198,7 @@ final class Player: NSObject, NSApplicationDelegate {
                 title = name
             }
         }
-        return (title ?? url.lastPathComponent, artist, album, artwork)
+        return (title ?? name, artist, album, artwork)
     }
 
     /// A frame from a tenth of the way into a video, as the cover of a video without one.
