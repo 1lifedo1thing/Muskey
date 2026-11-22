@@ -657,6 +657,8 @@ private struct LyricsPane: View {
     @ObservedObject var prefs: Preferences
     @ObservedObject private var whisperDownload = ModelDownload.whisper
     @ObservedObject private var stemDownload = ModelDownload.stems
+    /// The songs with a fit or a shift kept, counted when the pane opens.
+    @State private var timedSongs = 0
 
     var body: some View {
         Form {
@@ -675,6 +677,27 @@ private struct LyricsPane: View {
                     ModelRow(title: "Whisper model", download: whisperDownload)
                 }
             }
+            Section("Timing") {
+                Toggle(isOn: $prefs.lyricsLiveTiming) {
+                    Text("Run lyrics timing detection when live listening")
+                    Text("When listening on the system audio instead of a local file or URL, the lyrics timing detection can be less reliable, disable it here if it causes problems")
+                }
+                Picker("Timing detection conditions", selection: $prefs.timingConditions) {
+                    Text("Always").tag(TimingConditions.always)
+                    Text("Not in Low Power Mode").tag(TimingConditions.notLowPower)
+                    Text("On power adapter").tag(TimingConditions.onAdapter)
+                }
+                LabeledContent("Saved timings") {
+                    HStack {
+                        Pill(text: timedSongs == 1 ? "1 song" : "\(timedSongs) songs", color: .secondary)
+                        Button("Remove All") {
+                            LyricsStore.main.removeTimings()
+                            timedSongs = LyricsStore.main.timedSongs
+                        }
+                        .disabled(timedSongs == 0)
+                    }
+                }
+            }
             Section("Karaoke") {
                 // Muting the vocals takes the common instruments model, so the toggle waits for it.
                 Toggle(isOn: $prefs.karaokeMutesVocals) {
@@ -690,6 +713,7 @@ private struct LyricsPane: View {
         .onAppear {
             whisperDownload.refresh()
             stemDownload.refresh()
+            timedSongs = LyricsStore.main.timedSongs
         }
     }
 }

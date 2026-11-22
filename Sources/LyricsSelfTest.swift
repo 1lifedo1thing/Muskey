@@ -329,6 +329,38 @@ enum LyricsSelfTest {
         report(begun && other && !sync.fitted && decoded == kept,
                "lyrics fit kept  \(sync.anchored == 0 ? "ended" : "not ended"), \(begun ? "timed from the start" : "not timed"), \(other ? "only for its file and text" : "used for another file or text"), \(decoded == kept ? "read back the same" : "read back changed")")
 
+        // Lyrics 0.6 s off read as right, since the fit can't tell that from how people time lyrics, and 0.9 s off
+        // get a fix.
+        let near = LyricsFit.check(of: early.moved(by: 1.4), outcome)
+        let past = if case let .off(value) = LyricsFit.check(of: early.moved(by: 1.1), outcome) { abs(value - 0.9) < 0.05 } else { false }
+        report(near == .right && past, "lyrics limit     0.6 s off \(near), 0.9 s off \(past ? "offered" : "not offered") (want right, offered)")
+
+        // Each player and each text keeps its own fit and shift: the result for Spotify doesn't replace the one for
+        // Muskey Player, and the fit of the lyrics without times doesn't replace the check of the lyrics with times.
+        let timedKey = LyricsFit.key(early)
+        store.setFit(LyricsStore.Fit(key: timedKey, file: "one.stems", starts: nil, offset: 2), for: "song")
+        store.setFit(LyricsStore.Fit(key: timedKey, file: "app.spotify", starts: nil, offset: 0), for: "song")
+        store.setShift(1.5, for: "song", key: timedKey, file: "app.spotify")
+        let apart = store.fit(for: "song", key: timedKey, file: "one.stems")?.offset == 2 && store.fit(for: "song", key: timedKey, file: "app.spotify")?.offset == 0
+            && store.fit(for: "song", key: kept.key, file: "one.stems") == kept
+            && store.shift(for: "song", key: timedKey, file: "app.spotify") == 1.5 && store.shift(for: "song", key: timedKey, file: "one.stems") == 0
+        store.removeTiming(for: "song", key: timedKey, file: "app.spotify")
+        let removed = store.fit(for: "song", key: timedKey, file: "app.spotify") == nil && store.shift(for: "song", key: timedKey, file: "app.spotify") == 0
+            && store.fit(for: "song", key: timedKey, file: "one.stems") != nil
+        store.setShift(-0.5, for: "other", key: timedKey, file: "app.music")
+        let counted = store.timedSongs
+        store.removeTimings()
+        let cleared = store.timedSongs == 0 && store.fit(for: "song", key: kept.key, file: "one.stems") == nil
+        // A song kept a single fit before, with the lines moved after a click: the fit and the move are read back.
+        let oldFile = folder.appending(path: "old.json")
+        let oldFit = LyricsStore.Fit(key: timedKey, file: "one.stems", starts: nil, offset: 3, applied: true)
+        struct Old: Codable { var fit: LyricsStore.Fit; var date: Date }
+        try? JSONEncoder().encode(["song": Old(fit: oldFit, date: Date())]).write(to: oldFile)
+        let old = LyricsStore(url: oldFile)
+        let migrated = old.fit(for: "song", key: timedKey, file: "one.stems")?.offset == 3 && old.shift(for: "song", key: timedKey, file: "one.stems") == 3
+        report(apart && removed && counted == 2 && cleared && migrated,
+               "lyrics timings   \(apart ? "kept apart" : "mixed up"), \(removed ? "one removed" : "not removed"), \(counted) songs counted, \(cleared ? "all removed" : "some left"), \(migrated ? "old fit read" : "old fit lost") (want kept apart, one removed, 2, all removed, old fit read)")
+
         // Heard words time a line that the fit didn't find, when they fall between the fit's lines around it. Words
         // heard in the wrong place, here the unsung line at the end of the song, are left out.
         let both = LyricsAligner(texts: lines, estimate: LyricsAligner.estimate(lines, duration: 30))

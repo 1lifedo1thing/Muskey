@@ -616,83 +616,63 @@ enum LyricsTimingFix: Equatable {
     case unchecked
     /// The share of the song separated, or nil while the lyrics are fitted.
     case working(Double?)
-    /// An offset that a fit found and that isn't applied: the pill turns honey amber, and a click moves the lines.
+    /// An offset that a fit found: the pill turns honey amber while the lines show at their own times, and a click
+    /// moves them by it.
     case found(Double)
-    /// The lines show moved by the offset. A click puts them back at their original times.
-    case applied(Double)
     /// The fit found the times right.
     case onTime
     /// The fit couldn't tell: too few lines found, or lines that disagree.
     case unknown
     /// A fit started by a click failed. Retry starts it again, and ✕ dismisses it.
     case failed
+    /// No fit runs for the song: the models aren't installed, Settings turned the check off, or the check of a song
+    /// from another app is still listening. The arrows still move the lines.
+    case idle
 }
 
 /// The state of the Fix timing pill and what its clicks do, read by the lyrics badges from the environment.
 struct LyricsTimingPill {
     var fix: LyricsTimingFix
+    /// The seconds that the lines show moved by, 0 at their own times.
+    var shift: Double
+    /// A fit or a shift is kept for the song, which the ✕ removes.
+    var kept: Bool
     var press: () -> Void
     var dismiss: () -> Void
+    /// Moves the lines by that many seconds more.
+    var nudge: (Double) -> Void
+    var forget: () -> Void
+    /// Renders show the pill as the pointer over it shows it.
+    var hover = false
 }
 
-/// The Fix timing pill: a clock pill that turns honey amber with the offset that a fit found, then shows the offset
-/// applied.
+/// The Fix timing pill: a clock pill that turns honey amber with the offset that a fit found, then shows the shift
+/// of the lines. The pointer over it turns it into arrows around the shift, which move the lines half a second at a
+/// time.
 struct LyricsTimingButton: View {
     let pill: LyricsTimingPill
     let palette: Palette
     var large = false
     @Environment(\.colorScheme) private var colorScheme
+    @State private var hovering = false
+
+    /// The lines move by this many seconds for each click on an arrow.
+    static let step = 0.5
 
     var body: some View {
-        switch pill.fix {
-        case .unchecked:
-            button(Label("Fix timing", systemImage: "clock.arrow.circlepath"), ready: false,
-                   help: "Find the offset of the times from the vocals and move the lines by it")
-        case let .working(fraction):
-            HStack(spacing: 5) {
-                ProgressView().controlSize(.mini)
-                Text(fraction.map { String(format: "Separating %.0f%%", $0 * 100) } ?? "Checking timing").monospacedDigit()
+        if pill.fix == .failed {
+            failed
+        } else {
+            let hover = hovering || pill.hover
+            // Both layouts take the same room, so the pill doesn't grow or shrink under the pointer, and the
+            // credit beside it stays where it is.
+            ZStack {
+                plain.opacity(hover ? 0 : 1).allowsHitTesting(!hover)
+                stepper.opacity(hover ? 1 : 0).allowsHitTesting(hover)
             }
-            .font(font)
-            .foregroundStyle(palette.muted)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(palette.ink.opacity(0.08)))
             .fixedSize()
-        case let .found(offset):
-            button(HStack(spacing: 4) { Text("Fix timing"); Text(Self.seconds(offset)).monospacedDigit() }, ready: true,
-                   help: String(format: "Move the lines %.1f seconds %@", abs(offset), offset > 0 ? "later" : "earlier"))
-        case let .applied(offset):
-            button(HStack(spacing: 4) { Text("Timing"); Text(Self.seconds(offset)).monospacedDigit() }, ready: false, help: "Use the original times")
-        case .onTime:
-            status("On time", symbol: "checkmark")
-        case .unknown:
-            status("No fix found", symbol: "clock.badge.xmark").help("No single offset fits the lines")
-        case .failed:
-            HStack(spacing: 6) {
-                Label("Fix timing", systemImage: "clock.arrow.circlepath")
-                    .font(font)
-                    .foregroundStyle(StripColors.text(.red, colorScheme))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
-                    .overlay(alignment: .topTrailing) {
-                        Button(action: pill.dismiss) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 6, weight: .heavy))
-                                .foregroundStyle(StripColors.text(.red, colorScheme))
-                                .frame(width: 12, height: 12)
-                                .background(Circle().fill(.background))
-                                .overlay(Circle().strokeBorder(StripColors.tint(.red, strong: true, colorScheme), lineWidth: 0.5))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Dismiss")
-                        .offset(x: 5, y: -5)
-                    }
-                    .fixedSize()
-                Button("Retry", action: pill.press)
-                    .controlSize(.mini)
-            }
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.1), value: hover)
         }
     }
 
@@ -703,7 +683,136 @@ struct LyricsTimingButton: View {
     private var amberText: Color { .oklch(colorScheme == .dark ? 0.87 : 0.47, 0.14, 70) }
     private var amberFill: Color { .oklch(colorScheme == .dark ? 0.72 : 0.82, 0.15, 74, opacity: colorScheme == .dark ? 0.32 : 0.55) }
 
-    private func button(_ label: some View, ready: Bool, help: String) -> some View {
+    /// An offset is ready to apply, with the lines at their own times.
+    private var ready: Bool {
+        if case .found = pill.fix, pill.shift == 0 { true } else { false }
+    }
+
+    /// What a click on the pill does, as its tooltip. Nil when a click does nothing.
+    private var pressHelp: String? {
+        switch pill.fix {
+        case .working: return nil
+        case _ where pill.shift != 0: return "Use the original times"
+        case .unchecked: return "Find the offset of the times from the vocals and move the lines by it"
+        case let .found(offset): return String(format: "Move the lines %.1f seconds %@", abs(offset), offset > 0 ? "later" : "earlier")
+        case .unknown: return "No single offset fits the lines"
+        default: return nil
+        }
+    }
+
+    @ViewBuilder private var plain: some View {
+        switch pill.fix {
+        case let .working(fraction):
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text(fraction.map { String(format: "Separating %.0f%%", $0 * 100) } ?? "Checking timing").monospacedDigit()
+            }
+            .font(font)
+            .foregroundStyle(palette.muted)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(palette.ink.opacity(0.08)))
+        case _ where pill.shift != 0:
+            button(HStack(spacing: 4) { Text("Timing"); Text(Self.seconds(pill.shift)).monospacedDigit() })
+        case .unchecked:
+            button(Label("Fix timing", systemImage: "clock.arrow.circlepath"))
+        case let .found(offset):
+            button(HStack(spacing: 4) { Text("Fix timing"); Text(Self.seconds(offset)).monospacedDigit() })
+        case .onTime:
+            status("On time", symbol: "checkmark")
+        case .unknown:
+            status("No fix found", symbol: "clock.badge.xmark")
+        case .idle, .failed:
+            status("Timing", symbol: "clock")
+        }
+    }
+
+    /// The arrows around the shift, with an ✕ in the corner when something is kept for the song.
+    private var stepper: some View {
+        HStack(spacing: 0) {
+            arrow("chevron.left", by: -Self.step, help: "Move the lines \(Self.stepText) seconds earlier")
+            Button(action: pill.press) {
+                // The arrows sit at the ends of the room that the pill takes without the pointer over it.
+                Text(Self.seconds(pill.shift))
+                    .monospacedDigit()
+                    .padding(.horizontal, 2)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .disabled(pressHelp == nil)
+            .help(pressHelp ?? "")
+            arrow("chevron.right", by: Self.step, help: "Move the lines \(Self.stepText) seconds later")
+        }
+        .font(font)
+        .foregroundStyle(ready ? amberText : palette.muted)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(ready ? amberFill : palette.ink.opacity(0.08)))
+        .overlay(alignment: .topTrailing) {
+            if pill.kept || pill.shift != 0 {
+                corner(action: pill.forget, help: "Remove the saved timing of this song", tint: ready ? amberText : palette.muted)
+            }
+        }
+    }
+
+    private func arrow(_ symbol: String, by seconds: Double, help: String) -> some View {
+        Button { pill.nudge(seconds) } label: {
+            Image(systemName: symbol)
+                .font(.system(size: large ? 8 : 7, weight: .heavy))
+                .frame(width: large ? 18 : 16)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(help)
+        .accessibilityLabel(seconds < 0 ? "Earlier" : "Later")
+    }
+
+    /// The ✕ in the top right corner of a pill.
+    private func corner(action: @escaping () -> Void, help: String, tint: Color) -> some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 6, weight: .heavy))
+                .foregroundStyle(tint)
+                .frame(width: 12, height: 12)
+                .background(Circle().fill(.background))
+                .overlay(Circle().strokeBorder(tint.opacity(0.5), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .offset(x: 5, y: -5)
+    }
+
+    private var failed: some View {
+        HStack(spacing: 6) {
+            Label("Fix timing", systemImage: "clock.arrow.circlepath")
+                .font(font)
+                .foregroundStyle(StripColors.text(.red, colorScheme))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
+                .overlay(alignment: .topTrailing) {
+                    Button(action: pill.dismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 6, weight: .heavy))
+                            .foregroundStyle(StripColors.text(.red, colorScheme))
+                            .frame(width: 12, height: 12)
+                            .background(Circle().fill(.background))
+                            .overlay(Circle().strokeBorder(StripColors.tint(.red, strong: true, colorScheme), lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                    .offset(x: 5, y: -5)
+                }
+                .fixedSize()
+            Button("Retry", action: pill.press)
+                .controlSize(.mini)
+        }
+    }
+
+    private func button(_ label: some View) -> some View {
         Button(action: pill.press) {
             label
                 .labelStyle(.titleAndIcon)
@@ -713,11 +822,10 @@ struct LyricsTimingButton: View {
                 .padding(.vertical, 3)
                 .background(Capsule().fill(ready ? amberFill : palette.ink.opacity(0.08)))
                 .contentShape(Capsule())
-                .fixedSize()
         }
         .buttonStyle(.plain)
         .focusable(false)
-        .help(help)
+        .help(pressHelp ?? "")
     }
 
     /// A state that can't be clicked, dim with a symbol and no background, like the timing of lyrics without times.
@@ -726,10 +834,11 @@ struct LyricsTimingButton: View {
             .labelStyle(.titleAndIcon)
             .font(.system(size: large ? 11 : 10, weight: .medium, design: .rounded))
             .foregroundStyle(palette.muted.opacity(0.8))
-            .fixedSize()
+            .help(pressHelp ?? "")
     }
 
     static func seconds(_ offset: Double) -> String { String(format: "%+.1f s", offset) }
+    private static let stepText = String(format: "%.1f", step)
 }
 
 /// The service that the lyrics came from, in a pill that opens its page.

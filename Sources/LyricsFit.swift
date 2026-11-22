@@ -22,9 +22,10 @@ enum LyricsFit {
         var usable: Bool { starts.count >= 4 && starts.count * 5 >= sung }
     }
 
-    /// Lyrics with times are moved only when they are off by at least this long, since a line's time and the start of
-    /// its first word are a few tenths of a second apart in lyrics that people timed well.
-    static let smallestOffset = 0.5
+    /// Lyrics with times are offered a fix only when they are off by at least this long, since a line's time and the
+    /// start of its first word are a few tenths of a second apart in lyrics that people timed well, and the fit can't
+    /// tell an offset near half a second from that habit.
+    static let smallestOffset = 0.8
     /// The found lines agree on the offset when half of them are within half of it, and never further than this.
     static let largestSpread = 0.6
 

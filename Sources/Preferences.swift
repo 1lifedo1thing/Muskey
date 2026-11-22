@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Combine
+import IOKit.ps
 
 /// A key with Carbon modifiers, the way `RegisterEventHotKey` takes it.
 struct Shortcut: Codable, Equatable {
@@ -120,6 +121,30 @@ enum RewindEffect: String, CaseIterable {
     case fade
 }
 
+/// When the lyrics timing is checked and fitted without a click (Settings > Lyrics > Timing detection conditions).
+/// A click on the Fix timing pill checks in every case.
+enum TimingConditions: String, CaseIterable {
+    case always
+    /// Not while Low Power Mode is on, which asks apps to hold back on work that can wait.
+    case notLowPower
+    /// Only while the Mac runs on its power adapter.
+    case onAdapter
+
+    /// The conditions hold at this moment.
+    var hold: Bool {
+        switch self {
+        case .always: true
+        case .notLowPower: !ProcessInfo.processInfo.isLowPowerModeEnabled
+        case .onAdapter: Self.runsOnAdapter
+        }
+    }
+
+    private static var runsOnAdapter: Bool {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue() else { return true }
+        return IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String? != kIOPMBatteryPowerKey
+    }
+}
+
 enum LyricsTranscription: String, CaseIterable {
     /// Apple's speech model on the Mac. It only times lyrics, and writes none.
     case apple
@@ -189,6 +214,14 @@ final class Preferences: ObservableObject {
     @Published var rewindEffect: RewindEffect {
         didSet { defaults.set(rewindEffect.rawValue, forKey: "rewindEffect") }
     }
+    /// Lyrics with times of a song from another app are checked against its vocals, and lyrics without times are
+    /// fitted onto them (Settings > Lyrics > Timing).
+    @Published var lyricsLiveTiming: Bool {
+        didSet { defaults.set(lyricsLiveTiming, forKey: "lyricsLiveTiming") }
+    }
+    @Published var timingConditions: TimingConditions {
+        didSet { defaults.set(timingConditions.rawValue, forKey: "timingConditions") }
+    }
     /// Karaoke blurs and dims the rest of the screen around the glass.
     @Published var karaokeBackdrop: Bool {
         didSet { defaults.set(karaokeBackdrop, forKey: "karaokeBackdrop") }
@@ -252,7 +285,7 @@ final class Preferences: ObservableObject {
     }
 
     private init() {
-        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true])
+        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "lyricsLiveTiming": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always
@@ -269,6 +302,8 @@ final class Preferences: ObservableObject {
         karaokeRestarts = defaults.bool(forKey: "karaokeRestarts")
         rewindEffect = defaults.string(forKey: "rewindEffect").flatMap(RewindEffect.init) ?? .scratch
         karaokeBackdrop = defaults.bool(forKey: "karaokeBackdrop")
+        lyricsLiveTiming = defaults.bool(forKey: "lyricsLiveTiming")
+        timingConditions = defaults.string(forKey: "timingConditions").flatMap(TimingConditions.init) ?? .notLowPower
         pauseStop = defaults.bool(forKey: "pauseStop")
         pauseStopSeconds = min(max(defaults.integer(forKey: "pauseStopSeconds"), 1), 3600)
         autoHide = defaults.bool(forKey: "autoHide")

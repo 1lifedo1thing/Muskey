@@ -5,6 +5,11 @@ import os
 /// Lyrics added by hand and the words heard in each song, by the id that LyricsFinder gives the song, in
 /// `~/Library/Application Support/Muskey/lyrics.json`. Main thread only.
 final class LyricsStore {
+    /// The store of the app, which Settings reads and clears too.
+    static let main = LyricsStore()
+    /// Posted after Settings removed every fit and shift.
+    static let timingsRemoved = Notification.Name("muskey.lyrics.timingsRemoved")
+
     struct Entry: Codable {
         /// Lyrics added by hand, plain or LRC, which take the place of the ones from LRCLIB.
         var text: String?
@@ -14,9 +19,27 @@ final class LyricsStore {
         /// The stretches of the song that Whisper has transcribed, as start and end seconds, whether anyone sang in
         /// them or not. Those parts aren't sent to Whisper again.
         var covered: [[Double]]?
-        /// What fitting the lyrics onto the vocals of the whole song found.
+        /// What fitting the lyrics onto the vocals found, one for each text and each file or player: the same song
+        /// from Spotify and from Muskey Player, or with and without times, is fitted apart.
+        var fits: [Fit]?
+        /// The seconds that lyrics with times show moved by, from the Fix timing pill, for each text and each file or
+        /// player.
+        var shifts: [Shift]?
+        /// The one fit that a song had before each file and player kept its own. Read once, then moved into `fits`.
         var fit: Fit?
         var date: Date
+
+        var isEmpty: Bool { text == nil && heard == nil && written == nil && covered == nil && fits?.isEmpty != false && shifts?.isEmpty != false }
+    }
+
+    /// The seconds that lyrics with times show moved by, set by applying the offset that a fit found or by the arrows
+    /// of the Fix timing pill.
+    struct Shift: Codable, Equatable {
+        /// The text, as `LyricsFit.key` writes it.
+        var key: String
+        /// The file, as the name of its stems in the cache, or the player, as `app.` and its bundle ID.
+        var file: String
+        var seconds: Double
     }
 
     /// The times found by fitting lyrics onto the vocals of a song file, kept so the next play has them from its start.
@@ -31,8 +54,8 @@ final class LyricsStore {
         /// Seconds that lyrics with times were off by, as a whole: 0 when they were right, nil when the fit couldn't
         /// tell.
         var offset: Double?
-        /// The lines show moved by the offset, since a click on the Fix timing pill. Nil and false keep them at their
-        /// own times, with the pill offering the offset.
+        /// The lines showed moved by the offset, before the shift was kept apart from the fit. Read once, then moved
+        /// into `shifts`.
         var applied: Bool?
         /// The parts of the song that were fitted, as start and end seconds, for a song from another app, which is
         /// fitted from what has played. Nil for a file, which is fitted whole.
@@ -42,6 +65,8 @@ final class LyricsStore {
     }
 
     private static let limit = 1000
+    /// Fits and shifts kept for each song. A song rarely plays from more than two players, with more than two texts.
+    private static let perSong = 6
     private let file: StoreFile<[String: Entry]>
     private var entries: [String: Entry]?
 
@@ -59,9 +84,53 @@ final class LyricsStore {
     func text(for id: String) -> String? { load()[id]?.text }
     func heard(for id: String) -> [LyricsAligner.Heard] { load()[id]?.heard ?? [] }
     func written(for id: String) -> String? { load()[id]?.written }
-    func fit(for id: String, key: String, file: String) -> Fit? { load()[id]?.fit.flatMap { $0.key == key && $0.file == file ? $0 : nil } }
-    func setFit(_ fit: Fit?, for id: String) {
-        update(id) { $0.fit = fit }
+    func fit(for id: String, key: String, file: String) -> Fit? { load()[id]?.fits?.last { $0.key == key && $0.file == file } }
+    /// Keeps `fit` in place of the fit of the same text onto the same file or player.
+    func setFit(_ fit: Fit, for id: String) {
+        update(id) { entry in
+            var fits = (entry.fits ?? []).filter { $0.key != fit.key || $0.file != fit.file }
+            fits.append(fit)
+            entry.fits = Array(fits.suffix(Self.perSong))
+        }
+    }
+
+    /// The seconds that the lyrics show moved by, 0 when they show at their own times.
+    func shift(for id: String, key: String, file: String) -> Double {
+        load()[id]?.shifts?.last { $0.key == key && $0.file == file }?.seconds ?? 0
+    }
+
+    func setShift(_ seconds: Double, for id: String, key: String, file: String) {
+        update(id) { entry in
+            var shifts = (entry.shifts ?? []).filter { $0.key != key || $0.file != file }
+            if seconds != 0 { shifts.append(Shift(key: key, file: file, seconds: seconds)) }
+            entry.shifts = shifts.isEmpty ? nil : Array(shifts.suffix(Self.perSong))
+        }
+    }
+
+    /// Forgets the fit and the shift of one text on one file or player.
+    func removeTiming(for id: String, key: String, file: String) {
+        guard load()[id] != nil else { return }
+        update(id) { entry in
+            entry.fits = entry.fits?.filter { $0.key != key || $0.file != file }
+            entry.shifts = entry.shifts?.filter { $0.key != key || $0.file != file }
+            if entry.fits?.isEmpty == true { entry.fits = nil }
+            if entry.shifts?.isEmpty == true { entry.shifts = nil }
+        }
+    }
+
+    /// The songs that have a fit or a shift kept (Settings > Lyrics > Saved timings).
+    var timedSongs: Int { load().values.count { $0.fits?.isEmpty == false || $0.shifts?.isEmpty == false } }
+
+    /// Forgets every fit and every shift.
+    func removeTimings() {
+        var entries = load()
+        for (id, var entry) in entries {
+            entry.fits = nil
+            entry.shifts = nil
+            entries[id] = entry.isEmpty ? nil : entry
+        }
+        self.entries = entries
+        file.save(entries)
     }
 
     func covered(for id: String) -> [ClosedRange<Double>] {
@@ -95,7 +164,7 @@ final class LyricsStore {
         var entry = entries[id] ?? Entry(date: Date())
         change(&entry)
         entry.date = Date()
-        entries[id] = entry.text == nil && entry.heard == nil && entry.written == nil && entry.covered == nil && entry.fit == nil ? nil : entry
+        entries[id] = entry.isEmpty ? nil : entry
         if entries.count > Self.limit {
             // The songs heard longest ago go first, but never lyrics added by hand.
             let old = entries.filter { $0.value.text == nil }.sorted { $0.value.date < $1.value.date }.prefix(entries.count - Self.limit)
@@ -107,7 +176,20 @@ final class LyricsStore {
 
     private func load() -> [String: Entry] {
         if let entries { return entries }
-        let loaded = file.load()
+        var loaded = file.load()
+        // A song kept one fit before each file and player kept its own, with the lines moved by its offset after a
+        // click. Both move to where they are kept now.
+        for (id, var entry) in loaded {
+            guard let old = entry.fit else { continue }
+            entry.fit = nil
+            var fit = old
+            fit.applied = nil
+            entry.fits = (entry.fits ?? []) + [fit]
+            if old.applied == true, let offset = old.offset, offset != 0 {
+                entry.shifts = (entry.shifts ?? []) + [Shift(key: old.key, file: old.file, seconds: offset)]
+            }
+            loaded[id] = entry
+        }
         entries = loaded
         return loaded
     }
