@@ -6138,6 +6138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if offset != 0 {
                     state = .found(lyrics.moved(by: offset))
                     lyricsMoved = true
+                    log(String(format: "lyrics: their times moved by %+.2f s, by the fit of an earlier play", offset))
                 }
             } else {
                 fitLyrics(lyrics, song: song, duration: track.duration)
