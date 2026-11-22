@@ -166,6 +166,23 @@ Muskey lays the letters of the lyrics over those frames in order, along the path
 
 The times of the fit, the offset and whether it was applied are kept in `lyrics.json` for that file and those lyrics, so the next play has them from the start. The same song in another file or from another player is not given those times, since its audio can start earlier or later.
 
+### Timing the lyrics of songs from other apps
+
+Muskey can't read a song from Spotify, Music or a browser ahead, so it fits the lyrics onto the vocals of the part that has played. It needs the lyrics timing model and the model that separates the stems. The vocals come from the live separation, a few seconds behind the song, and Muskey keeps them in memory while the lyrics show.
+
+- **Lyrics with times** are checked once for each song and player. Muskey hears the vocals without transcribing them. After 30 seconds, once 8 lines were sung, it fits the lines whose times are near the part that it heard. When the found lines agree that the lyrics are off as a whole by half a second or more, the **Fix timing** pill turns red with that offset, as it does for a song in Muskey Player, and the lines move only after a click on it. An offset also needs 8 found lines, and the earlier half and the later half of them within a quarter of a second of each other. When the found lines agree that the times hold, the pill reads On time. When they don't agree, Muskey checks again after 25 more seconds and 6 more lines, four times at most, and then the pill reads Offset unknown. Muskey stops hearing the song as soon as it has an answer. The pill stays hidden until then, since a click can't start this check.
+- **Lyrics without times** are heard and timed by ear as before. When the play ends, Muskey fits the lyrics onto everything it heard in that play, and keeps the found lines when the fit found at least one line in five. In the next play those lines take the fit's time from the start, and the heard words time the other lines. Muskey doesn't fit while the song plays: the heard words come seconds before a fit of the same part could, so the fit wouldn't change which line is highlighted.
+
+A part of a song can start and end at any line, and a chorus that repeats fits it in more than one place. Three things keep a part in its place:
+
+- The fit knows where each line is expected: at its time, for lyrics with times, and otherwise where the heard words and the estimate have it. Starting or ending far from there costs a little for each second.
+- A part that starts with the song holds the first line of the lyrics, and a part that ends with the song holds the last line.
+- For lyrics without times, in a part that doesn't start with the song, a line found more than 3 seconds from where a heard word has it is left out. Nothing of the part is used when fewer than 3 of its lines are near their heard words, or when more lines are far from them than near them.
+
+Muskey keeps the result of a fit in `lyrics.json` for the song, the lyrics and the player: the offset of lyrics with times, or the found lines with the parts of the song that were fitted. The next play of the song in that player starts with them. A play is fitted when it heard at least 45 seconds of the song that no earlier play had fitted.
+
+The model is loaded for each fit and unloaded after it, and one fit runs at a time. A song that is slowed down isn't fitted, since Muskey plays it behind the player.
+
 Muskey downloads the model (289 MB) from lowtechguys.com into `~/Library/Application Support/Muskey/Models/Aligner`. The command `make aligner-model` makes it from Meta's weights and checks it against PyTorch on the CPU, the GPU and the Neural Engine. Muskey runs it on the GPU, where it stays the closest to the original.
 
 ### Saving songs
@@ -260,8 +277,14 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--lyrics-plain` | Drop the times of synced lyrics, time them by listening, and log how far the heard times are from the dropped ones. With `--pick`, the lyrics show from the start. |
 | `--lyrics-align FILE --lyrics-ref LYRICS` | Time the lyrics of a song file by the heard words, by the fit onto the vocals, and by both together as the lyrics show them. Print how far each lands from the times in LYRICS (TTML or LRC), and quit. The last line is the offset that LYRICS would be moved by. |
 | `--lyrics-heard mix`, `--lyrics-heard none` | For `--lyrics-align`: let the speech model hear the whole song instead of the vocals, or skip it |
-| `--lyrics-vocals FILE` | For `--lyrics-align`: take the vocals from an audio file instead of separating the song |
-| `--lyrics-align-out FILE` | For `--lyrics-align`: write the time of every line and word as JSON |
+| `--lyrics-part A-B,C-D` | For `--lyrics-align`: also fit each of those parts of the song alone, in seconds, as a song from another app is fitted. `--lyrics-shift S` moves the lyrics with times by S seconds first |
+| `--lyrics-live FILE --lyrics-ref LYRICS` | Play a song file through the lyrics code as a song from another app, ten times faster than real time. Print how far the lines land from the times in LYRICS when each line was highlighted, at the end of the play and at the start of the next play, and quit. `--plays` sets the plays as for `--lyrics-replay` |
+| `--lyrics-synced FILE` | For `--lyrics-live`: show the lyrics of FILE with their times (`ref` for LYRICS itself), moved by `--lyrics-shift S` seconds, and print what the check of their times says |
+| `--live-fit off`, `--live-listener off` | For `--lyrics-live`: leave out the lyrics timing model, or the speech model |
+| `--live-speed N` | For `--lyrics-live`: play N times faster than real time. The words come from the speech model about as late in real time at any speed, so the lines are highlighted later at a high speed than in a real play |
+| `--live-jitter B,J` | For `--lyrics-live`: report the song's position B seconds off, with up to J seconds more that change every 5 seconds |
+| `--lyrics-vocals FILE` | For `--lyrics-align` and `--lyrics-live`: take the vocals from an audio file instead of separating the song. `--lyrics-live` hands them over late and in pieces, as the live separation does |
+| `--lyrics-align-out FILE` | For `--lyrics-align` and `--lyrics-live`: write the time of every line and word as JSON |
 | `--aligner-model DIR` | Keep the lyrics timing model in DIR instead of the models folder |
 | `--aligner-install ZIP` | Install the lyrics timing model from a zip |
 
