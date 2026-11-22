@@ -278,6 +278,10 @@ final class HUDModel: ObservableObject {
     @Published var lyricLine: Int?
     /// The speech model that times lyrics without times is downloading.
     @Published var lyricsDownloading = false
+    /// The Fix timing pill over lyrics with times, nil when no fit can run for the song.
+    @Published var lyricsTiming: LyricsTimingFix?
+    var onLyricsTiming: () -> Void = {}
+    var onLyricsTimingDismiss: () -> Void = {}
     /// Whisper listens to a song that LRCLIB has no lyrics for, and writes them.
     @Published var lyricsWriting = false
     /// Whisper skips the part of the song that plays, since it was transcribed in an earlier play.
@@ -592,7 +596,13 @@ struct HUDView: View {
                                     isOn: model.lyricsShown, palette: palette, action: model.onLyrics)
                             .transition(.opacity)
                     }
-                    // Karaoke's lyrics name their source before its button, within reach of the pointer.
+                    // Karaoke's lyrics name their source before its button, within reach of the pointer, and the Fix timing
+                    // pill before it.
+                    if focus, !model.karaokeKeys, case let .found(lyrics) = model.lyrics, lyrics.timing == .synced, let fix = model.lyricsTiming {
+                        LyricsTimingButton(pill: LyricsTimingPill(fix: fix, press: model.onLyricsTiming, dismiss: model.onLyricsTimingDismiss),
+                                           palette: palette, large: true)
+                            .transition(.opacity)
+                    }
                     if focus, !model.karaokeKeys, case let .found(lyrics) = model.lyrics, let source = lyrics.source {
                         LyricsCredit(source: source, palette: palette, large: true)
                             .padding(.trailing, 4)
@@ -638,6 +648,7 @@ struct HUDView: View {
         .environment(\.recordPlaying, model.playing)
         .environment(\.songLoop, model.loop)
         .environment(\.songChords, model.chords.isEmpty ? nil : SongChords(marks: model.chords, shift: model.shift, capo: model.capo))
+        .environment(\.lyricsTiming, model.lyricsTiming.map { LyricsTimingPill(fix: $0, press: model.onLyricsTiming, dismiss: model.onLyricsTimingDismiss) })
         .environment(\.openURL, OpenURLAction { url in
             model.onLink(url)
             return .systemAction
@@ -2451,6 +2462,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.toggleKaraoke()
         }
         model.onLyricsRetry = { [weak self] in self?.retryLyrics() }
+        model.onLyricsTiming = { [weak self] in self?.pressLyricsTiming() }
+        model.onLyricsTimingDismiss = { [weak self] in
+            guard let self, model.lyricsTiming == .failed else { return }
+            model.lyricsTiming = .unchecked
+        }
         model.onLyricsEdit = { [weak self] in self?.editLyrics() }
         model.onStem = { [weak self] stem, solo in self?.toggleStem(stem, solo: solo) }
         model.onVocals = { [weak self] in self?.toggleVocals() }
@@ -6130,17 +6146,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         lyricsFit?.cancel()
         lyricsFit = nil
+        lyricsFitBusy = false
         lyricsMoved = false
+        lyricsFixManual = false
+        lyricsOriginal = nil
+        model.lyricsTiming = nil
         let file = lyricsFile
         if case let .found(lyrics) = state, lyrics.timing == .synced, !lyrics.lines.isEmpty, let file {
-            // Lyrics with times that a fit found to be off as a whole for this file show at the offset it found.
-            if let offset = lyricsStore.fit(for: song, key: LyricsFit.key(lyrics), file: file)?.offset {
-                if offset != 0 {
+            // Lyrics with times that a fit checked for this file show what it found: moved by the offset after a click
+            // on the Fix timing pill, or at their own times with the pill offering the offset.
+            if let kept = lyricsStore.fit(for: song, key: LyricsFit.key(lyrics), file: file) {
+                lyricsOriginal = lyrics
+                switch kept.offset {
+                case let offset? where offset != 0 && kept.applied == true:
                     state = .found(lyrics.moved(by: offset))
                     lyricsMoved = true
+                    model.lyricsTiming = .applied(offset)
                     log(String(format: "lyrics: their times moved by %+.2f s, by the fit of an earlier play", offset))
+                case let offset? where offset != 0:
+                    model.lyricsTiming = .found(offset)
+                case .some:
+                    model.lyricsTiming = .onTime
+                case nil:
+                    model.lyricsTiming = .unknown
                 }
-            } else {
+            } else if lyricsFitCanRun {
+                lyricsOriginal = lyrics
+                model.lyricsTiming = .unchecked
                 fitLyrics(lyrics, song: song, duration: track.duration)
             }
         }
@@ -6170,8 +6202,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The fit of the lyrics onto the vocals that is being worked out.
     private var lyricsFit: Task<Void, Never>?
+    /// The fit runs off the main thread and can't be stopped halfway, so another one doesn't start meanwhile.
+    private var lyricsFitBusy = false
+    /// Counts the fits started, so that a fit that ends clears only its own task.
+    private var lyricsFitGeneration = 0
     /// The lyrics that show were moved by the offset that a fit found.
     private var lyricsMoved = false
+    /// Lyrics with times at their own times, which the Fix timing pill moves and puts back.
+    private var lyricsOriginal: Lyrics?
+    /// The Fix timing pill was clicked: the fit shows its progress, and the offset it finds moves the lines at once.
+    /// A check that started by itself only turns the pill red.
+    private var lyricsFixManual = false
+    /// A fit can run for the song: both models are installed and the song plays in Muskey Player.
+    private var lyricsFitCanRun: Bool { AlignerModel.installed && StemModel.installed && lyricsFile != nil }
     /// The file that Muskey Player plays, as the name of its stems in the cache. A fit of the lyrics belongs to that
     /// file: the same song in another file or from another player can start seconds earlier or later.
     private var lyricsFile: String? {
@@ -6179,19 +6222,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return StemsCache.url(for: path)?.lastPathComponent
     }
 
-    /// The stems of the whole song came into the cache while its lyrics show: lyrics with times are checked for an
-    /// offset now, since they are only fitted when the stems are there anyway.
+    /// The stems of the whole song came into the cache while its lyrics show: lyrics with times that nothing checked
+    /// yet are checked for an offset now.
     private func fitShownLyrics() {
-        guard model.lyricsShown, !lyricsMoved, let song = lyricsSong, let track = model.track, LyricsFinder.id(track) == song,
-              case let .found(lyrics) = model.lyrics, lyrics.timing == .synced else { return }
+        guard model.lyricsShown, !lyricsFitBusy, model.lyricsTiming == .unchecked, let song = lyricsSong, let track = model.track,
+              LyricsFinder.id(track) == song, let lyrics = lyricsOriginal else { return }
         fitLyrics(lyrics, song: song, duration: track.duration)
+    }
+
+    /// A click on the Fix timing pill: checks the lyrics when nothing is known, applies an offset that was found, and
+    /// puts the lines back at their own times after that.
+    private func pressLyricsTiming() {
+        switch model.lyricsTiming {
+        case .unchecked?, .failed?:
+            guard let song = lyricsSong, let track = model.track, let lyrics = lyricsOriginal, let path = filePlayer.current?.path else { return }
+            lyricsFixManual = true
+            log("lyrics: Fix timing pressed")
+            model.lyricsTiming = .working(StemsCache.open(for: path) == nil ? stemsCache.fraction : nil)
+            // A check that started by itself goes on, and shows its progress from now on.
+            if lyricsFit == nil { fitLyrics(lyrics, song: song, duration: track.duration) }
+        case let .found(offset)?:
+            applyLyricsOffset(offset)
+        case let .applied(offset)?:
+            guard let song = lyricsSong, let original = lyricsOriginal, let file = lyricsFile else { return }
+            model.lyrics = .found(original)
+            lyricsMoved = false
+            model.lyricsTiming = .found(offset)
+            keepLyricsOffset(applied: false, song: song, lyrics: original, file: file)
+            updateLyricLine()
+            log("lyrics: back at their own times")
+        default:
+            break
+        }
+    }
+
+    /// Moves the lines of lyrics with times by the offset that a fit found, and keeps that for the next play of the file.
+    private func applyLyricsOffset(_ offset: Double) {
+        guard let song = lyricsSong, let original = lyricsOriginal, let file = lyricsFile, case let .found(shown) = model.lyrics,
+              shown.timing == .synced else { return }
+        model.lyrics = .found(original.moved(by: offset))
+        lyricsMoved = true
+        model.lyricsTiming = .applied(offset)
+        keepLyricsOffset(applied: true, song: song, lyrics: original, file: file)
+        updateLyricLine()
+        log(String(format: "lyrics: their times moved by %+.2f s", offset))
+    }
+
+    private func keepLyricsOffset(applied: Bool, song: String, lyrics: Lyrics, file: String) {
+        guard var kept = lyricsStore.fit(for: song, key: LyricsFit.key(lyrics), file: file) else { return }
+        kept.applied = applied
+        lyricsStore.setFit(kept, for: song)
     }
 
     /// With the lyrics timing model installed, fits the lyrics of a song that Muskey Player plays onto its vocals, which
     /// times the lines it finds before they are sung, and keeps what the fit found for the next play. Lyrics without
     /// times separate the stems of the whole song for it when the cache doesn't have them, and the heard words time
-    /// every line until the fit is done, and the lines that it didn't find after that. Lyrics with times are only
-    /// checked for an offset, and only when the stems are there already.
+    /// every line until the fit is done, and the lines that it didn't find after that. Lyrics with times separate the
+    /// song too, and the offset that the fit finds turns the Fix timing pill red, or moves the lines after a click.
     private func fitLyrics(_ lyrics: Lyrics, song: String, duration: Double?) {
         lyricsFit?.cancel()
         lyricsFit = nil
@@ -6199,40 +6286,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let key = LyricsFit.key(lyrics), synced = lyrics.timing == .synced
         // A fit that found too few lines is kept as well, so the file isn't fitted again on every play.
         guard lyricsStore.fit(for: song, key: key, file: file) == nil else { return }
-        guard !synced || StemsCache.open(for: path) != nil else { return }
         let texts = lyrics.lines.map(\.text)
+        lyricsFitGeneration += 1
+        let generation = lyricsFitGeneration
         lyricsFit = Task { @MainActor [weak self] in
+            // A fit that ended leaves no task behind, so a click on the pill knows to start one.
+            defer { if self?.lyricsFitGeneration == generation { self?.lyricsFit = nil } }
+            // Only a check that was clicked shows that it failed. One that started by itself leaves the pill as it was.
+            func failed(_ reason: String) {
+                guard let self else { return }
+                log("lyrics: \(reason)")
+                guard synced, lyricsSong == song, lyricsOriginal == lyrics else { return }
+                model.lyricsTiming = lyricsFixManual ? .failed : .unchecked
+                lyricsFixManual = false
+            }
             // A song of an hour separates in well under half an hour.
             for _ in 0 ..< 1800 where StemsCache.open(for: path) == nil {
-                guard let self, !Task.isCancelled, lyricsSong == song, !stemsCacheFailed.contains(path) else { return }
+                guard let self, !Task.isCancelled, lyricsSong == song else { return }
+                if stemsCacheFailed.contains(path) { return failed("not fitted, the separation failed") }
                 if stemsCache.path != path { stemsCache.start(path) }
+                if synced, lyricsFixManual { model.lyricsTiming = .working(stemsCache.fraction) }
                 try? await Task.sleep(for: .seconds(1))
             }
-            guard let self, !Task.isCancelled, lyricsSong == song, let cache = StemsCache.open(for: path) else { return }
+            guard let self, !Task.isCancelled, lyricsSong == song else { return }
+            guard let cache = StemsCache.open(for: path) else { return failed("not fitted, the separation took too long") }
             // While one song follows another, the file and the song on the record can be two songs for a moment. The
             // lyrics of one are never fitted onto the vocals of the other, and nothing is kept about it.
             let length = Double(cache.frames) / StemsCache.rate
             guard let duration, abs(length - duration) < 2 else {
-                return log(String(format: "lyrics: not fitted, the file is %.0f s long and the song %.0f s", length, duration ?? 0))
+                return failed(String(format: "not fitted, the file is %.0f s long and the song %.0f s", length, duration ?? 0))
             }
+            if synced, lyricsFixManual { model.lyricsTiming = .working(nil) }
             let started = Date()
+            lyricsFitBusy = true
             let fitted = await Task.detached(priority: .utility) { () -> Result<LyricsFit.Outcome?, Error> in
                 Result { try LyricsFit.fit(texts, vocals: NotesPipeline.stemSamples(cache, stem: .vocals), rate: StemsCache.rate) }
             }.value
+            lyricsFitBusy = false
             guard case let .success(outcome?) = fitted else {
-                if case let .failure(error) = fitted { log("lyrics: the fit failed: \(error.localizedDescription)") }
+                if case let .failure(error) = fitted { failed("the fit failed: \(error.localizedDescription)") }
                 return
             }
             let took = String(format: "%.1f s", Date().timeIntervalSince(started))
             if synced {
-                let offset = LyricsFit.offset(of: lyrics, outcome)
-                lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: nil, offset: offset ?? 0), for: song)
-                log(offset.map { String(format: "lyrics: their times are off by %+.2f s, by the fit of %d lines in %@", $0, outcome.starts.count, took) }
-                    ?? "lyrics: their times hold, by the fit of \(outcome.starts.count) of \(outcome.sung) lines in \(took)")
-                guard let offset, lyricsSong == song, case let .found(shown) = model.lyrics, shown == lyrics else { return }
-                model.lyrics = .found(shown.moved(by: offset))
-                lyricsMoved = true
-                updateLyricLine()
+                let check = LyricsFit.check(of: lyrics, outcome)
+                let offset: Double? = switch check {
+                case let .off(offset): offset
+                case .right: 0
+                case .unclear: nil
+                }
+                lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: nil, offset: offset), for: song)
+                switch check {
+                case let .off(offset): log(String(format: "lyrics: their times are off by %+.2f s, by the fit of %d lines in %@", offset, outcome.starts.count, took))
+                case .right: log("lyrics: their times hold, by the fit of \(outcome.starts.count) of \(outcome.sung) lines in \(took)")
+                case .unclear: log("lyrics: the offset of their times is unclear, by the fit of \(outcome.starts.count) of \(outcome.sung) lines in \(took)")
+                }
+                guard lyricsSong == song, lyricsOriginal == lyrics else { return }
+                let clicked = lyricsFixManual
+                lyricsFixManual = false
+                switch check {
+                case let .off(offset):
+                    model.lyricsTiming = .found(offset)
+                    if clicked { applyLyricsOffset(offset) }
+                case .right: model.lyricsTiming = .onTime
+                case .unclear: model.lyricsTiming = .unknown
+                }
             } else {
                 lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: outcome.usable ? outcome.starts : [:], offset: nil), for: song)
                 guard outcome.usable else {
@@ -7015,6 +7133,8 @@ extension EnvironmentValues {
     /// The region loop of the song, for the time bar and the lyrics.
     @Entry var songLoop: LoopRegion?
     @Entry var songChords: SongChords?
+    /// The Fix timing pill over lyrics with times, nil when no fit can run for the song.
+    @Entry var lyricsTiming: LyricsTimingPill?
 }
 
 /// `--render <dir>` writes a PNG of each HUD state over a light and a dark backdrop, to check the design without the screen.
@@ -7229,7 +7349,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -7255,7 +7375,7 @@ extension EnvironmentValues {
             if variant.hasPrefix("-lyrics") {
                 model.lyricsShown = true
                 let text = sampleLyrics.map { "[00:\(String(format: "%05.2f", $0.0))] \($0.1)" }.joined(separator: "\n")
-                var lyrics = variant == "-lyrics" || variant.hasSuffix("-loop") || variant.hasSuffix("-chords") ? Lyrics.parse(lrc: text) : Lyrics.estimate(plain: sampleLyrics.map(\.1).joined(separator: "\n"), duration: 238)
+                var lyrics = variant == "-lyrics" || variant.hasSuffix("-loop") || variant.hasSuffix("-chords") || variant.contains("-fix") ? Lyrics.parse(lrc: text) : Lyrics.estimate(plain: sampleLyrics.map(\.1).joined(separator: "\n"), duration: 238)
                 lyrics?.source = variant.hasPrefix("-lyrics-focus") ? .lrcRed(isrc: "USQX91300108") : .lrclib
                 model.lyrics = switch variant {
                 case "-lyrics-loading": .loading
@@ -7269,6 +7389,18 @@ extension EnvironmentValues {
                 default: lyrics.map { .found($0) } ?? .notFound
                 }
                 model.lyricsDownloading = variant == "-lyrics-downloading"
+                // The Fix timing pill in each of its states, beside the credit of lyrics with times.
+                model.lyricsTiming = switch variant {
+                case "-lyrics-fix": .unchecked
+                case "-lyrics-fix-working": .working(0.42)
+                case "-lyrics-fix-checking": .working(nil)
+                case "-lyrics-fix-found", "-lyrics-focus-fix-found": .found(3.98)
+                case "-lyrics-fix-applied": .applied(3.98)
+                case "-lyrics-fix-ontime": .onTime
+                case "-lyrics-fix-unknown": .unknown
+                case "-lyrics-fix-failed": .failed
+                default: nil
+                }
                 model.lyricsWriting = variant.hasSuffix("-waiting")
                 model.lyricsWaiting = variant.hasSuffix("-waiting") ? 23 : nil
                 model.lyricsFocus = variant.hasPrefix("-lyrics-focus")

@@ -56,12 +56,26 @@ enum LyricsFit {
     /// is from the line's time. Nil when the lines don't agree on it, or when it is too small to tell from the
     /// habits of whoever timed the lyrics.
     static func offset(of lyrics: Lyrics, _ outcome: Outcome) -> Double? {
-        guard outcome.found else { return nil }
+        if case let .off(offset) = check(of: lyrics, outcome) { offset } else { nil }
+    }
+
+    /// What a fit says about the times of lyrics with times.
+    enum Check: Equatable {
+        /// Off as a whole by that many seconds.
+        case off(Double)
+        /// Right: the found lines agree on an offset too small to tell from the habits of whoever timed them.
+        case right
+        /// Too few lines found, or found lines that disagree on how far off they are.
+        case unclear
+    }
+
+    static func check(of lyrics: Lyrics, _ outcome: Outcome) -> Check {
+        guard outcome.found else { return .unclear }
         let gaps = outcome.starts.compactMap { line, start in lyrics.lines.indices.contains(line) ? start - lyrics.lines[line].time : nil }.sorted()
-        guard gaps.count >= 4 else { return nil }
+        guard gaps.count >= 4 else { return .unclear }
         let median = gaps[gaps.count / 2]
         let spread = gaps.map { abs($0 - median) }.sorted()[gaps.count / 2]
-        guard abs(median) >= smallestOffset, spread <= min(largestSpread, abs(median) / 2) else { return nil }
-        return median
+        if abs(median) >= smallestOffset { return spread <= min(largestSpread, abs(median) / 2) ? .off(median) : .unclear }
+        return spread <= largestSpread ? .right : .unclear
     }
 }

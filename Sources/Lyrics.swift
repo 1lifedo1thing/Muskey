@@ -316,6 +316,7 @@ struct LyricsBadges: View {
     var writing = false
     let palette: Palette
     @Environment(\.songChords) private var chords
+    @Environment(\.lyricsTiming) private var timing
 
     var body: some View {
         HStack(spacing: 8) {
@@ -324,6 +325,7 @@ struct LyricsBadges: View {
             if lyrics.timing == .estimated || lyrics.timing == .written {
                 LyricsTimingStatus(timing: lyrics.timing, downloading: downloading, writing: writing, palette: palette)
             }
+            if lyrics.timing == .synced, let timing { LyricsTimingButton(pill: timing, palette: palette) }
             if let source = lyrics.source { LyricsCredit(source: source, palette: palette) }
         }
     }
@@ -605,6 +607,123 @@ struct LyricsTimingStatus: View {
             .foregroundStyle(palette.muted.opacity(0.8))
             .fixedSize()
     }
+}
+
+/// Where the Fix timing pill over lyrics with times stands. A fit only finds the offset of the times, and the lines
+/// move only after a click, since a fit can be wrong about songs whose vocals it reads poorly.
+enum LyricsTimingFix: Equatable {
+    /// Nothing is known yet. A click separates the song when its stems aren't cached and fits the lyrics.
+    case unchecked
+    /// The share of the song separated, or nil while the lyrics are fitted.
+    case working(Double?)
+    /// An offset that a fit found and that isn't applied: the pill turns red, and a click moves the lines.
+    case found(Double)
+    /// The lines show moved by the offset. A click puts them back at their original times.
+    case applied(Double)
+    /// The fit found the times right.
+    case onTime
+    /// The fit couldn't tell: too few lines found, or lines that disagree.
+    case unknown
+    /// A fit started by a click failed. Retry starts it again, and ✕ dismisses it.
+    case failed
+}
+
+/// The state of the Fix timing pill and what its clicks do, read by the lyrics badges from the environment.
+struct LyricsTimingPill {
+    var fix: LyricsTimingFix
+    var press: () -> Void
+    var dismiss: () -> Void
+}
+
+/// The Fix timing pill: a clock pill that turns red with the offset that a fit found, then shows the offset applied.
+struct LyricsTimingButton: View {
+    let pill: LyricsTimingPill
+    let palette: Palette
+    var large = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        switch pill.fix {
+        case .unchecked:
+            button(Label("Fix timing", systemImage: "clock.arrow.circlepath"), red: false,
+                   help: "Find the offset of the times from the vocals and move the lines by it")
+        case let .working(fraction):
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text(fraction.map { String(format: "Separating %.0f%%", $0 * 100) } ?? "Checking timing").monospacedDigit()
+            }
+            .font(font)
+            .foregroundStyle(palette.muted)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(palette.ink.opacity(0.08)))
+            .fixedSize()
+        case let .found(offset):
+            button(HStack(spacing: 4) { Text("Fix timing"); Text(Self.seconds(offset)).monospacedDigit() }, red: true,
+                   help: String(format: "Move the lines %.1f seconds %@", abs(offset), offset > 0 ? "later" : "earlier"))
+        case let .applied(offset):
+            button(HStack(spacing: 4) { Text("Timing"); Text(Self.seconds(offset)).monospacedDigit() }, red: false, help: "Use the original times")
+        case .onTime:
+            status("On time", symbol: "checkmark")
+        case .unknown:
+            status("Offset unknown", symbol: "questionmark")
+        case .failed:
+            HStack(spacing: 6) {
+                Label("Fix timing", systemImage: "clock.arrow.circlepath")
+                    .font(font)
+                    .foregroundStyle(StripColors.text(.red, colorScheme))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(StripColors.tint(.red, strong: false, colorScheme)))
+                    .overlay(alignment: .topTrailing) {
+                        Button(action: pill.dismiss) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 6, weight: .heavy))
+                                .foregroundStyle(StripColors.text(.red, colorScheme))
+                                .frame(width: 12, height: 12)
+                                .background(Circle().fill(.background))
+                                .overlay(Circle().strokeBorder(StripColors.tint(.red, strong: true, colorScheme), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dismiss")
+                        .offset(x: 5, y: -5)
+                    }
+                    .fixedSize()
+                Button("Retry", action: pill.press)
+                    .controlSize(.mini)
+            }
+        }
+    }
+
+    private var font: Font { .system(size: large ? 11 : 10, weight: .semibold, design: .rounded) }
+
+    private func button(_ label: some View, red: Bool, help: String) -> some View {
+        Button(action: pill.press) {
+            label
+                .labelStyle(.titleAndIcon)
+                .font(font)
+                .foregroundStyle(red ? StripColors.text(.red, colorScheme) : palette.muted)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(red ? StripColors.tint(.red, strong: false, colorScheme) : palette.ink.opacity(0.08)))
+                .contentShape(Capsule())
+                .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(help)
+    }
+
+    /// A state that can't be clicked, dim with a symbol and no background, like the timing of lyrics without times.
+    private func status(_ text: String, symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: large ? 11 : 10, weight: .medium, design: .rounded))
+            .foregroundStyle(palette.muted.opacity(0.8))
+            .fixedSize()
+    }
+
+    static func seconds(_ offset: Double) -> String { String(format: "%+.1f s", offset) }
 }
 
 /// The service that the lyrics came from, in a pill that opens its page.

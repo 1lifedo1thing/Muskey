@@ -28,8 +28,12 @@ final class LyricsStore {
         var file: String
         /// The second at which the first word of each line is sung, for the lines that were found.
         var starts: [Int: Double]?
-        /// Seconds that lyrics with times were off by, as a whole.
+        /// Seconds that lyrics with times were off by, as a whole: 0 when they were right, nil when the fit couldn't
+        /// tell.
         var offset: Double?
+        /// The lines show moved by the offset, since a click on the Fix timing pill. Nil and false keep them at their
+        /// own times, with the pill offering the offset.
+        var applied: Bool?
     }
 
     private static let limit = 1000

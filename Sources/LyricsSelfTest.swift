@@ -105,6 +105,14 @@ enum LyricsSelfTest {
         report(offset.map { abs($0 - 2) < 0.05 } == true && small == nil && outcome.found && thin.usable && !thin.found && !thinner.usable,
                "lyrics offset    \(offset.map { String(format: "%+.2f s", $0) } ?? "none"), and \(small.map { String(format: "%+.2f s", $0) } ?? "none") for lyrics 0.2 s early (want +2.00 s, none)")
 
+        // The Fix timing pill tells right times from a fit that can't tell: lyrics 0.2 s early are right, and a fit
+        // whose lines disagree by seconds, or that found too few lines, is unclear.
+        let scattered = LyricsFit.Outcome(starts: [0: 4, 1: 12, 4: 18, 5: 25, 6: 33], words: [], sung: 6)
+        let checks = [LyricsFit.check(of: early, outcome), LyricsFit.check(of: early.moved(by: 1.8), outcome),
+                      LyricsFit.check(of: early.moved(by: 2), scattered), LyricsFit.check(of: early, thin)]
+        let two = if case let .off(value) = checks[0] { abs(value - 2) < 0.05 } else { false }
+        report(two && Array(checks.dropFirst()) == [.right, .unclear, .unclear], "lyrics check     \(checks) (want off by +2, right, unclear, unclear)")
+
         // A kept fit times the lines of the same lyrics in the same file from the start of a play, and isn't used
         // for another file or for other lyrics.
         let folder = FileManager.default.temporaryDirectory.appending(path: "muskey-lyrics-selftest-\(getpid())")
