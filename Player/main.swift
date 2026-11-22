@@ -125,7 +125,10 @@ final class Player: NSObject, NSApplicationDelegate {
         let asset = AVURLAsset(url: url)
         Task { @MainActor in
             do {
-                guard try await asset.load(.isPlayable) else { return say("failed not playable") }
+                let playable = try await asset.load(.isPlayable)
+                // A song that was cancelled or replaced meanwhile says nothing.
+                guard current == opened else { return }
+                guard playable else { return say("failed not playable") }
                 let duration = try await asset.load(.duration).seconds
                 guard current == opened else { return }
                 let read = await Self.metadata(asset, url: url)

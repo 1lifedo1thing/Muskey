@@ -580,7 +580,8 @@ struct HUDView: View {
                 HStack(spacing: 10) {
                     if closable {
                         // Over the shortcuts, the ✕ closes them and leaves the HUD open, as Escape does.
-                        CloseButton(size: focus ? 16 : 14, action: { if model.shortcuts { model.shortcuts = false } else { model.onClose() } })
+                        // A song that opens covers the shortcuts, so there the ✕ closes the HUD.
+                        CloseButton(size: focus ? 16 : 14, action: { if model.shortcuts, model.opening == nil { model.shortcuts = false } else { model.onClose() } })
                             .transition(.opacity)
                     }
                     // Beside the ✕ rather than in the row at the top right, where the card's record reached under it.
@@ -2925,6 +2926,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if opening?.step != model.opening?.step || opening?.failed != model.opening?.failed {
             log(opening.map { "opening: \($0.step ?? "failed")" } ?? "opening: done")
         }
+        let started = model.opening == nil && opening != nil
         if model.opening != opening { model.opening = opening }
         if opening != nil {
             if state == .idle, raisesHUD {
@@ -2937,8 +2939,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 panel.present()
                 log("the HUD shows the song that opens")
             }
-            // A failed listen leaves the glass without clicks, and Cancel and Retry need them.
-            if state != .idle { panel.setInteraction(clickable: true, keyboard: false) }
+            // A listen and its result can leave the glass without clicks, and Cancel and Retry need them. The key
+            // picker already takes them, with the keyboard, which it keeps.
+            if started, state != .idle, !model.picking { panel.setInteraction(clickable: true, keyboard: false) }
         }
         syncActivityPill()
         updateHoverKeys()
@@ -2953,7 +2956,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Cancel, and the ✕ of a failure: the HUD shows what it showed before, or closes if the song opened it.
     private func cancelOpening() {
         filePlayer.dismiss()
-        guard raisedForOpening else { return }
+        guard raisedForOpening else {
+            // A result that was about to hide waited for the song, and hides now.
+            if state == .showing, model.phase == .done, !model.picking, let delay = resultHideDelay { dismiss(after: delay) }
+            return
+        }
         raisedForOpening = false
         if model.phase == .idle { dismiss() }
     }
@@ -4531,7 +4538,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A song plays while the HUD offers to play one: the listen starts over on it.
     private func listenWhenPlaying() {
-        guard model.phase == .idle, model.shown, nowPlaying.track?.playing == true else { return }
+        // The song of another app still plays while a link downloads, and the listen waits for the song that opens.
+        guard model.phase == .idle, model.shown, model.opening == nil, nowPlaying.track?.playing == true else { return }
         log("a song plays, listening")
         start()
     }

@@ -113,8 +113,8 @@ struct OpeningView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if let progress = opening.progress {
-                        // Rounded down, so it never reads 100% before the end.
-                        Text("\(Int((progress * 100).rounded(.down)))%")
+                        // Rounded down and held at 99, since the step still runs while it shows.
+                        Text("\(min(99, Int((progress * 100).rounded(.down))))%")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(palette.ink)
