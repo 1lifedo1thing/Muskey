@@ -2694,7 +2694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
             guard let self, event.window === panel else { return event }
-            if Self.logKeys, event.phase == .began { log("pinch began, " + (overWaveform(event) ? "over the waveform" : "away from the waveform")) }
+            if event.phase == .began { log("pinch began, " + (overWaveform(event) ? "over the waveform" : "away from the waveform")) }
             guard overWaveform(event) else { return event }
             zoomWaveform(1 + Double(event.magnification))
             return nil
