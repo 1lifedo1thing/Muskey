@@ -42,9 +42,21 @@ The move that worked is kept for the player's next seeks until Muskey quits. A p
 
 Muskey plays the songs that are opened in it: dropped on the HUD, pasted with Command-V over it, picked with **Open File…** or **Open URL…** in the menu, or opened with Muskey in Finder. A small app inside Muskey, Muskey Player, plays them and tells Now Playing about them. Muskey's taps leave out the audio that the Muskey app plays, so the player is a separate app. The key, the pitch change, the stems and the lyrics then work as they do with any other player. Before a song plays, Muskey pauses the song that another app plays.
 
-A link to an audio or video file is downloaded directly. Muskey downloads any other link with [yt-dlp](https://github.com/yt-dlp/yt-dlp), from Homebrew, pipx or Muskey's folder. Without yt-dlp, the pill at the top right of the screen offers **Install yt-dlp**, which downloads the official build for macOS from yt-dlp's GitHub releases and checks it against the SHA-256 sums published with it. When a download with that copy fails, Muskey updates it once with `yt-dlp -U` and tries again.
+A link to an audio or video file is downloaded directly. Muskey downloads any other link with [yt-dlp](https://github.com/yt-dlp/yt-dlp), from Homebrew, pipx or Muskey's folder. Without yt-dlp, the HUD offers **Install yt-dlp**, which downloads the official build for macOS from yt-dlp's GitHub releases and checks it against the SHA-256 sums published with it. When a download with that copy fails, Muskey updates it once with `yt-dlp -U` and tries again.
 
 yt-dlp takes only the audio. With ffmpeg, it converts any audio to M4A. Without ffmpeg, it takes M4A, MP3 or MP4, and Muskey copies the audio into a new M4A, since AVFoundation reads the DASH M4A of YouTube as twice as long as it is. Muskey keeps up to 2 GB of downloaded songs in `~/Library/Caches/Muskey/Links`, so a link opened again plays at once.
+
+The HUD opens at once on a link, and on a file on a network volume, and shows the step that runs until the song plays:
+
+| Step | What runs |
+|---|---|
+| Reading | yt-dlp reads the page until it names the song. For a file on a network volume, Muskey Player reads the file until it can play it |
+| Downloading | The download, with the part done as a percent while the size is known |
+| Converting | yt-dlp's post-processing (ffmpeg takes the audio out), then Muskey's copy into an M4A and the download of the cover |
+| Installing yt-dlp | The download of yt-dlp, then its checks |
+| Updating yt-dlp | `yt-dlp -U`, after a download with Muskey's copy failed |
+
+**Cancel** stops the step that runs: it ends yt-dlp, the download or the install, and tells Muskey Player to drop a file that it still reads (`cancel` on its stdin). The song that plays goes on. A failure shows in the same place as a red pill with **Retry** or **Install yt-dlp**. While the HUD is closed, the pill at the top right of the screen shows the same state. A song of the queue that starts to download when the one before it ends doesn't open a closed HUD.
 
 **Open URL…** shows a field for a link or the path of a file, in a glass bar like the HUD's, with the songs downloaded from links before listed under it. Several files opened together play one after another. **Stop Playing**, in the menu bar menu and in the File menu while a song plays in Muskey Player, quits the player.
 
@@ -305,7 +317,8 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | Flag | Action |
 |---|---|
 | `--open PATH_OR_LINK` | Play a file or a link, as a drop on the HUD does |
-| `--install-yt-dlp` | Press **Install yt-dlp**, as on the pill of a link that needs it |
+| `--install-yt-dlp` | Press **Install yt-dlp**, as for a link that needs it |
+| `--no-yt-dlp` | Look for yt-dlp only in Muskey's folder, as on a Mac without Homebrew's or pipx's copy |
 | `--menu TITLE` | Pick the item of the menu bar menu with this title, as a click on it does. No automation can open that menu on macOS 27. |
 | `--menu-after SECONDS` | How long after launch `--menu` picks its item (3 seconds by default) |
 | `--render-song PATH` | Render a song as Save Song does, write it to `--render-out PATH` (M4A, MP3 or WAV by its extension), print how long each part took, and quit |

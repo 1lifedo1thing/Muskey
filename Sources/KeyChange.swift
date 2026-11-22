@@ -277,6 +277,8 @@ struct Spinner: View {
 struct CloseButton: View {
     /// Larger in karaoke, where it sits in one row with the key and the karaoke button.
     var size: CGFloat = 14
+    /// What it closes, when that isn't the HUD.
+    var help = "Close (Esc)"
     let action: () -> Void
 
     var body: some View {
@@ -290,8 +292,8 @@ struct CloseButton: View {
         }
         .buttonStyle(.plain)
         .focusable(false)
-        .help("Close (Esc)")
-        .accessibilityLabel("Close")
+        .help(help)
+        .accessibilityLabel(help == "Close (Esc)" ? "Close" : help)
     }
 }
 

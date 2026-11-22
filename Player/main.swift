@@ -6,6 +6,7 @@
 //   open <json>    {"path": "/file.m4a", "title": "…", "artist": "…", "album": "…", "artwork": "/cover.jpg"}, with
 //                  every field but the path optional. The title, artist, album and cover that the file carries fill
 //                  in the rest, then the file name.
+//   cancel         drops the song that `open` named while it is still read, before `ready`
 //   play, pause, toggle, seek <seconds>
 //   speed <rate>  every song plays at this rate from then on, faster or slower with its pitch, like a turntable
 //                 (Muskey's pitch change shifts the pitch back to the key)
@@ -101,6 +102,8 @@ final class Player: NSObject, NSApplicationDelegate {
         case "open":
             guard parts.count == 2, let request = try? JSONDecoder().decode(Request.self, from: Data(parts[1].utf8)) else { return say("failed bad request") }
             open(request)
+        // The song being read is dropped, and the one that plays goes on.
+        case "cancel": opened += 1
         case "play": _ = play(true)
         case "pause": _ = play(false)
         case "toggle": _ = play(player.rate == 0)
