@@ -37,6 +37,8 @@ enum LyricsFit {
     /// so it runs off the main thread.
     static func fit(_ lines: [String], vocals: [Float], rate: Double, stop: () -> Bool = { false }) throws -> Outcome? {
         let reader = try AlignerModel.reader()
+        // A song is fitted once, and the model takes about a gigabyte of memory while it is loaded.
+        defer { AlignerModel.unload() }
         let aligner = ForcedAligner(lines: lines, space: reader.space, label: reader.label)
         let sung = lines.count { line in ForcedAligner.sung(line).contains { $0.word.contains { reader.label($0) != nil } } }
         guard sung > 0 else { return Outcome(starts: [:], words: [], sung: 0) }
