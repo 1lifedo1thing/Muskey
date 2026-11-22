@@ -2994,6 +2994,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model.shown = true
                 raisedForOpening = true
                 panel.present()
+                // The buttons take clicks also on a HUD that closed while the song kept opening and opens again.
+                panel.setInteraction(clickable: true, keyboard: false)
                 log("the HUD shows the song that opens")
             }
             // A listen and its result can leave the glass without clicks, and Cancel and Retry need them. The key

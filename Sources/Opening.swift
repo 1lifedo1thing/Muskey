@@ -105,6 +105,8 @@ struct OpeningView: View {
                 status(titleSize: 22)
                     .frame(height: 118)
                     .frame(maxHeight: deck.glass == nil ? nil : .infinity)
+                    // Into the room that the ring of keys leaves empty under the record.
+                    .padding(.top, -30)
             }
             .padding(.horizontal, 18)
             .padding(.top, 16)
