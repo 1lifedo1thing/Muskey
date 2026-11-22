@@ -227,6 +227,8 @@ final class HUDModel: ObservableObject {
     /// A seek would be instant: the stems aren't separated live, the lyrics don't play behind, and the player took
     /// the last seek. The seek keys and their hints exist only then.
     @Published var seekable = false
+    /// Why the time bar and the waveform can't move the song, for their tooltips.
+    @Published var seekOff = "Seeking is off"
     /// The key 0 starts the song over in karaoke: the player took the last seek and the lyrics don't play behind.
     @Published var restartable = false
     /// The key, the stems or the tempo is changed, and the song can be saved with the changes.
@@ -644,7 +646,7 @@ struct HUDView: View {
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.songArriving, model.songArriving)
         .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }, scroll: model.scroll, scrub: model.scrub,
-                                                    seek: { model.onSeekFraction($0) }, seekable: model.seekable))
+                                                    seek: { model.onSeekFraction($0) }, seekable: model.seekable, seekOff: model.seekOff))
         .environment(\.recordPlaying, model.playing)
         .environment(\.songLoop, model.loop)
         .environment(\.songChords, model.chords.isEmpty ? nil : SongChords(marks: model.chords, shift: model.shift, capo: model.capo))
@@ -2605,6 +2607,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 zoomWaveform(exp(Double(sign * event.scrollingDeltaY) * (event.hasPreciseScrollingDeltas ? 0.01 : 0.08)))
                 return nil
             }
+            // A scroll that begins over the time bar or the waveform while the song can't move does nothing, instead of
+            // reaching the swipe that skips the song.
+            if event.phase == .began || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
+                scrollOverStillBar = !model.seekable && overSeekPlace(event)
+            }
+            if scrollOverStillBar { return nil }
             return adjust(event) || swipe(event) ? nil : event
         }
         magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
@@ -3905,6 +3913,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.scroll.lift = 0
     }
 
+    /// The scroll that goes on began over the time bar or the waveform while the song couldn't move.
+    private var scrollOverStillBar = false
+
+    /// The pointer is over the time bar or the waveform, whether the song can move or not.
+    private func overSeekPlace(_ event: NSEvent) -> Bool {
+        guard let view = panel.contentView else { return false }
+        let local = view.convert(event.locationInWindow, from: nil)
+        let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
+        return model.scroll.frames.values.contains { $0.region.seeks && $0.frame.contains(point) }
+    }
+
     /// The tempo or the stem under the pointer, among the ones that can be adjusted now.
     private func scrollRegion(at event: NSEvent) -> ScrollRegion? {
         guard let view = panel.contentView else { return nil }
@@ -4670,8 +4689,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// N and P play the next and the previous song in every layout. With the lyrics, ← and → seek 5 seconds back or
     /// ahead, except while karaoke shows its key row, which takes them for the key. In karaoke, 0 starts the song over
     /// and 1 to 9 move it to a tenth of its length, except while the stems show, which take the numbers. The seeks
-    /// exist only while they are instant (`model.seekable`): a seek while the stems are separated live would start
-    /// their countdown again.
+    /// exist while the player takes them and the lyrics delay doesn't run (`model.seekable`). With the stems separated
+    /// live, a seek starts them over at the new place.
     private func handleSongKey(_ code: Int, option: Bool) -> Bool {
         // Over the record and its time bar, ← → move the song 5 seconds, 0 starts it over and 1 to 9 move it to a
         // tenth of its length, in every layout. The numbers mute no stem there, even while a seek can't be instant.
@@ -4682,7 +4701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case kVK_ANSI_0 where model.restartable: startOver(); return true
             default:
                 if let digit = Self.digitKeys.firstIndex(of: code), digit > 0 {
-                    if model.seekable { seek(toFraction: Double(digit) / 10) } else { log("seek: the stems are separated as the song plays") }
+                    if model.seekable { seek(toFraction: Double(digit) / 10) } else { log("seek: the player ignores seeks or the lyrics delay runs") }
                     return true
                 }
             }
@@ -5118,8 +5137,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// in the cache seeks at once with the stems on, since the stems of the new place are there already.
     private func syncSeekable() {
         let track = nowPlaying.track
-        let restartable = track?.title?.isEmpty == false && !(track?.bundleID.map(unseekable.contains) ?? false) && !lyricsDelayed
-        let seekable = restartable && (!model.stemsEngaged || cachedStems)
+        let ignored = track?.bundleID.map(unseekable.contains) ?? false
+        let restartable = track?.title?.isEmpty == false && !ignored && !lyricsDelayed
+        // Stems separated as the song plays don't stop a seek: it goes through the start over, which separates the new
+        // place before the stems step back to it.
+        let seekable = restartable
+        let seekOff = lyricsDelayed ? "Seeking is off while the lyrics are transcribed" : ignored ? "Seeking is off for this player" : "Seeking is off"
+        if model.seekOff != seekOff { model.seekOff = seekOff }
         guard seekable != model.seekable || restartable != model.restartable else { return }
         model.restartable = restartable
         model.seekable = seekable
@@ -5161,13 +5185,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Moves the song that plays to `seconds` and flashes the record with `flash`, a percent or an SF Symbol.
     private func seek(to seconds: Double, flash: String) {
         guard let track = nowPlaying.track, track.title?.isEmpty == false else { return }
-        guard model.seekable else { return log("seek: not now, the stems or the lyrics delay would start over") }
+        guard model.seekable else { return log("seek: not now, the player ignores seeks or the lyrics delay would start over") }
         let target = max(0, min(seconds, (track.duration ?? .infinity) - 1))
         seekTarget = (track.song, target, Date())
         log(String(format: "seek to %.1f s", target))
         if model.shown { model.playFlash = PlayFlash(playing: model.playing, id: (model.playFlash?.id ?? 0) + 1, seek: flash) }
         // The output goes quiet until the stems of the new place play, a moment after the player moves the song.
         if model.stemsEngaged, cachedStems { pitch.cachedSeek(to: target) }
+        // Stems separated as the song plays start over at the new place: the output dips, the player moves the song,
+        // and the stems step back to it once its first part is separated. Before the model is ready, nothing was
+        // separated yet, and the song moves as it is.
+        if model.stemsEngaged, !cachedStems, StemModel.prepared { return beginKaraokeRestart(to: target) }
         moveSong(track, to: target)
     }
 

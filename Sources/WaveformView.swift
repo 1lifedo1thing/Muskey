@@ -134,7 +134,7 @@ struct WaveformView: View {
             .onDisappear { actions.scroll?.remove(by: token) }
             .gesture(drag, isEnabled: actions.seekable)
             .opacity(actions.seekable || !ticking ? 1 : 0.8)
-            .help(actions.seekable ? "Move the song (drag, scroll, ⌘ scroll to zoom)" : "Seeking is off while instruments and vocals are separated as the song plays")
+            .help(actions.seekable ? "Move the song (drag, scroll, ⌘ scroll to zoom)" : actions.seekOff)
             // The ends of the region loop sit over the waveform's edges, outside the shape that takes its clicks and
             // its drag, so that their tabs, arrows and times get the pointer.
             .overlay(alignment: .topLeading) { loopFlags }

@@ -176,8 +176,10 @@ struct RecordActions {
     var scrub: Double?
     /// Moves the song to a fraction of its length, from the time bar.
     var seek: (Double) -> Void = { _ in }
-    /// The song moves at once in its player, so the time bar takes clicks and drags.
+    /// The song moves in its player, so the time bar takes clicks and drags.
     var seekable = false
+    /// Why the song can't move, for the tooltip of the time bar and the waveform.
+    var seekOff = "Seeking is off"
 }
 
 /// Previous, play or pause, and next in karaoke, apart from the record, whose cover shows the instruments and vocals
@@ -1175,10 +1177,10 @@ struct SongTimeBar: View {
                     },
                 isEnabled: actions.seekable
             )
-            // Dimmed while a seek would have to separate the stems again, so the bar doesn't look broken.
+            // Dimmed while the player ignores seeks or the lyrics delay runs, so the bar doesn't look broken.
             .opacity(actions.seekable ? 1 : 0.45)
             .animation(.easeOut(duration: 0.12), value: grows)
-            .help(actions.seekable ? "Move the song (scroll, ← →, 0 for the start)" : "Seeking is off while instruments and vocals are separated as the song plays")
+            .help(actions.seekable ? "Move the song (scroll, ← →, 0 for the start)" : actions.seekOff)
     }
 }
 
