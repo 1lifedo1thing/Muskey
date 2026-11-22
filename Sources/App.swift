@@ -6052,7 +6052,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if lanesAvailable || model.wave.lanes {
             model.wave.lanes.toggle()
             if !model.wave.lanes { stopLanesSeparation() }
-            return
+            return log("waveform: lanes \(model.wave.lanes ? "on" : "off")")
         }
         guard model.stemsAvailable, model.track?.title?.isEmpty == false else {
             return log("waveform: no lanes without the common instruments model")
