@@ -91,7 +91,7 @@ struct ShortcutsSheet: View {
         ])
         let waveform = KeyGroup(name: "Waveform and loop", symbol: "waveform", hue: 74, rows: [
             Row(caps: [.key("W")], name: "waveform"),
-            Row(caps: [.key("⌥"), .key("W")], name: "one waveform per instrument", condition: "once the instruments are separated"),
+            Row(caps: [.key("⌥"), .key("W")], name: "one waveform per instrument", condition: "with the common instruments model"),
             Row(caps: [.key("⌘"), .key("+"), .key("−")], name: "zoom"),
             Row(caps: [.key("⌘"), .key("0")], name: "whole song", condition: "after zoom"),
             Row(caps: [.key("R")], name: "region loop", condition: "start, end, clear"),

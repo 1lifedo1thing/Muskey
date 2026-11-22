@@ -446,6 +446,8 @@ final class WaveState: ObservableObject {
     @Published var zoom = 1.0
     /// ⌥W: one lane per picked stem, while the stems of the whole song are known.
     @Published var lanes = false
+    /// The share of the song separated while ⌥W waits for the stems of the whole song, nil when it doesn't wait.
+    @Published var lanesSeparating: Double?
     /// The stems that get a lane, picked with the chips under the lanes and kept for the next songs.
     @Published var laneStems = Preferences.shared.waveformLanes
     /// The pointer is over the waveform, and its keys take the place of the hints row, or of the song's lines on the card.
@@ -462,8 +464,9 @@ final class WaveState: ObservableObject {
 
     func zoom(by factor: Double) {
         let next = min(Self.zoomLimit, max(1, zoom * factor))
-        // Close to 1 means the whole song, so the last step out lands on it exactly.
-        zoom = next < 1.08 ? 1 : next
+        // Close to 1 means the whole song, so the last step out lands on it exactly. Only a step out snaps: a pinch
+        // and a ⌘ scroll zoom in by 1–3% an event, which snapped back to the whole song on every event.
+        zoom = factor < 1 && next < 1.08 ? 1 : next
     }
 }
 
@@ -2690,7 +2693,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return adjust(event) || swipe(event) ? nil : event
         }
         magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
-            guard let self, event.window === panel, overWaveform(event) else { return event }
+            guard let self, event.window === panel else { return event }
+            if Self.logKeys, event.phase == .began { log("pinch began, " + (overWaveform(event) ? "over the waveform" : "away from the waveform")) }
+            guard overWaveform(event) else { return event }
             zoomWaveform(1 + Double(event.magnification))
             return nil
         }
@@ -3890,7 +3895,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         item("Waveform", #selector(toggleWaveformFromMenu), key: "w", on: model.waveformShown)
         if keyed, model.waveformShown, model.waveformStyle == .ribbon {
-            item("One Waveform per Instrument", #selector(lanesFromMenu), key: "w", modifiers: .option, on: model.wave.lanes, enabled: lanesAvailable)
+            item("One Waveform per Instrument", #selector(lanesFromMenu), key: "w", modifiers: .option, on: model.wave.lanes, enabled: lanesAvailable || model.stemsAvailable)
         }
         if model.seekable || model.loop != nil {
             let title = model.loop == nil ? "Start Region Loop" : model.loop?.end == nil ? "End Region Loop" : "Clear Region Loop"
@@ -6039,14 +6044,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("waveform \(prefs.waveform ? "on" : "off")")
     }
 
-    /// ⌥W: one lane per stem, or the whole song again. Without the stems of the whole song there are no lanes.
+    /// ⌥W: one lane per stem, or the whole song again. A song without stems is separated first: a song in Muskey
+    /// Player quietly as a whole, with the lanes once it is done, and a song from another app as it plays, with
+    /// lanes that fill in from what its stems play.
     private func toggleWaveformLanes() {
         guard model.waveformStyle == .ribbon else { return log("waveform: lanes only in the ribbon style") }
-        guard lanesAvailable else {
-            log("waveform: no lanes until the stems are separated")
+        if lanesAvailable || model.wave.lanes {
+            model.wave.lanes.toggle()
+            if !model.wave.lanes { stopLanesSeparation() }
             return
         }
-        model.wave.lanes.toggle()
+        guard model.stemsAvailable, model.track?.title?.isEmpty == false else {
+            return log("waveform: no lanes without the common instruments model")
+        }
+        model.wave.lanes = true
+        if playsInFilePlayer, let path = filePlayer.current?.path {
+            if StemsCache.open(for: path) != nil { return syncWaveformStems() }
+            if stemsCacheFailed.contains(path) {
+                model.wave.lanes = false
+                return log("waveform: no lanes, the separation of this song failed")
+            }
+            if stemsCache.path != path { stemsCache.start(path) }
+            log("waveform: separating the whole song for the lanes")
+            watchLanesSeparation(path)
+        } else {
+            log("waveform: separating the stems for the lanes")
+            if !model.stemsEngaged { separate() }
+        }
+    }
+
+    /// Shows how much of the song is separated while ⌥W waits for its stems, until the lanes show, the song changes or
+    /// ⌥W turns them off.
+    private var lanesTimer: Timer?
+    private func watchLanesSeparation(_ path: String) {
+        lanesTimer?.invalidate()
+        model.wave.lanesSeparating = stemsCache.path == path ? stemsCache.fraction : 0
+        lanesTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickLanesSeparation(path) }
+        }
+    }
+
+    private func tickLanesSeparation(_ path: String) {
+        guard model.wave.lanes, model.wave.waveform?.stems == nil, filePlayer.current?.path == path else { return stopLanesSeparation() }
+        if stemsCacheFailed.contains(path) {
+            model.wave.lanes = false
+            log("waveform: no lanes, the separation of this song failed")
+            return stopLanesSeparation()
+        }
+        let fraction = stemsCache.path == path ? stemsCache.fraction : 0
+        if model.wave.lanesSeparating != fraction { model.wave.lanesSeparating = fraction }
+    }
+
+    private func stopLanesSeparation() {
+        lanesTimer?.invalidate()
+        lanesTimer = nil
+        if model.wave.lanesSeparating != nil { model.wave.lanesSeparating = nil }
     }
 
     /// One waveform per instrument can show: from the stems of the whole song of Muskey Player, or from what the stems
@@ -7640,7 +7692,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-lanes-separating", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -7746,7 +7798,7 @@ extension EnvironmentValues {
             // player is while it plays.
             if var song {
                 var waveform = HUDSample.waveform
-                if variant == "-waveform-lanes" || variant == "-waveform-hover-stems" || variant.hasPrefix("-lanes") {
+                if variant == "-waveform-lanes" || variant == "-waveform-hover-stems" || variant.hasPrefix("-lanes") && variant != "-lanes-separating" {
                     // The guitar is silent for the first third of the song, and the winds are only the bleed of the
                     // other instruments, which the lanes draw as silence.
                     let count = waveform.levels.count
@@ -7771,6 +7823,8 @@ extension EnvironmentValues {
             model.waveformStyle = variant == "-waveform-strip" ? .strip : .ribbon
             model.wave.zoom = variant == "-waveform-zoom" || variant == "-waveform-hover-zoom" || variant.hasSuffix("-zoom") && variant.hasPrefix("-lanes") ? 10 : 1
             model.wave.lanes = variant == "-waveform-lanes" || variant.hasPrefix("-lanes")
+            // ⌥W waits for the stems of the whole song.
+            model.wave.lanesSeparating = variant == "-lanes-separating" ? 0.42 : nil
             model.wave.laneStems = switch variant {
             case "-lanes-one": [.guitar]
             case "-lanes-four": [.vocals, .bass, .guitar, .winds]

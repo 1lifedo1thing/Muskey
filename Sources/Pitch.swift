@@ -867,6 +867,14 @@ enum PitchSelfTest {
         LyricsSelfTest.run(report: report)
         SongName.selfTest(report: report)
 
+        // A pinch and a ⌘ scroll zoom the waveform by a few percent an event, from the whole song and back to it.
+        let wave = WaveState()
+        for _ in 0 ..< 30 { wave.zoom(by: 1.03) }
+        let zoomedIn = wave.zoom
+        for _ in 0 ..< 60 { wave.zoom(by: 0.97) }
+        report(zoomedIn > 2 && wave.zoom == 1,
+               String(format: "waveform zoom  steps of 3%% zoom in to %.1fx, and back out to %.2fx", zoomedIn, wave.zoom))
+
         // Noiseblend's answers: every Camelot code back to its key, and which failures count as an unknown song.
         let keys = (0 ..< 24).map { DetectedKey(pitchClass: $0 % 12, minor: $0 >= 12) }
         let misread = keys.filter { DetectedKey(camelot: $0.camelot) != $0 }.map(\.name)

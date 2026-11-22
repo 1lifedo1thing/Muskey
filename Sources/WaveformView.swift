@@ -34,6 +34,8 @@ struct WaveformView: View {
     var zoom: Double = 1
     /// One lane per picked stem, when the stems of the whole song are known.
     var lanes = false
+    /// The share of the song separated while ⌥W waits for the stems of the whole song.
+    var separating: Double?
     /// The stems that get a lane.
     var laneStems: Set<Stem> = []
     var toggleLane: (Stem) -> Void = { _ in }
@@ -139,6 +141,14 @@ struct WaveformView: View {
             // The ends of the region loop sit over the waveform's edges, outside the shape that takes its clicks and
             // its drag, so that their tabs, arrows and times get the pointer.
             .overlay(alignment: .topLeading) { loopFlags }
+            // ⌥W waits for the stems of the whole song, which the lanes are drawn from.
+            .overlay {
+                if let separating, !lanesOn {
+                    LanesSeparating(fraction: separating, palette: palette)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
             if lanesOn {
                 laneChips
                     .transition(.opacity)
@@ -494,7 +504,8 @@ struct WaveformHost: View {
     var body: some View {
         if let waveform = wave.waveform, let track {
             WaveformView(waveform: waveform, track: track, style: style, width: width, height: height, ticking: ticking, bpm: bpm,
-                         zoom: wave.zoom, lanes: wave.lanes, laneStems: wave.laneStems, toggleLane: { [wave] in wave.toggleLane($0) },
+                         zoom: wave.zoom, lanes: wave.lanes, separating: wave.lanesSeparating, laneStems: wave.laneStems,
+                         toggleLane: { [wave] in wave.toggleLane($0) },
                          muted: muted, loop: loop, setLoop: setLoop, typing: typing,
                          hovered: { [wave] inside in if wave.hovered != inside { wave.hovered = inside } },
                          hoveredEnd: { [wave] end in if wave.loopEnd != end { wave.loopEnd = end } }, palette: palette)
@@ -742,5 +753,33 @@ struct LoopFlags: View {
         let numbers = parts.compactMap { Double($0) }
         guard numbers.count == parts.count, numbers.allSatisfy({ $0 >= 0 }) else { return nil }
         return numbers.count == 2 ? numbers[0] * 60 + numbers[1] : numbers[0]
+    }
+}
+
+/// The pill over the waveform while ⌥W waits for the stems of the whole song: a ring that fills with the share
+/// separated, and the percent.
+private struct LanesSeparating: View {
+    let fraction: Double
+    let palette: Palette
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ZStack {
+                Circle().stroke(palette.ink.opacity(0.15), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: fraction)
+                    .stroke(palette.ink.opacity(0.7), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.linear(duration: 0.3), value: fraction)
+            }
+            .frame(width: 10, height: 10)
+            Text(String(format: "Separating %.0f%%", fraction * 100)).monospacedDigit()
+        }
+        .font(.system(size: 11, weight: .semibold, design: .rounded))
+        .foregroundStyle(palette.muted)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(.regularMaterial))
+        .background(Capsule().fill(palette.ink.opacity(0.07)))
     }
 }

@@ -880,7 +880,7 @@ struct WaveformKeysSwap<Content: View>: View {
         ZStack(alignment: alignment) {
             content.opacity(on ? 0 : 1)
             if on {
-                KeyHints(style: small ? .footer : .band, waveform: true, lanes: wave.waveform?.stems != nil && Preferences.shared.waveformStyle == .ribbon,
+                KeyHints(style: small ? .footer : .band, waveform: true, lanes: (wave.waveform?.stems != nil || StemModel.installed) && Preferences.shared.waveformStyle == .ribbon,
                          loopEnd: wave.loopEnd, zoomed: wave.zoom > 1, otherMode: "", palette: palette)
                     .transition(.opacity)
             }
