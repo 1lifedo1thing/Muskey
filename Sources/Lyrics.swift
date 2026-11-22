@@ -639,7 +639,7 @@ struct LyricsTimingPill {
     var kept: Bool
     var press: () -> Void
     var dismiss: () -> Void
-    /// Moves the lines by that many seconds more.
+    /// Moves the lines by that many seconds more, starting from the offset that waits to be applied.
     var nudge: (Double) -> Void
     var forget: () -> Void
     /// Renders show the pill as the pointer over it shows it.
@@ -694,6 +694,12 @@ struct LyricsTimingButton: View {
         if case .found = pill.fix, pill.shift == 0 { true } else { false }
     }
 
+    /// The seconds between the arrows: the shift of the lines, or the offset that waits to be applied, which the
+    /// arrows start from.
+    private var shown: Double {
+        if case let .found(offset) = pill.fix, pill.shift == 0 { offset } else { pill.shift }
+    }
+
     /// What a click on the pill does, as its tooltip. Nil when a click does nothing.
     private var pressHelp: String? {
         switch pill.fix {
@@ -739,7 +745,7 @@ struct LyricsTimingButton: View {
             arrow("chevron.left", by: -Self.step, help: "Move the lines \(Self.stepText) seconds earlier")
             Button(action: pill.press) {
                 // The arrows sit at the ends of the room that the pill takes without the pointer over it.
-                Text(Self.seconds(pill.shift))
+                Text(Self.seconds(shown))
                     .monospacedDigit()
                     .padding(.horizontal, 2)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

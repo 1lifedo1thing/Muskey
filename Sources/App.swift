@@ -2509,7 +2509,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.onLyricsNudge = { [weak self] seconds in
             guard let self else { return }
-            setLyricsShift(model.lyricsShift + seconds)
+            // The arrows start from an offset that a check found and that waits to be applied.
+            var base = model.lyricsShift
+            if base == 0, case let .found(offset)? = model.lyricsTiming { base = offset }
+            setLyricsShift(base + seconds)
         }
         model.onLyricsForget = { [weak self] in self?.forgetLyricsTiming() }
         NotificationCenter.default.addObserver(forName: LyricsStore.timingsRemoved, object: nil, queue: .main) { [weak self] _ in
