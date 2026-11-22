@@ -77,6 +77,8 @@ struct ForcedAligner {
     /// The part of the model's doubt that anyone sings in a frame that the letters keep. The model leaves most of a
     /// sung frame to the blank when the voice is processed or buried, and still tells one letter from another there.
     static let doubtKept: Float = 0.6
+    /// The most bytes that one fit keeps for its path.
+    static let largestTable = 500_000_000
     /// Two fits agree on a line when they start it within this many seconds of each other.
     static let agreement = 0.3
 
@@ -176,7 +178,9 @@ struct ForcedAligner {
 
     private func align(_ emissions: Emissions, skippedLetter: Float) -> Result? {
         let frames = emissions.frames, width = emissions.width, states = kinds.count
-        guard frames > 1, width == labels.count + 1, !words.isEmpty else { return nil }
+        // The path keeps a byte for each letter in each frame, which a recording of hours with long lyrics would
+        // turn into gigabytes.
+        guard frames > 1, width == labels.count + 1, !words.isEmpty, frames * states <= Self.largestTable else { return nil }
         let low: Float = -1e30
 
         // A gap takes a frame as silence, or as singing that the lyrics don't have: any label but the blank.

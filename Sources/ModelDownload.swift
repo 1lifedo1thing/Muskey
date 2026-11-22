@@ -66,7 +66,7 @@ final class ModelDownload: NSObject, ObservableObject {
     static let aligner = ModelDownload(
         name: "lyrics timing model",
         url: URL(string: "https://files.lowtechguys.com/muskey/models/Aligner-omniASR-CTC-300M.zip")!,
-        sha256: "211faa03ba3b7c14d6b6bc79bc4c155ad51c923d5b61c482fb1956d2ca962e77", size: 288_928_893,
+        sha256: "ac127fe80626bc4bb4cf8f0bcae3052845b5789d9665c7e53b22443851612ef4", size: 288_929_379,
         installed: { AlignerModel.installed }, remove: {
             AlignerModel.unload()
             try? FileManager.default.removeItem(at: AlignerModel.folder)
@@ -279,7 +279,10 @@ final class ModelDownload: NSObject, ObservableObject {
         try FileManager.default.createDirectory(at: ready, withIntermediateDirectories: true)
         let compiled = try MLModel.compileModel(at: unpacked.appending(path: "Aligner.mlpackage"))
         try FileManager.default.moveItem(at: compiled, to: ready.appending(path: "Aligner.mlmodelc"))
-        try FileManager.default.moveItem(at: unpacked.appending(path: "labels.json"), to: ready.appending(path: "labels.json"))
+        // The notice of the model's licence stays next to its weights.
+        for file in ["labels.json", "NOTICE.txt"] {
+            try FileManager.default.moveItem(at: unpacked.appending(path: file), to: ready.appending(path: file))
+        }
         try place(ready, at: AlignerModel.folder)
     }
 

@@ -20,10 +20,13 @@ final class LyricsStore {
         var date: Date
     }
 
-    /// The times found by fitting lyrics onto the vocals of a song, kept so the next play has them from its start.
+    /// The times found by fitting lyrics onto the vocals of a song file, kept so the next play has them from its start.
     struct Fit: Codable, Equatable {
         /// The text that was fitted, as `LyricsFit.key` writes it. Other lyrics for the song are fitted again.
         var key: String
+        /// The file whose vocals the text was fitted onto, as the name of its stems in the cache. The same song in
+        /// another file, or from another player, can start seconds earlier or later, so the fit isn't used for it.
+        var file: String
         /// The second at which the first word of each line is sung, for the lines that were found.
         var starts: [Int: Double]?
         /// Seconds that lyrics with times were off by, as a whole.
@@ -48,7 +51,7 @@ final class LyricsStore {
     func text(for id: String) -> String? { load()[id]?.text }
     func heard(for id: String) -> [LyricsAligner.Heard] { load()[id]?.heard ?? [] }
     func written(for id: String) -> String? { load()[id]?.written }
-    func fit(for id: String, key: String) -> Fit? { load()[id]?.fit.flatMap { $0.key == key ? $0 : nil } }
+    func fit(for id: String, key: String, file: String) -> Fit? { load()[id]?.fit.flatMap { $0.key == key && $0.file == file ? $0 : nil } }
     func setFit(_ fit: Fit?, for id: String) {
         update(id) { $0.fit = fit }
     }
@@ -252,15 +255,16 @@ final class LyricsSync {
     var listening: Bool { listener != nil }
 
     /// Starts timing the lyrics of `song`, which come with estimated times, and listens to the song unless the
-    /// words heard in earlier plays already time most lines.
-    func begin(song: String, lyrics: Lyrics) {
+    /// words heard in earlier plays already time most lines. `file` names the file that Muskey Player plays, whose
+    /// lines are timed at once when an earlier play fitted these lyrics onto its vocals.
+    func begin(song: String, lyrics: Lyrics, file: String? = nil) {
         guard song != self.song else { return }
         end()
         self.song = song
         let texts = lyrics.lines.map(\.text)
         let aligner = LyricsAligner(texts: texts, estimate: lyrics.lines.map(\.time), keepsSpacing: lyrics.otherVersion)
         self.aligner = aligner
-        if let starts = store.fit(for: song, key: LyricsFit.key(lyrics))?.starts, !starts.isEmpty {
+        if let file, let starts = store.fit(for: song, key: LyricsFit.key(lyrics), file: file)?.starts, !starts.isEmpty {
             apply(fitted: starts)
             return log("lyrics: \(anchored) lines timed by the fit of an earlier play")
         }

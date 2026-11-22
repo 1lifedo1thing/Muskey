@@ -88,6 +88,24 @@ enum LyricsSelfTest {
         report(offset.map { abs($0 - 2) < 0.05 } == true && small == nil && outcome.found && !thin.found,
                "lyrics offset    \(offset.map { String(format: "%+.2f s", $0) } ?? "none"), and \(small.map { String(format: "%+.2f s", $0) } ?? "none") for lyrics 0.2 s early (want +2.00 s, none)")
 
+        // A kept fit times the lines of the same lyrics in the same file from the start of a play, and isn't used
+        // for another file or for other lyrics.
+        let folder = FileManager.default.temporaryDirectory.appending(path: "muskey-lyrics-selftest-\(getpid())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = LyricsStore(url: folder.appending(path: "lyrics.json"))
+        let plain = Lyrics.estimate(plain: lines.joined(separator: "\n"), duration: 30)!
+        let kept = LyricsStore.Fit(key: LyricsFit.key(plain), file: "one.stems", starts: starts, offset: nil)
+        store.setFit(kept, for: "song")
+        let sync = LyricsSync(store: store)
+        sync.begin(song: "song", lyrics: plain, file: "one.stems")
+        let shown = sync.times(at: 0) ?? []
+        let begun = sync.fitted && sync.anchored == sungAt.count && !sync.listening && shown.count == lines.count && abs(shown[4] - 20.5) < 0.05
+        sync.end()
+        let other = store.fit(for: "song", key: kept.key, file: "two.stems") == nil && store.fit(for: "song", key: LyricsFit.key(early), file: "one.stems") == nil
+        let decoded = (try? JSONEncoder().encode(kept)).flatMap { try? JSONDecoder().decode(LyricsStore.Fit.self, from: $0) }
+        report(begun && other && !sync.fitted && decoded == kept,
+               "lyrics fit kept  \(sync.anchored == 0 ? "ended" : "not ended"), \(begun ? "timed from the start" : "not timed"), \(other ? "only for its file and text" : "used for another file or text"), \(decoded == kept ? "read back the same" : "read back changed")")
+
         // The lines that the fit found take their times, and the line between them is placed between them.
         let timed = LyricsAligner(texts: lines, estimate: LyricsAligner.estimate(lines, duration: 30))
         let times = timed.times(timed.alignment(fitted: starts))

@@ -38,6 +38,13 @@ net.requires_grad_(False)
 tokenizer = load_tokenizer(TOKENIZER)
 labels = [tokenizer._model.index_to_token(i) for i in range(tokenizer.vocab_info.size)]
 (folder / "labels.json").write_text(json.dumps(labels, ensure_ascii=False))
+# The licence asks that a copy of it and a note of what was changed go with the weights.
+(folder / "NOTICE.txt").write_text(
+    "omniASR-CTC-300M, Copyright 2025 (c) Meta Platforms, Inc. and affiliates.\n"
+    "Licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0\n"
+    "From https://github.com/facebookresearch/omnilingual-asr\n\n"
+    "Changes: converted to Core ML for windows of 30 seconds, with half-precision arithmetic, 8-bit weights and a\n"
+    "log-softmax over the characters at the end.\n")
 
 
 class Reader(torch.nn.Module):

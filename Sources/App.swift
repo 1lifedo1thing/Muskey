@@ -2562,6 +2562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stemsCacheLooked = nil
             syncStemsCache()
             syncWaveformStems()
+            if ok { fitShownLyrics() }
         }
         statusItem.onStopPlaying = { [weak self] in self?.filePlayer.close() }
         statusItem.onAddFiles = { [weak self] in self?.addFiles() }
@@ -6127,17 +6128,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             droppedLogged = 0
             state = .found(plain)
         }
-        if case let .found(lyrics) = state, lyrics.timing == .synced, !lyrics.lines.isEmpty {
-            // Lyrics with times that a fit found to be off as a whole show at the offset it found.
-            if let offset = lyricsStore.fit(for: song, key: LyricsFit.key(lyrics))?.offset {
-                if offset != 0 { state = .found(lyrics.moved(by: offset)) }
+        lyricsFit?.cancel()
+        lyricsFit = nil
+        lyricsMoved = false
+        let file = lyricsFile
+        if case let .found(lyrics) = state, lyrics.timing == .synced, !lyrics.lines.isEmpty, let file {
+            // Lyrics with times that a fit found to be off as a whole for this file show at the offset it found.
+            if let offset = lyricsStore.fit(for: song, key: LyricsFit.key(lyrics), file: file)?.offset {
+                if offset != 0 {
+                    state = .found(lyrics.moved(by: offset))
+                    lyricsMoved = true
+                }
             } else {
-                fitLyrics(lyrics, song: song)
+                fitLyrics(lyrics, song: song, duration: track.duration)
             }
         }
         if case let .found(lyrics) = state, lyrics.timing == .estimated {
-            lyricsSync.begin(song: song, lyrics: lyrics)
-            if !lyricsSync.fitted { fitLyrics(lyrics, song: song) }
+            lyricsSync.begin(song: song, lyrics: lyrics, file: file)
+            if !lyricsSync.fitted { fitLyrics(lyrics, song: song, duration: track.duration) }
         }
         // A song that LRCLIB doesn't have: the lyrics that Whisper wrote in an earlier play, or Whisper writes them now.
         var writing = false
@@ -6161,18 +6169,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The fit of the lyrics onto the vocals that is being worked out.
     private var lyricsFit: Task<Void, Never>?
+    /// The lyrics that show were moved by the offset that a fit found.
+    private var lyricsMoved = false
+    /// The file that Muskey Player plays, as the name of its stems in the cache. A fit of the lyrics belongs to that
+    /// file: the same song in another file or from another player can start seconds earlier or later.
+    private var lyricsFile: String? {
+        guard playsInFilePlayer, let path = filePlayer.current?.path else { return nil }
+        return StemsCache.url(for: path)?.lastPathComponent
+    }
+
+    /// The stems of the whole song came into the cache while its lyrics show: lyrics with times are checked for an
+    /// offset now, since they are only fitted when the stems are there anyway.
+    private func fitShownLyrics() {
+        guard model.lyricsShown, !lyricsMoved, let song = lyricsSong, let track = model.track, LyricsFinder.id(track) == song,
+              case let .found(lyrics) = model.lyrics, lyrics.timing == .synced else { return }
+        fitLyrics(lyrics, song: song, duration: track.duration)
+    }
 
     /// With the lyrics timing model installed, fits the lyrics of a song that Muskey Player plays onto its vocals, which
     /// times every line before it is sung, and keeps what the fit found for the next play. Lyrics without times
     /// separate the stems of the whole song for it when the cache doesn't have them, and are timed by listening until
     /// the fit is done. Lyrics with times are only checked for an offset, and only when the stems are there already.
-    private func fitLyrics(_ lyrics: Lyrics, song: String) {
+    private func fitLyrics(_ lyrics: Lyrics, song: String, duration: Double?) {
         lyricsFit?.cancel()
         lyricsFit = nil
-        guard AlignerModel.installed, StemModel.installed, playsInFilePlayer, let path = filePlayer.current?.path else { return }
+        guard AlignerModel.installed, StemModel.installed, playsInFilePlayer, let path = filePlayer.current?.path, let file = lyricsFile else { return }
         let key = LyricsFit.key(lyrics), synced = lyrics.timing == .synced
-        // A fit that found too few lines is kept as well, so the song isn't fitted again on every play.
-        guard lyricsStore.fit(for: song, key: key) == nil else { return }
+        // A fit that found too few lines is kept as well, so the file isn't fitted again on every play.
+        guard lyricsStore.fit(for: song, key: key, file: file) == nil else { return }
         guard !synced || StemsCache.open(for: path) != nil else { return }
         let texts = lyrics.lines.map(\.text)
         lyricsFit = Task { @MainActor [weak self] in
@@ -6183,6 +6207,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? await Task.sleep(for: .seconds(1))
             }
             guard let self, !Task.isCancelled, lyricsSong == song, let cache = StemsCache.open(for: path) else { return }
+            // While one song follows another, the file and the song on the record can be two songs for a moment. The
+            // lyrics of one are never fitted onto the vocals of the other, and nothing is kept about it.
+            let length = Double(cache.frames) / StemsCache.rate
+            guard let duration, abs(length - duration) < 2 else {
+                return log(String(format: "lyrics: not fitted, the file is %.0f s long and the song %.0f s", length, duration ?? 0))
+            }
             let started = Date()
             let fitted = await Task.detached(priority: .utility) { () -> Result<LyricsFit.Outcome?, Error> in
                 Result { try LyricsFit.fit(texts, vocals: NotesPipeline.stemSamples(cache, stem: .vocals), rate: StemsCache.rate) }
@@ -6194,14 +6224,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let took = String(format: "%.1f s", Date().timeIntervalSince(started))
             if synced {
                 let offset = LyricsFit.offset(of: lyrics, outcome)
-                lyricsStore.setFit(LyricsStore.Fit(key: key, starts: nil, offset: offset ?? 0), for: song)
+                lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: nil, offset: offset ?? 0), for: song)
                 log(offset.map { String(format: "lyrics: their times are off by %+.2f s, by the fit of %d lines in %@", $0, outcome.starts.count, took) }
                     ?? "lyrics: their times hold, by the fit of \(outcome.starts.count) of \(outcome.sung) lines in \(took)")
                 guard let offset, lyricsSong == song, case let .found(shown) = model.lyrics, shown == lyrics else { return }
                 model.lyrics = .found(shown.moved(by: offset))
+                lyricsMoved = true
                 updateLyricLine()
             } else {
-                lyricsStore.setFit(LyricsStore.Fit(key: key, starts: outcome.found ? outcome.starts : [:], offset: nil), for: song)
+                lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: outcome.found ? outcome.starts : [:], offset: nil), for: song)
                 guard outcome.found else {
                     return log("lyrics: the fit found \(outcome.starts.count) of \(outcome.sung) lines in \(took), too few to time them by")
                 }
