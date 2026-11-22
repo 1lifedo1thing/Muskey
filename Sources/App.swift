@@ -7626,7 +7626,7 @@ extension EnvironmentValues {
                 default: nil
                 }
                 model.lyricsShift = variant.hasPrefix("-lyrics-fix-applied") ? 3.98 : variant == "-lyrics-fix-nudged" ? -1 : 0
-                model.lyricsTimingKept = variant.hasPrefix("-lyrics-fix") && !["-lyrics-fix", "-lyrics-fix-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover"].contains(variant)
+                model.lyricsTimingKept = (variant.hasPrefix("-lyrics-fix") || variant.hasPrefix("-lyrics-focus-fix")) && !["-lyrics-fix", "-lyrics-fix-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover"].contains(variant)
                 model.lyricsTimingHover = variant.hasSuffix("-hover")
                 model.lyricsWriting = variant.hasSuffix("-waiting")
                 model.lyricsWaiting = variant.hasSuffix("-waiting") ? 23 : nil

@@ -667,8 +667,8 @@ struct LyricsTimingButton: View {
         } else {
             let hover = hovering || pill.hover
             // Both layouts take the same room, so the pill doesn't grow or shrink under the pointer, and the
-            // credit beside it stays where it is.
-            ZStack {
+            // credit beside it stays where it is. A narrower state keeps to the credit's side.
+            ZStack(alignment: .trailing) {
                 plain.opacity(hover ? 0 : 1).allowsHitTesting(!hover)
                 stepper.opacity(hover ? 1 : 0).allowsHitTesting(hover)
             }
