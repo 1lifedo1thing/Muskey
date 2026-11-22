@@ -485,7 +485,8 @@ struct MiniPlayerView: View {
         // change, with no state in between.
         .backgroundPreferenceValue(MiniFrames.self) { frames in backdrop(frames, side: mini.side) }
         .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }, scroll: model.scroll, scrub: model.scrub,
-                                                    seek: { model.onSeekFraction($0) }, seekable: model.seekable, seekOff: model.seekOff))
+                                                    seek: { model.onSeekFraction($0) }, seekable: model.seekable, seekOff: model.seekOff,
+                                                    seekWait: model.seekWait))
         .environment(\.recordPlaying, model.playing)
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.colorScheme, .dark)

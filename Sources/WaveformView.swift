@@ -107,22 +107,23 @@ struct WaveformView: View {
         let ranges = lanesOn ? waveform.stemRanges() : [:]
         let laneBars = zoomed ? [] : shownLanes.map { ($0, waveform.bars(count, stem: $0, range: ranges[$0])) }
         VStack(spacing: 6) {
-            TimelineView(.animation(minimumInterval: step, paused: !ticking || renderingPreview)) { context in
-                let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
+            TimelineView(.animation(minimumInterval: actions.seekWait == nil ? step : 1.0 / 30, paused: (!ticking && actions.seekWait == nil) || renderingPreview)) { context in
+                let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? shownSeconds(at: context.date)
                 let fraction = min(1, max(0, seconds / max(duration, 0.001)))
                 let _ = Self.traced(seconds, at: context.date)
+                let pulse = actions.seekWait?.pulse(at: context.date, reduceMotion: reduceMotion) ?? 1
                 Group {
                     if zoomed {
                         let from = closeUpStart(seconds, at: context.date)
                         VStack(spacing: 4) {
-                            closeUp(seconds: seconds, from: from, count: count, ranges: ranges)
+                            closeUp(seconds: seconds, from: from, count: count, ranges: ranges, pulse: pulse)
                             strip(overview, fraction: fraction, height: Self.overviewHeight)
                                 .overlay { window(from: from) }
                         }
                     } else if !laneBars.isEmpty {
-                        lanesView(laneBars, fraction: fraction, seconds: seconds)
+                        lanesView(laneBars, fraction: fraction, seconds: seconds, pulse: pulse)
                     } else {
-                        bars(overview, fraction: fraction, seconds: seconds, height: mainHeight)
+                        bars(overview, fraction: fraction, seconds: seconds, height: mainHeight, pulse: pulse)
                     }
                 }
             }
@@ -158,7 +159,7 @@ struct WaveformView: View {
 
     /// Mirrored bars, or bars growing up from the bottom in the strip style. A moment not heard yet is a dot on the
     /// centre line, which turns into a bar once the song reaches it.
-    private func bars(_ values: [Float], fraction: Double, seconds: Double, height: CGFloat) -> some View {
+    private func bars(_ values: [Float], fraction: Double, seconds: Double, height: CGFloat, pulse: Double = 1) -> some View {
         Canvas { context, size in
             let count = values.count
             let step = size.width / CGFloat(count)
@@ -181,7 +182,7 @@ struct WaveformView: View {
                 context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(isPlayed ? played : unplayed))
             }
             drawLoop(&context, size: size, from: 0, span: duration, now: seconds)
-            drawHead(&context, x: fraction * size.width, height: size.height, seconds: seconds)
+            drawHead(&context, x: fraction * size.width, height: size.height, seconds: seconds, pulse: pulse)
         }
         .frame(height: height)
     }
@@ -193,13 +194,15 @@ struct WaveformView: View {
         return CGFloat(1 + max(-0.08, k))
     }
 
-    /// A white line with a honey glow, which pulses on the beat when the tempo is known.
-    private func drawHead(_ context: inout GraphicsContext, x: CGFloat, height: CGFloat, seconds: Double) {
+    /// A white line with a honey glow, which pulses on the beat when the tempo is known. `wait` is the opacity of a
+    /// seek that waits for the stems of the new place, which pulses instead of the beat.
+    private func drawHead(_ context: inout GraphicsContext, x: CGFloat, height: CGFloat, seconds: Double, pulse wait: Double = 1) {
         var pulse = 0.0
-        if let bpm, bpm > 0, !reduceMotion, ticking {
+        if wait == 1, let bpm, bpm > 0, !reduceMotion, ticking {
             let phase = (seconds * bpm / 60).truncatingRemainder(dividingBy: 1)
             pulse = max(0, 1 - phase / 0.6)
         }
+        context.opacity = wait
         let grow = 3 + 3 * pulse
         let rect = CGRect(x: x - 1, y: -grow / 2, width: 2, height: height + grow)
         var glow = context
@@ -272,7 +275,7 @@ struct WaveformView: View {
     }
 
     /// Every picked stem in a lane of its own, over the whole song.
-    private func lanesView(_ rows: [(Stem, [Float])], fraction: Double, seconds: Double) -> some View {
+    private func lanesView(_ rows: [(Stem, [Float])], fraction: Double, seconds: Double, pulse: Double = 1) -> some View {
         Canvas { context, size in
             let lanes = Self.laneRects(rows.count, width: size.width, height: size.height)
             for ((stem, values), lane) in zip(rows, lanes) {
@@ -280,7 +283,7 @@ struct WaveformView: View {
                 drawLane(&context, stem: stem, values: values, in: lane) { Double($0) + 0.5 <= head }
             }
             drawLoop(&context, size: size, from: 0, span: duration, now: seconds)
-            drawHead(&context, x: fraction * size.width, height: size.height, seconds: seconds)
+            drawHead(&context, x: fraction * size.width, height: size.height, seconds: seconds, pulse: pulse)
         }
         .frame(height: mainHeight)
     }
@@ -338,6 +341,11 @@ struct WaveformView: View {
 
     /// The seconds in which the playhead moves a pixel, so the waveform draws only when something on it moved: for a
     /// song of 4 minutes, about 4 times a second instead of 60, and more often in a close-up.
+    /// Where the song shows: on its way to the place of a seek that waits for the stems, or where the player has it.
+    private func shownSeconds(at date: Date) -> Double {
+        actions.seekWait?.seconds(at: date, reduceMotion: reduceMotion) ?? track.position(at: date) ?? 0
+    }
+
     private var step: Double {
         let pixels = Double(width * max(1, displayScale))
         return min(0.5, max(1.0 / 60, (zoomed ? span : duration) / max(1, pixels)))
@@ -358,7 +366,7 @@ struct WaveformView: View {
 
     /// The moments around the playhead, which scroll past it while it stays in the middle: the whole song as bars, or
     /// each picked stem in its lane.
-    private func closeUp(seconds: Double, from: Double, count: Int, ranges: [Stem: (low: Float, high: Float)]) -> some View {
+    private func closeUp(seconds: Double, from: Double, count: Int, ranges: [Stem: (low: Float, high: Float)], pulse: Double = 1) -> some View {
         let rows: [(Stem?, [Float])] = shownLanes.isEmpty ? [(nil, waveform.bars(count, from: from, to: from + span))]
             : shownLanes.map { ($0, waveform.bars(count, from: from, to: from + span, stem: $0, range: ranges[$0])) }
         return Canvas { context, size in
@@ -398,7 +406,7 @@ struct WaveformView: View {
                 }
             }
             drawLoop(&context, size: size, from: from, span: span, now: seconds)
-            drawHead(&context, x: (seconds - from) / span * size.width, height: size.height, seconds: seconds)
+            drawHead(&context, x: (seconds - from) / span * size.width, height: size.height, seconds: seconds, pulse: pulse)
         }
         .frame(height: mainHeight)
         .background(palette.ink.opacity(shownLanes.isEmpty ? 0.035 : 0), in: RoundedRectangle(cornerRadius: 6))

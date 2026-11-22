@@ -229,6 +229,9 @@ final class HUDModel: ObservableObject {
     @Published var seekable = false
     /// Why the time bar and the waveform can't move the song, for their tooltips.
     @Published var seekOff = "Seeking is off"
+    /// A seek that waits for the stems of the new place, which the time bar and the waveform show as they travel there
+    /// and pulse.
+    @Published var seekWait: SeekWait?
     /// The key 0 starts the song over in karaoke: the player took the last seek and the lyrics don't play behind.
     @Published var restartable = false
     /// The key, the stems or the tempo is changed, and the song can be saved with the changes.
@@ -646,7 +649,8 @@ struct HUDView: View {
         .environment(\.recordRewinds, model.rewinds)
         .environment(\.songArriving, model.songArriving)
         .environment(\.recordActions, RecordActions(playPause: { model.onPlayPause() }, skip: { model.onSkip($0) }, scroll: model.scroll, scrub: model.scrub,
-                                                    seek: { model.onSeekFraction($0) }, seekable: model.seekable, seekOff: model.seekOff))
+                                                    seek: { model.onSeekFraction($0) }, seekable: model.seekable, seekOff: model.seekOff,
+                                                    seekWait: model.seekWait))
         .environment(\.recordPlaying, model.playing)
         .environment(\.songLoop, model.loop)
         .environment(\.songChords, model.chords.isEmpty ? nil : SongChords(marks: model.chords, shift: model.shift, capo: model.capo))
@@ -1922,6 +1926,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log(restartsFromStart ? "karaoke: the player didn't move the song to its start" : "seek: the player didn't move the song")
             karaokeRestart = nil
             pitch.awaitingSeek = false
+            model.seekWait = nil
         }
         let filePlayer = track.bundleID == FilePlayer.bundleID
         if filePlayer {
@@ -1955,6 +1960,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func endKaraokeRestart() {
+        model.seekWait = nil
         if fadeToStart { fadeToStart = false }
         karaokeRestartTimeout?.cancel()
         karaokeRestartTimeout = nil
@@ -5195,8 +5201,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Stems separated as the song plays start over at the new place: the output dips, the player moves the song,
         // and the stems step back to it once its first part is separated. Before the model is ready, nothing was
         // separated yet, and the song moves as it is.
-        if model.stemsEngaged, !cachedStems, StemModel.prepared { return beginKaraokeRestart(to: target) }
+        if model.stemsEngaged, !cachedStems, StemModel.prepared {
+            showSeekWait(from: track.position(at: Date()) ?? target, to: target)
+            return beginKaraokeRestart(to: target)
+        }
         moveSong(track, to: target)
+    }
+
+    /// The time bar and the waveform travel to the place of a seek and pulse until the stems of that place play, or
+    /// until the wait clearly ran over.
+    private func showSeekWait(from: Double, to: Double) {
+        let wait = SeekWait(from: from, to: to, started: Date(), expected: Self.stemsWait + 0.75)
+        model.seekWait = wait
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait.expected + 10) { [weak self] in
+            if self?.model.seekWait == wait { self?.model.seekWait = nil }
+        }
     }
 
     /// Moves the song that is heard: through the slowed stream while it is slowed down, which jumps to the move.
@@ -5959,6 +5978,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A new shifter counts from 0 again.
         if spins > spinsSeen {
             log("the output stepped back in the song" + (fadeToStart ? ", with a fade to the start" : ""))
+            model.seekWait = nil
             if model.shown { model.rewinds += 1 }
             if fadeToStart { fadeToStart = false }
         }

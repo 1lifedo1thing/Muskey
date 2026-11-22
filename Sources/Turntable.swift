@@ -180,6 +180,33 @@ struct RecordActions {
     var seekable = false
     /// Why the song can't move, for the tooltip of the time bar and the waveform.
     var seekOff = "Seeking is off"
+    /// A seek that waits for the stems of the new place, which the time bar and the waveform show.
+    var seekWait: SeekWait?
+}
+
+/// A seek while the stems are separated as the song plays: the output is quiet until the stems of the new place are
+/// separated, a few seconds. The time bar and the waveform's playhead travel to the new place over that wait, fast at
+/// first and slower near the end, and pulse until the stems play from there, so the quiet reads as work.
+struct SeekWait: Equatable {
+    /// The place that the song left and the place that it moves to, in seconds of the song.
+    var from: Double
+    var to: Double
+    var started: Date
+    /// About how long the stems of the new place take.
+    var expected: Double
+
+    /// Where the bar and the playhead show the song at `date`. With Reduce Motion, they show the new place at once.
+    func seconds(at date: Date, reduceMotion: Bool) -> Double {
+        if reduceMotion { return to }
+        let progress = min(1, max(0, date.timeIntervalSince(started) / max(expected, 0.1)))
+        return from + (to - from) * (1 - pow(1 - progress, 3))
+    }
+
+    /// The opacity of the played part and the playhead, from 0.45 to 1 and back about once a second. With Reduce
+    /// Motion, a steady dim says the same.
+    func pulse(at date: Date, reduceMotion: Bool) -> Double {
+        reduceMotion ? 0.5 : 0.45 + 0.55 * (0.5 + 0.5 * cos(2 * .pi * date.timeIntervalSince(started) / 1.1))
+    }
 }
 
 /// Previous, play or pause, and next in karaoke, apart from the record, whose cover shows the instruments and vocals
@@ -1111,6 +1138,7 @@ struct SongTimeBar: View {
     @Environment(\.recordActions) private var actions
     @Environment(\.songLoop) private var loop
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Where a drag along the bar is, from 0 to 1, until it ends.
     @State private var dragged: Double?
     @State private var hovering = false
@@ -1118,12 +1146,15 @@ struct SongTimeBar: View {
 
     var body: some View {
         if let duration = track.duration, duration > 0 {
-            TimelineView(.animation(minimumInterval: 1, paused: !ticking || dragged != nil || actions.scrub != nil)) { context in
-                let played = min(1, max(0, (track.position(at: context.date) ?? 0) / duration))
+            let wait = actions.seekWait
+            // A seek that waits for the stems redraws the bar smoothly while it travels and pulses.
+            TimelineView(.animation(minimumInterval: wait == nil ? 1 : 1.0 / 30, paused: (!ticking && wait == nil) || dragged != nil || actions.scrub != nil)) { context in
+                let seconds = wait?.seconds(at: context.date, reduceMotion: reduceMotion) ?? track.position(at: context.date) ?? 0
+                let played = min(1, max(0, seconds / duration))
                 let fraction = dragged ?? actions.scrub ?? played
                 HStack(spacing: 7) {
                     Text(Details.time(fraction * duration))
-                    bar(fraction)
+                    bar(fraction, pulse: wait.map { $0.pulse(at: context.date, reduceMotion: reduceMotion) } ?? 1)
                     Text(Details.time(duration))
                 }
                 .font(.system(size: 11, weight: .medium, design: .rounded))
@@ -1133,11 +1164,13 @@ struct SongTimeBar: View {
         }
     }
 
-    private func bar(_ fraction: Double) -> some View {
+    private func bar(_ fraction: Double, pulse: Double = 1) -> some View {
         let grows = actions.seekable && (hovering || dragged != nil || actions.scrub != nil)
         return Capsule().fill(palette.ink.opacity(0.15))
             .overlay(alignment: .leading) {
-                GeometryReader { bar in Capsule().fill(grows ? palette.ink.opacity(0.7) : palette.muted).frame(width: bar.size.width * fraction) }
+                GeometryReader { bar in
+                    Capsule().fill(grows ? palette.ink.opacity(0.7) : palette.muted).frame(width: bar.size.width * fraction).opacity(pulse)
+                }
             }
             // The region loop as a honey band on the bar.
             .overlay(alignment: .leading) {
