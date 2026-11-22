@@ -339,10 +339,20 @@ final class WhisperTranscriber: LyricsHearing, @unchecked Sendable {
     }
 }
 
+/// Something that takes the song as the tap hears it and hands over its vocals: the live separation, or a stand-in
+/// for it in a test.
+protocol VocalsFeeding: AnyObject {
+    /// Called once, on a background queue, when the vocals can't be separated and the whole song comes out instead.
+    var onFallback: () -> Void { get set }
+    func push(_ samples: [Float])
+    func stop()
+}
+
 /// Separates the vocals from the song as it is heard, a few seconds behind it, for a transcriber. Every sample in
 /// comes out once, in order, so the vocals keep the timing of the audio fed. Falls back to the whole song when the
 /// model can't run.
-final class VocalsFeed: @unchecked Sendable {
+final class VocalsFeed: VocalsFeeding, @unchecked Sendable {
+    var onFallback: () -> Void = {}
     private let queue = DispatchQueue(label: "muskey.vocals", qos: .utility)
     private let inputRate: Double
     private let deliver: ([Float]) -> Void
@@ -389,6 +399,7 @@ final class VocalsFeed: @unchecked Sendable {
             }
         } catch {
             failed = true
+            onFallback()
             deliver(converted[0])
         }
     }

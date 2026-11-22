@@ -83,6 +83,8 @@ struct LyricsAligner {
         fileprivate var lastMatchedEnd = 0.0
 
         var anchored: Int { lineStart.count }
+        /// The second at which the first word of each matched line is sung.
+        var firstWords: [Int: Double] { lineStart.mapValues { $0 + LyricsAligner.lead } }
         /// The lines that start at a heard word.
         var matchedLines: Set<Int> { Set(lineStart.keys) }
     }

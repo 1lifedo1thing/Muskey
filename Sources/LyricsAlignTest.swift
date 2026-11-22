@@ -35,6 +35,22 @@ enum LyricsAlignTest {
             var confidence: Float
         }
 
+        /// A part of the song fitted alone, as a song from another app is fitted while it plays.
+        struct Part: Encodable {
+            var from: Double
+            var to: Double
+            /// The start of the first word of each line found, by the line's place in `lines`.
+            var plain: [Int: Double] = [:]
+            var plainSung = 0
+            /// The same for the reference as lyrics with times, moved by `--lyrics-shift` seconds.
+            var synced: [Int: Double] = [:]
+            var syncedSung = 0
+            /// What the part says about those lyrics: the seconds they are off by, 0 when they hold, nil when it
+            /// can't tell.
+            var offset: Double?
+        }
+
+        var parts: [Part] = []
         var lines: [Line] = []
         var heardSeconds: Double?
         var fitSeconds: Double?
@@ -134,6 +150,10 @@ enum LyricsAlignTest {
                         output.offset = LyricsFit.offset(of: lyrics, LyricsFit.Outcome(starts: moved, words: [], sung: outcome.sung))
                         print("fit: \(outcome.starts.count) of \(outcome.sung) lines found\(outcome.usable ? "" : ", too few to time the lyrics by")")
                     }
+                    if let spec = TestFlags.value("--lyrics-part") {
+                        output.parts = try await parts(spec, plain: plain, lyrics: lyrics, place: place, aligner: aligner, heard: heardAlignment,
+                                                       vocals: Dettato.resample(vocals, from: rate))
+                    }
                 } catch {
                     print("fit: \(error)")
                 }
@@ -149,6 +169,51 @@ enum LyricsAlignTest {
             }
             exit(0)
         }
+    }
+
+    /// `--lyrics-part 0-60,90-180` fits each of those parts of the song alone, the way a song from another app is
+    /// fitted from what has played: once as lyrics without times, with the lines expected where the heard words and
+    /// the estimate have them, and once with the reference as lyrics with times, moved by `--lyrics-shift` seconds.
+    @MainActor private static func parts(_ spec: String, plain: Lyrics, lyrics: Lyrics, place: [Int: Int], aligner: LyricsAligner,
+                                         heard: LyricsAligner.Alignment, vocals: [Float]) async throws -> [Output.Part]
+    {
+        let shift = TestFlags.value("--lyrics-shift").flatMap(Double.init) ?? 0
+        let moved = lyrics.moved(by: shift)
+        let expected = aligner.times(heard).map { $0 + LyricsAligner.lead }, heardLines = heard.firstWords
+        let ranges = spec.split(separator: ",").compactMap { part -> (Double, Double)? in
+            let ends = part.split(separator: "-").compactMap { Double($0) }
+            return ends.count == 2 && ends[0] < ends[1] ? (ends[0], ends[1]) : nil
+        }
+        let texts = plain.lines.map(\.text), syncedTexts = moved.lines.map(\.text), syncedTimes = moved.lines.map(\.time)
+        let duration = Double(vocals.count) / AlignerModel.rate
+        return try await Task.detached(priority: .userInitiated) {
+            try AlignerModel.use { reader in
+                try ranges.map { from, to in
+                    let first = min(vocals.count, Int(from * AlignerModel.rate)), last = min(vocals.count, Int(to * AlignerModel.rate))
+                    // The song's position is reported five times a second, as the lyrics clock does.
+                    let marks = stride(from: 0.0, through: Double(last - first) / AlignerModel.rate, by: 0.2).map { LiveFit.Mark(audio: $0, song: from + $0) }
+                    let stretch = LiveFit.Stretch(samples: Array(vocals[first ..< last]), marks: marks)
+                    var part = Output.Part(from: from, to: to)
+                    if let found = try LiveFit.fit(texts, expected: expected, heard: heardLines, reach: .plain, stretches: [stretch], duration: duration, reader: reader) {
+                        for (line, start) in found.starts { if let at = place[line] { part.plain[at] = start } }
+                        part.plainSung = found.sung
+                    }
+                    if let found = try LiveFit.fit(syncedTexts, expected: syncedTimes, reach: .synced, stretches: [stretch], duration: duration, reader: reader) {
+                        part.synced = found.starts
+                        part.syncedSung = found.sung
+                        switch LiveFit.verdict(of: moved, found) {
+                        case let .off(offset): part.offset = offset
+                        case .holds: part.offset = 0
+                        case .unsure: part.offset = nil
+                        }
+                    }
+                    print(String(format: "part %.0f–%.0f s: without times %d of %d lines found, with times %d of %d, %@", from, to, part.plain.count,
+                                 part.plainSung, part.synced.count, part.syncedSung,
+                                 part.offset.map { $0 == 0 ? "they hold" : String(format: "off by %+.2f s", $0) } ?? "can't tell"))
+                    return part
+                }
+            }
+        }.value
     }
 
     /// Today's way: the speech model hears the song whole, and the heard words are matched to the text.

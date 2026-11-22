@@ -34,6 +34,11 @@ final class LyricsStore {
         /// The lines show moved by the offset, since a click on the Fix timing pill. Nil and false keep them at their
         /// own times, with the pill offering the offset.
         var applied: Bool?
+        /// The parts of the song that were fitted, as start and end seconds, for a song from another app, which is
+        /// fitted from what has played. Nil for a file, which is fitted whole.
+        var covered: [[Double]]?
+
+        var coveredRanges: [ClosedRange<Double>] { (covered ?? []).compactMap { $0.count == 2 && $0[0] <= $0[1] ? $0[0] ... $0[1] : nil } }
     }
 
     private static let limit = 1000
@@ -175,8 +180,11 @@ final class LyricsSync {
     private var tap: AudioTapping?
     /// The system's audio, or a song file in `--lyrics-replay`.
     var makeTap: () -> AudioTapping = { SystemAudioTap() }
+    /// The live separation of the vocals, or a stand-in for it in `--lyrics-live`. It gets the sample rate of the
+    /// tap and where to hand the vocals over.
+    var makeVocals: (Double, @escaping ([Float]) -> Void) -> VocalsFeeding = { VocalsFeed(inputRate: $0, deliver: $1) }
     private var listener: LyricsHearing?
-    private var vocals: VocalsFeed?
+    private var vocals: VocalsFeeding?
     /// Seconds of audio that the tap heard, which the heard words are timed in, also when the vocals reach the
     /// listener a few seconds later.
     private let tapped = OSAllocatedUnfairLock(initialState: 0.0)
@@ -188,6 +196,10 @@ final class LyricsSync {
     }
 
     private let hearing = OSAllocatedUnfairLock(initialState: true)
+    /// A test leaves the speech model out.
+    var hearsWords: () -> Bool = { true }
+    /// The listener hears the vocals alone, when the model that separates them is on the Mac.
+    var separates: () -> Bool = { StemModel.installed }
     /// Whisper writes the lyrics of this song, as it hears them.
     private(set) var writing = false
     /// Whisper writes the lyrics of a part of the song that it hasn't transcribed before, so the song has to play
@@ -260,25 +272,274 @@ final class LyricsSync {
 
     var listening: Bool { listener != nil }
 
+    // MARK: Songs from other apps
+
+    /// The check of lyrics with times has its answer for the song that plays: its id, the key of the lyrics and the
+    /// seconds that every line is off by, 0 when the times hold and nil when the check can't tell. The answer is
+    /// kept with the song, and nothing moves the lines here.
+    var onOffset: (String, String, Double?) -> Void = { _, _, _ in }
+    /// A fit of the song from another app has started or ended, for tests.
+    private(set) var fitsRunning = 0
+    /// The lyrics timing model and the model that separates the vocals are on the Mac. A test fits without them.
+    var canFit: () -> Bool = { AlignerModel.installed && StemModel.installed }
+    /// Fits the lyrics onto the parts of the song heard. A test counts the fits, or gives their result.
+    var fitLive: @Sendable (LiveFit.Request) throws -> LiveFit.Found? = { request in
+        try AlignerModel.use { reader in
+            try LiveFit.fit(request.lines, expected: request.expected, heard: request.heard, reach: request.reach, stretches: request.stretches,
+                            duration: request.duration, reader: reader)
+        }
+    }
+
+    /// The vocals of the song from another app, kept for the fit.
+    private var live: LiveVocals?
+    /// What the fit is of: the lyrics, the player that the song comes from, the length of the song, and whether the
+    /// lyrics come with times and are only checked.
+    private var fitting: (lyrics: Lyrics, player: String, duration: Double?, checking: Bool)?
+    /// What earlier plays found, and what this one adds to it.
+    private var kept: LyricsStore.Fit?
+    /// Seconds of vocals that the last fit had, and the fits made in this play.
+    private var fittedAt = 0.0
+    private var fits = 0
+    /// The last position of the song that was marked, and the tap's audio at that moment.
+    private var lastMark: (audio: Double, song: Double)?
+
+    /// Lyrics with times are checked after this many seconds of vocals, once this many of their lines were sung.
+    static let checkAfter = (seconds: 30.0, lines: 8)
+    /// A check that can't tell is made again when this many more seconds and lines were heard, up to this many checks in all.
+    static let checkAgain = (seconds: 25.0, lines: 6, times: 4)
+    /// Lyrics without times are fitted at the end of a play that heard at least this many seconds of the song that
+    /// no earlier play had fitted. A shorter part has few lines, and the model isn't loaded for them.
+    static let fitAfter = 45.0
+    /// The vocals come a few seconds behind the song, and a line takes a few seconds to sing.
+    static let behind = 8.0
+
+    /// Checks lyrics with times against the vocals of a song that another app plays: after the first lines, a fit
+    /// says whether the lyrics are off as a whole, and `onOffset` gets the offset. The answer is kept for the song
+    /// and the player, so a song is checked in one play only. Nothing is heard once the answer is known. The lines
+    /// stay where they are: moving them by the offset is up to whoever reads it.
+    func check(song: String, lyrics: Lyrics, player: String, duration: Double? = nil) {
+        guard song != self.song else { return }
+        end()
+        guard canFit() else { return }
+        self.song = song
+        fitting = (lyrics, player, duration, true)
+        if collect() { log("lyrics: hearing the vocals to check their times") }
+    }
+
+    /// Hears the vocals of the song for the fit alone, without a listener for its words.
+    private func collect() -> Bool {
+        started += 1
+        let tap = makeTap()
+        do {
+            try tap.prepare()
+            startCollecting(tapRate: tap.sampleRate)
+            let vocals = vocals
+            self.tap = tap
+            tapped.withLock { $0 = 0 }
+            let tapRate = tap.sampleRate
+            let hearing = hearing
+            try tap.start { [tapped] samples in
+                guard hearing.withLock({ $0 }) else { return }
+                tapped.withLock { $0 += Double(samples.count) / tapRate }
+                vocals?.push(samples)
+            }
+            return true
+        } catch {
+            log("lyrics: hearing the vocals failed: \(error)")
+            tap.stop()
+            stopCollecting()
+            return false
+        }
+    }
+
+    /// Keeps the vocals for the fit, from the separation that `deliver` also gets the vocals of.
+    private func startCollecting(tapRate: Double, deliver: @escaping ([Float]) -> Void = { _ in }) {
+        let live = LiveVocals(rate: StemModel.sampleRate)
+        let vocals = makeVocals(tapRate) {
+            live.add($0)
+            deliver($0)
+        }
+        // Without the vocals alone, the fit finds half as many lines, so the song as a whole isn't fitted.
+        vocals.onFallback = { live.close() }
+        self.live = live
+        self.vocals = vocals
+        fittedAt = 0
+        fits = 0
+        lastMark = nil
+    }
+
+    /// Stops hearing the song for the fit. A listener that hears the words goes on.
+    private func stopCollecting() {
+        live = nil
+        guard listener == nil else { return }
+        tap?.stop()
+        tap = nil
+        vocals?.stop()
+        vocals = nil
+    }
+
+    /// Checks lyrics with times when enough of the song has played since the last check. Lyrics without times are
+    /// fitted once, when the play ends: the lines light up by the heard words, which come seconds before a fit of
+    /// the same part of the song could, so a fit while the song plays wouldn't change what shows.
+    private func considerFit(position: Double) {
+        guard let live, let fitting, fitting.checking, fitsRunning == 0 else { return }
+        let have = live.seconds
+        // After the last line, no more lines come to check: one last fit of what was heard, or none when the last
+        // fit already had it, and the song isn't heard any longer.
+        if let end = fitting.lyrics.lines.last(where: { !$0.text.isEmpty })?.time, position > end + 2 * Self.behind {
+            return have - fittedAt >= LiveFit.shortest ? fit(final: true) : stopCollecting()
+        }
+        let seconds = fits == 0 ? Self.checkAfter.seconds : Self.checkAgain.seconds
+        let lines = Self.checkAfter.lines + Self.checkAgain.lines * fits
+        guard have - fittedAt >= seconds else { return }
+        let heard = live.heard
+        let sung = fitting.lyrics.lines.count { line in
+            !line.text.isEmpty && line.time <= position - Self.behind && heard.contains { $0.contains(line.time) }
+        }
+        guard sung >= lines else { return }
+        fit(final: false)
+    }
+
+    /// Seconds of the song heard in this play that no earlier play had fitted.
+    private func newlyHeard(_ live: LiveVocals) -> Double {
+        live.heard.reduce(0.0) { sum, range in
+            var length = range.upperBound - range.lowerBound
+            for old in earlierCovered { length -= max(0, min(old.upperBound, range.upperBound) - max(old.lowerBound, range.lowerBound)) }
+            return sum + max(0, length)
+        }
+    }
+
+    /// The parts of the song that earlier plays fitted.
+    private var earlierCovered: [ClosedRange<Double>] = []
+
+    /// Fits the lyrics onto the parts of the song heard so far, off the main thread. The model is loaded for the fit
+    /// and unloaded after it. A fit that ends after the song has changed still keeps what it found, for that song.
+    private func fit(final: Bool) {
+        guard let live, let fitting, let song else { return }
+        // The tap hears the next song before the player reports it, so the audio after the last position is left out.
+        let stretches = live.stretches(until: lastMark?.audio)
+        guard stretches.contains(where: { $0.seconds >= LiveFit.shortest }) else { return }
+        let lyrics = fitting.lyrics, player = fitting.player, checking = fitting.checking, duration = fitting.duration
+        let texts = lyrics.lines.map(\.text)
+        // Lines without times are expected where the heard words and the estimate have them. The lines of an earlier
+        // fit are left out of that: a fit that slid by a chorus would hold the next one to the same mistake.
+        let aligner = checking ? nil : aligner, heard = Self.merge(stored, current)
+        fittedAt = live.seconds
+        fits += 1
+        let last = final || fits >= Self.checkAgain.times
+        let number = started, kept = kept, fitLive = fitLive
+        fitsRunning += 1
+        let began = Date()
+        Self.fitQueue.async { [weak self] in
+            let words = aligner.map { $0.align(heard) }
+            let expected = words.flatMap { words in aligner.map { $0.times(words).map { $0 + LyricsAligner.lead } } } ?? lyrics.lines.map(\.time)
+            let request = LiveFit.Request(lines: texts, expected: expected, heard: words?.firstWords ?? [:], reach: checking ? .synced : .plain,
+                                          stretches: stretches, duration: duration)
+            let result = Result { try fitLive(request) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.fitsRunning -= 1
+                switch result {
+                case let .failure(error): self.log("lyrics: the fit failed: \(error.localizedDescription)")
+                case .success(nil): break
+                case let .success(found?):
+                    let took = String(format: "%.1f s", Date().timeIntervalSince(began))
+                    let current = number == self.started
+                    if checking {
+                        self.checked(found, song: song, lyrics: lyrics, player: player, last: last, current: current, took: took)
+                    } else {
+                        self.timed(found, song: song, lyrics: lyrics, player: player, kept: kept, took: took)
+                    }
+                }
+            }
+        }
+    }
+
+    private static let fitQueue = DispatchQueue(label: "muskey.lyrics.fit", qos: .utility)
+
+    /// What a fit says about lyrics with times. `current` is false when the song has changed since the fit started.
+    private func checked(_ found: LiveFit.Found, song: String, lyrics: Lyrics, player: String, last: Bool, current: Bool, took: String) {
+        let key = LyricsFit.key(lyrics)
+        let verdict = LiveFit.verdict(of: lyrics, found)
+        let lines = "\(found.starts.count) of \(found.sung) lines"
+        if verdict == .unsure {
+            guard last else { return log("lyrics: the fit of \(lines) in \(took) can't tell yet whether their times hold") }
+            // A song whose singing the model can't make out isn't heard again on every play, as long as enough of
+            // its lines were sung to tell. A play that ended sooner leaves the check to the next one.
+            guard found.sung >= Self.checkAfter.lines * 2 else {
+                if current { stopCollecting() }
+                return
+            }
+            log("lyrics: the offset of their times is unclear, by the fit of \(lines)")
+        }
+        let offset: Double? = switch verdict {
+        case let .off(offset): offset
+        case .holds: 0
+        case .unsure: nil
+        }
+        store.setFit(LyricsStore.Fit(key: key, file: player, starts: nil, offset: offset, covered: nil), for: song)
+        if let offset, offset != 0 {
+            log(String(format: "lyrics: their times are off by %+.2f s, by the fit of %@ in %@", offset, lines, took))
+        } else if offset != nil {
+            log("lyrics: their times hold, by the fit of \(lines) in \(took)")
+        }
+        guard current else { return }
+        stopCollecting()
+        onOffset(song, key, offset)
+    }
+
+    /// What the fit at the end of a play found for lyrics without times: the lines found are kept for the song and
+    /// the player together with the lines of earlier plays, and the next play starts with them.
+    private func timed(_ found: LiveFit.Found, song: String, lyrics: Lyrics, player: String, kept: LyricsStore.Fit?, took: String) {
+        let key = LyricsFit.key(lyrics)
+        let usable = LyricsFit.Outcome(starts: found.starts, words: [], sung: found.sung).usable
+        // The lines of this play take the place of the lines that earlier plays found in the same parts of the song,
+        // and the rest stay as long as their times still go up with the lines. A fit that found too few lines adds
+        // none, and its parts still count as fitted, so the same audio isn't fitted again on every play.
+        let new = usable ? found.starts : [:]
+        let replaced = usable ? found.covered : []
+        let earlier = (kept?.starts ?? [:]).filter { line, start in new[line] == nil && !replaced.contains { $0.contains(start) } }
+        let starts = LiveFit.inOrder(new.map { ($0.key, $0.value) } + earlier.map { ($0.key, $0.value) })
+        let covered = LyricsCoverage.merge((kept?.coveredRanges ?? []) + found.fitted)
+        let fit = LyricsStore.Fit(key: key, file: player, starts: starts, offset: nil,
+                                  covered: covered.map { [($0.lowerBound * 10).rounded() / 10, ($0.upperBound * 10).rounded() / 10] })
+        store.setFit(fit, for: song)
+        log(usable ? "lyrics: \(found.starts.count) of the \(found.sung) lines sung timed by the fit in \(took), for the next play"
+            : "lyrics: the fit found \(found.starts.count) of \(found.sung) lines in \(took), too few to time them by")
+    }
+
     /// Starts timing the lyrics of `song`, which come with estimated times, and listens to the song unless the
     /// words heard in earlier plays already time most lines. `file` names the file that Muskey Player plays, whose
     /// lines are timed at once when an earlier play fitted these lyrics onto its vocals.
-    func begin(song: String, lyrics: Lyrics, file: String? = nil) {
+    ///
+    /// `player` names the app that plays a song from another app. With the lyrics timing model on the Mac, the lines
+    /// found by fitting the lyrics onto the vocals in earlier plays are timed at once, and the fit goes on with what
+    /// this play adds.
+    func begin(song: String, lyrics: Lyrics, file: String? = nil, player: String? = nil, duration: Double? = nil) {
         guard song != self.song else { return }
         end()
         self.song = song
+        if file == nil, let player, canFit() {
+            fitting = (lyrics, player, duration, false)
+            kept = store.fit(for: song, key: LyricsFit.key(lyrics), file: player)
+            earlierCovered = kept?.coveredRanges ?? []
+        }
         let texts = lyrics.lines.map(\.text)
         let aligner = LyricsAligner(texts: texts, estimate: lyrics.lines.map(\.time), keepsSpacing: lyrics.otherVersion)
         self.aligner = aligner
         let lines = texts.filter { !$0.isEmpty }.count
         sungLines = lines
-        if let file, let starts = store.fit(for: song, key: LyricsFit.key(lyrics), file: file)?.starts, !starts.isEmpty {
+        if let source = file ?? fitting?.player, let starts = store.fit(for: song, key: LyricsFit.key(lyrics), file: source)?.starts, !starts.isEmpty {
             fittedStarts = starts
             log("lyrics: \(starts.count) lines timed by the fit of an earlier play")
         }
         stored = store.heard(for: song)
         realign(now: true)
         guard anchored < lines * 9 / 10 else { return log("lyrics: \(anchored) of \(lines) lines timed from an earlier play") }
+        guard hearsWords() else {
+            if fitting != nil, separates(), collect() { log("lyrics: hearing the vocals to time them by the fit") }
+            return
+        }
         text = texts.joined(separator: "\n")
         listen(to: text)
     }
@@ -304,6 +565,17 @@ final class LyricsSync {
 
     /// Stops listening and keeps the words heard for the next play.
     func end() {
+        // The part of the song that played since the last fit is fitted for the next play.
+        if let live, let fitting, fitting.checking ? live.seconds - fittedAt >= Self.checkAgain.seconds : newlyHeard(live) >= Self.fitAfter {
+            fit(final: true)
+        }
+        live = nil
+        fitting = nil
+        kept = nil
+        earlierCovered = []
+        fittedAt = 0
+        fits = 0
+        lastMark = nil
         tap?.stop()
         tap = nil
         if writing {
@@ -370,7 +642,7 @@ final class LyricsSync {
     /// Notes where the song is in the listener's audio, a few times a second. A position that jumps is a seek, which
     /// starts a new stretch of heard audio.
     func mark(position: Double?) {
-        guard listener != nil, let position else { return }
+        guard listener != nil || live != nil, let position else { return }
         let audio = tapped.withLock { $0 }
         guard audio > 0 else { return }
         if let last = marks.last {
@@ -389,6 +661,13 @@ final class LyricsSync {
         }
         if segment == nil { segment = (audio, position) }
         marks.append((audio, position))
+        // While the song isn't heard, the tap's audio stands still. Marks of the same audio at later positions would
+        // hide the jump of the position against the audio, which is what starts a new part once the song is heard again.
+        if let live, audio > lastMark?.audio ?? 0 {
+            lastMark = (audio, position)
+            live.mark(audio: audio, song: position)
+            considerFit(position: position)
+        }
         if marks.count > 4000 { marks.removeFirst(2000) }
         guard writing else { return }
         extendCoverage()
@@ -451,6 +730,7 @@ final class LyricsSync {
     /// Stops the tap and the listener, and keeps everything heard so far.
     private func stopListening() {
         started += 1
+        live = nil
         listener?.stop()
         listener = nil
         tap?.stop()
@@ -488,12 +768,17 @@ final class LyricsSync {
             if let text { locale = await LyricsListener.locale(for: text) }
             let transcribed = if let locale { await SpeechTranscriber.supportedLocale(equivalentTo: locale) != nil } else { false }
             let backend = apple || (transcribed && !writing) ? nil : whisper()
-            guard backend != nil || locale != nil else { return log("lyrics: no speech model for their language") }
             guard attempt == started else { return }
+            guard backend != nil || locale != nil else {
+                log("lyrics: no speech model for their language")
+                // The lyrics timing model needs no language, so the fit still times the lines for the next play.
+                if fitting != nil, separates(), collect() { log("lyrics: hearing the vocals to time them by the fit") }
+                return
+            }
             let tap = makeTap()
             do {
                 try tap.prepare()
-                let separate = StemModel.installed
+                let separate = separates()
                 let rate = separate ? StemModel.sampleRate : tap.sampleRate
                 let listener: LyricsHearing
                 if let backend {
@@ -522,10 +807,16 @@ final class LyricsSync {
                     log("lyrics: downloading the speech model for \(locale?.identifier ?? "")")
                     onChange()
                 }
-                let vocals = separate ? VocalsFeed(inputRate: tap.sampleRate) { listener.feed($0) } : nil
+                live = nil
+                if separate, fitting != nil, !writing {
+                    // The vocals that the listener hears are also kept for the fit.
+                    startCollecting(tapRate: tap.sampleRate) { listener.feed($0) }
+                } else {
+                    vocals = separate ? makeVocals(tap.sampleRate) { listener.feed($0) } : nil
+                }
+                let vocals = vocals
                 self.tap = tap
                 self.listener = listener
-                self.vocals = vocals
                 tapped.withLock { $0 = 0 }
                 let tapRate = tap.sampleRate
                 self.tapRate = tapRate
@@ -552,6 +843,7 @@ final class LyricsSync {
                 self.tap = nil
                 self.listener = nil
                 self.vocals = nil
+                live = nil
             }
             if downloading {
                 downloading = false
@@ -724,7 +1016,7 @@ private final class Finisher {
     let song: String
     let store: LyricsStore
     let whisper: WhisperTranscriber
-    let vocals: VocalsFeed?
+    let vocals: VocalsFeeding?
     let closed: [LyricsSync.Span]
     /// The sample rate of the audio that the vocals or Whisper are fed.
     let feedRate: Double
@@ -734,7 +1026,7 @@ private final class Finisher {
     var failed = false
     let log: (String) -> Void
 
-    init(song: String, store: LyricsStore, whisper: WhisperTranscriber, vocals: VocalsFeed?, feedRate: Double, closed: [LyricsSync.Span],
+    init(song: String, store: LyricsStore, whisper: WhisperTranscriber, vocals: VocalsFeeding?, feedRate: Double, closed: [LyricsSync.Span],
          earlier: [Lyrics.Line], written: [Lyrics.Line], covered: [ClosedRange<Double>], log: @escaping (String) -> Void)
     {
         self.song = song

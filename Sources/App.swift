@@ -2353,6 +2353,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return LyricsTranscribeTest.run(file: path, server: Self.stringOption("--whisper-server"), vocals: !TestFlags.has("--no-vocals"))
         }
         if let path = Self.stringOption("--aligner-install") { return ModelDownload.aligner.installForTesting(path) }
+        if let path = Self.stringOption("--lyrics-live"), let reference = Self.stringOption("--lyrics-ref") {
+            return LyricsLiveTest.run(file: path, reference: reference, plays: Self.stringOption("--plays") ?? "0-end")
+        }
         if let path = Self.stringOption("--lyrics-align"), let reference = Self.stringOption("--lyrics-ref") {
             return LyricsAlignTest.run(file: path, reference: reference)
         }
@@ -2476,6 +2479,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lyricsSync.log = { [weak self] in self?.log($0) }
         lyricsSync.onChange = { [weak self] in self?.lyricsTimingChanged() }
         lyricsSync.whisper = { [weak self] in self?.whisperBackend() }
+        lyricsSync.onOffset = { [weak self] song, key, offset in
+            // The check of a song from another app has its answer while the lyrics show: the Fix timing pill offers
+            // the offset, and only a click on it moves the lines.
+            guard let self, lyricsSong == song, lyricsApp != nil, let original = lyricsOriginal, LyricsFit.key(original) == key else { return }
+            model.lyricsTiming = offset.map { $0 == 0 ? .onTime : .found($0) } ?? .unknown
+        }
         // Once Whisper writes a part of a song that it hasn't transcribed before, the song stays 30 seconds behind
         // until the lyrics are hidden or the HUD closes: a new song stops the writing while its lyrics are looked
         // up, and dropping the delay then would cut off the last 30 seconds of the song before it.
@@ -6151,11 +6160,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lyricsFixManual = false
         lyricsOriginal = nil
         model.lyricsTiming = nil
-        let file = lyricsFile
-        if case let .found(lyrics) = state, lyrics.timing == .synced, !lyrics.lines.isEmpty, let file {
-            // Lyrics with times that a fit checked for this file show what it found: moved by the offset after a click
-            // on the Fix timing pill, or at their own times with the pill offering the offset.
-            if let kept = lyricsStore.fit(for: song, key: LyricsFit.key(lyrics), file: file) {
+        let file = lyricsFile, player = lyricsPlayer(track)
+        lyricsApp = player
+        if case let .found(lyrics) = state, lyrics.timing == .synced, !lyrics.lines.isEmpty, let source = file ?? player {
+            // Lyrics with times that a fit checked for this file, or for this song in the app that plays it, show
+            // what it found: moved by the offset after a click on the Fix timing pill, or at their own times with
+            // the pill offering the offset.
+            if let kept = lyricsStore.fit(for: song, key: LyricsFit.key(lyrics), file: source) {
                 lyricsOriginal = lyrics
                 switch kept.offset {
                 case let offset? where offset != 0 && kept.applied == true:
@@ -6174,10 +6185,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 lyricsOriginal = lyrics
                 model.lyricsTiming = .unchecked
                 fitLyrics(lyrics, song: song, duration: track.duration)
+            } else if file == nil, let player {
+                // A song from another app is checked against its vocals while it plays, once. The pill stays hidden
+                // until the check has an answer, since a click has nothing to start here.
+                lyricsOriginal = lyrics
+                lyricsSync.check(song: song, lyrics: lyrics, player: player, duration: track.duration)
             }
         }
         if case let .found(lyrics) = state, lyrics.timing == .estimated {
-            lyricsSync.begin(song: song, lyrics: lyrics, file: file)
+            lyricsSync.begin(song: song, lyrics: lyrics, file: file, player: player, duration: track.duration)
             if !lyricsSync.fitted { fitLyrics(lyrics, song: song, duration: track.duration) }
         }
         // A song that LRCLIB doesn't have: the lyrics that Whisper wrote in an earlier play, or Whisper writes them now.
@@ -6213,6 +6229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The Fix timing pill was clicked: the fit shows its progress, and the offset it finds moves the lines at once.
     /// A check that started by itself only turns the pill red.
     private var lyricsFixManual = false
+    /// The app that plays the song whose lyrics show, as the fits of its songs are kept. Nil for Muskey Player.
+    private var lyricsApp: String?
     /// A fit can run for the song: both models are installed and the song plays in Muskey Player.
     private var lyricsFitCanRun: Bool { AlignerModel.installed && StemModel.installed && lyricsFile != nil }
     /// The file that Muskey Player plays, as the name of its stems in the cache. A fit of the lyrics belongs to that
@@ -6220,6 +6238,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lyricsFile: String? {
         guard playsInFilePlayer, let path = filePlayer.current?.path else { return nil }
         return StemsCache.url(for: path)?.lastPathComponent
+    }
+
+    /// The app that plays the song, when it isn't Muskey Player. What a fit finds for a song from another app is kept
+    /// for that app: its audio comes as the song plays, and the same song in another app can start a moment earlier
+    /// or later.
+    private func lyricsPlayer(_ track: NowPlaying.Track) -> String? {
+        guard !playsInFilePlayer, let bundle = track.bundleID, bundle != FilePlayer.bundleID else { return nil }
+        return "app." + bundle
     }
 
     /// The stems of the whole song came into the cache while its lyrics show: lyrics with times that nothing checked
@@ -6244,7 +6270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case let .found(offset)?:
             applyLyricsOffset(offset)
         case let .applied(offset)?:
-            guard let song = lyricsSong, let original = lyricsOriginal, let file = lyricsFile else { return }
+            guard let song = lyricsSong, let original = lyricsOriginal, let file = lyricsFile ?? lyricsApp else { return }
             model.lyrics = .found(original)
             lyricsMoved = false
             model.lyricsTiming = .found(offset)
@@ -6258,7 +6284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Moves the lines of lyrics with times by the offset that a fit found, and keeps that for the next play of the file.
     private func applyLyricsOffset(_ offset: Double) {
-        guard let song = lyricsSong, let original = lyricsOriginal, let file = lyricsFile, case let .found(shown) = model.lyrics,
+        guard let song = lyricsSong, let original = lyricsOriginal, let file = lyricsFile ?? lyricsApp, case let .found(shown) = model.lyrics,
               shown.timing == .synced else { return }
         model.lyrics = .found(original.moved(by: offset))
         lyricsMoved = true
