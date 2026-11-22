@@ -25,7 +25,8 @@ struct OpeningState: Equatable {
         case let .opening(step, name, progress):
             self.init(step: Self.title(step), name: name, progress: progress)
         case let .installing(progress):
-            self.init(step: "Installing yt-dlp", name: "yt-dlp", progress: progress)
+            // The step names what installs, so nothing repeats it under the title.
+            self.init(step: "Installing yt-dlp", name: "", progress: progress)
         case let .failed(name):
             self.init(step: nil, name: name, recovery: .retry)
         case let .needsDownloader(name):
@@ -105,8 +106,8 @@ struct OpeningView: View {
                 ListenTitle(text: step, size: titleSize, progress: opening.progress, palette: palette)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                HStack(spacing: 7) {
-                    Text(opening.name)
+                HStack(spacing: opening.name.isEmpty ? 0 : 7) {
+                    Text(opening.name.isEmpty ? " " : opening.name)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(palette.muted)
                         .lineLimit(1)

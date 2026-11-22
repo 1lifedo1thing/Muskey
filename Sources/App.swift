@@ -695,8 +695,8 @@ struct HUDView: View {
         // The card is taller than the wide glass, so it grows up from where the bottom of the wide glass sits,
         // instead of reaching down toward the Dock. The stems open downward, which keeps the top of the card and its
         // corner buttons in place and the card inside the panel.
-        .padding(.bottom, model.card && !focus && model.opening == nil ? HUDPanel.size.height / 2 - 150 - (cardStemsOpen ? Self.cardStemsGrowth : 0) : 0)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: model.card && !focus && model.opening == nil ? .bottom : .center)
+        .padding(.bottom, model.card && !focus ? HUDPanel.size.height / 2 - 150 - (cardStemsOpen ? Self.cardStemsGrowth : 0) : 0)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: model.card && !focus ? .bottom : .center)
     }
 
     /// The key beside the record, with the hint bar along the bottom, which has Lock Key and Stop Pitch Change at
