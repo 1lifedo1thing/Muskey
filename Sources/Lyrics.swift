@@ -658,6 +658,8 @@ struct LyricsTimingButton: View {
 
     /// The lines move by this many seconds for each click on an arrow.
     static let step = 0.5
+    /// How far the ✕ reaches out of the pill's top right corner.
+    private static let cornerReach = 6.0
 
     var body: some View {
         if pill.fix == .failed {
@@ -671,7 +673,11 @@ struct LyricsTimingButton: View {
                 stepper.opacity(hover ? 1 : 0).allowsHitTesting(hover)
             }
             .fixedSize()
+            // The pointer counts as over the pill on the ✕ too, which sits half outside it. Without that, the ✕
+            // ends the hover as the pointer reaches it, and once the ✕ goes, macOS never says that the pointer left.
+            .padding(Self.cornerReach)
             .onHover { hovering = $0 }
+            .padding(-Self.cornerReach)
             .animation(.easeOut(duration: 0.1), value: hover)
         }
     }
@@ -782,7 +788,7 @@ struct LyricsTimingButton: View {
         }
         .buttonStyle(.plain)
         .help(help)
-        .offset(x: 5, y: -5)
+        .offset(x: Self.cornerReach - 1, y: 1 - Self.cornerReach)
     }
 
     private var failed: some View {

@@ -611,7 +611,8 @@ final class LyricsSync {
         self.aligner = aligner
         let lines = texts.filter { !$0.isEmpty }.count
         sungLines = lines
-        if let source = file ?? fitting?.player, let starts = store.fit(for: song, key: LyricsFit.key(lyrics), file: source)?.starts, !starts.isEmpty {
+        // Lines that earlier plays found are used whether or not this play fits.
+        if let source = file ?? player, let starts = store.fit(for: song, key: LyricsFit.key(lyrics), file: source)?.starts, !starts.isEmpty {
             fittedStarts = starts
             log("lyrics: \(starts.count) lines timed by the fit of an earlier play")
         }
@@ -646,6 +647,13 @@ final class LyricsSync {
     }
 
     /// Stops listening and keeps the words heard for the next play.
+    /// Settings removed every saved timing: the fit at the end of this play starts over instead of adding to the
+    /// lines of earlier plays.
+    func forgetKept() {
+        kept = nil
+        earlierCovered = []
+    }
+
     func end() {
         // The part of the song that played since the last fit is fitted for the next play.
         if let live, let fitting, fitting.checking ? live.seconds - fittedAt >= Self.checkAgain.seconds : newlyHeard(live) >= Self.fitAfter {

@@ -2513,7 +2513,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.onLyricsForget = { [weak self] in self?.forgetLyricsTiming() }
         NotificationCenter.default.addObserver(forName: LyricsStore.timingsRemoved, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.lyricsTimingsRemoved() }
+            MainActor.assumeIsolated {
+                self?.lyricsSync.forgetKept()
+                self?.lyricsTimingsRemoved()
+            }
         }
         // Songs from other apps are checked and fitted as Settings allows, and never without both models.
         lyricsSync.canFit = { [weak self] in
@@ -6343,8 +6346,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let kept = lyricsStore.fit(for: song, key: key, file: source) {
                 model.lyricsTimingKept = true
+                // A fit kept before the limit for an offset went up reads as right below it.
                 model.lyricsTiming = switch kept.offset {
-                case let offset? where offset != 0: .found(offset)
+                case let offset? where abs(offset) >= LyricsFit.smallestOffset: .found(offset)
                 case .some: .onTime
                 case nil: .unknown
                 }
@@ -7566,7 +7570,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -7611,7 +7615,7 @@ extension EnvironmentValues {
                 case "-lyrics-fix": .unchecked
                 case "-lyrics-fix-working": .working(0.42)
                 case "-lyrics-fix-checking": .working(nil)
-                case "-lyrics-fix-found", "-lyrics-focus-fix-found": .found(3.98)
+                case "-lyrics-fix-found", "-lyrics-focus-fix-found", "-lyrics-focus-fix-found-hover": .found(3.98)
                 case "-lyrics-fix-applied", "-lyrics-fix-applied-hover": .found(3.98)
                 case "-lyrics-fix-found-hover": .found(3.98)
                 case "-lyrics-fix-hover": .unchecked
