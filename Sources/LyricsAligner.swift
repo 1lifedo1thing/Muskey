@@ -83,10 +83,12 @@ struct LyricsAligner {
         fileprivate var lastMatchedEnd = 0.0
 
         var anchored: Int { lineStart.count }
+        /// The lines that start at a heard word.
+        var matchedLines: Set<Int> { Set(lineStart.keys) }
     }
 
     /// Lines show a little before they are sung, as they do in lyrics with times.
-    private static let lead = 0.5
+    static let lead = 0.5
 
     func align(_ heard: [Heard]) -> Alignment {
         var alignment = Alignment()
@@ -102,6 +104,21 @@ struct LyricsAligner {
             if alignment.lineStart[token.line] == nil {
                 alignment.lineStart[token.line] = anchor.time - Double(token.syllablesBefore) * Self.syllableSeconds - Self.lead
             }
+        }
+        return alignment
+    }
+
+    /// The lines whose first word was found by fitting the text onto the vocals, with the second it starts at. The
+    /// other lines are placed between them like the lines that no heard word matched.
+    func alignment(fitted starts: [Int: Double]) -> Alignment {
+        var alignment = Alignment()
+        for line in starts.keys.sorted() {
+            guard let first = firstToken[line], let start = starts[line] else { continue }
+            // Times that go back would bend the estimate between two lines the wrong way.
+            if let last = alignment.points.last, start <= last.time { continue }
+            alignment.lineStart[line] = start - Self.lead
+            alignment.points.append((tokens[first].prior, start))
+            alignment.lastMatchedEnd = start
         }
         return alignment
     }

@@ -699,6 +699,7 @@ private struct StemsPane: View {
     @ObservedObject private var stemDownload = ModelDownload.stems
     @ObservedObject private var windsDownload = ModelDownload.winds
     @ObservedObject private var notesDownload = ModelDownload.dettato
+    @ObservedObject private var alignerDownload = ModelDownload.aligner
 
     var body: some View {
         Form {
@@ -711,6 +712,10 @@ private struct StemsPane: View {
                 }
                 if stemDownload.installed || notesDownload.installed {
                     ModelRow(title: "Transcription model", download: notesDownload)
+                }
+                // The lyrics are fitted onto the vocals, which the common instruments model separates.
+                if stemDownload.installed || alignerDownload.installed {
+                    ModelRow(title: "Lyrics timing model", download: alignerDownload)
                 }
             }
             // The song steps back seconds when the separated instruments take over, in karaoke and when the lyrics
@@ -727,6 +732,7 @@ private struct StemsPane: View {
             stemDownload.refresh()
             windsDownload.refresh()
             notesDownload.refresh()
+            alignerDownload.refresh()
         }
     }
 }

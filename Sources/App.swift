@@ -2341,6 +2341,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let path = Self.stringOption("--lyrics-transcribe") {
             return LyricsTranscribeTest.run(file: path, server: Self.stringOption("--whisper-server"), vocals: !TestFlags.has("--no-vocals"))
         }
+        if let path = Self.stringOption("--aligner-install") { return ModelDownload.aligner.installForTesting(path) }
+        if let path = Self.stringOption("--lyrics-align"), let reference = Self.stringOption("--lyrics-ref") {
+            return LyricsAlignTest.run(file: path, reference: reference)
+        }
         if let path = Self.stringOption("--lyrics-replay"), let server = Self.stringOption("--whisper-server") {
             return LyricsReplayTest.run(file: path, server: server, plays: Self.stringOption("--plays") ?? "0-60,0-120")
         }
@@ -2715,6 +2719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ModelDownload.stems.log = { [weak self] in self?.log($0) }
         ModelDownload.winds.log = { [weak self] in self?.log($0) }
         ModelDownload.whisper.log = { [weak self] in self?.log($0) }
+        ModelDownload.aligner.log = { [weak self] in self?.log($0) }
         stopPitchOnSignals()
         network.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async { self?.networkChanged(online: path.status == .satisfied) }
@@ -6122,7 +6127,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             droppedLogged = 0
             state = .found(plain)
         }
-        if case let .found(lyrics) = state, lyrics.timing == .estimated { lyricsSync.begin(song: song, lyrics: lyrics) }
+        if case let .found(lyrics) = state, lyrics.timing == .synced, !lyrics.lines.isEmpty {
+            // Lyrics with times that a fit found to be off as a whole show at the offset it found.
+            if let offset = lyricsStore.fit(for: song, key: LyricsFit.key(lyrics))?.offset {
+                if offset != 0 { state = .found(lyrics.moved(by: offset)) }
+            } else {
+                fitLyrics(lyrics, song: song)
+            }
+        }
+        if case let .found(lyrics) = state, lyrics.timing == .estimated {
+            lyricsSync.begin(song: song, lyrics: lyrics)
+            if !lyricsSync.fitted { fitLyrics(lyrics, song: song) }
+        }
         // A song that LRCLIB doesn't have: the lyrics that Whisper wrote in an earlier play, or Whisper writes them now.
         var writing = false
         if state == .notFound {
@@ -6141,6 +6157,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.lyrics = state
         lyricsTimingChanged()
         updateLyricLine()
+    }
+
+    /// The fit of the lyrics onto the vocals that is being worked out.
+    private var lyricsFit: Task<Void, Never>?
+
+    /// With the lyrics timing model installed, fits the lyrics of a song that Muskey Player plays onto its vocals, which
+    /// times every line before it is sung, and keeps what the fit found for the next play. Lyrics without times
+    /// separate the stems of the whole song for it when the cache doesn't have them, and are timed by listening until
+    /// the fit is done. Lyrics with times are only checked for an offset, and only when the stems are there already.
+    private func fitLyrics(_ lyrics: Lyrics, song: String) {
+        lyricsFit?.cancel()
+        lyricsFit = nil
+        guard AlignerModel.installed, StemModel.installed, playsInFilePlayer, let path = filePlayer.current?.path else { return }
+        let key = LyricsFit.key(lyrics), synced = lyrics.timing == .synced
+        // A fit that found too few lines is kept as well, so the song isn't fitted again on every play.
+        guard lyricsStore.fit(for: song, key: key) == nil else { return }
+        guard !synced || StemsCache.open(for: path) != nil else { return }
+        let texts = lyrics.lines.map(\.text)
+        lyricsFit = Task { @MainActor [weak self] in
+            // A song of an hour separates in well under half an hour.
+            for _ in 0 ..< 1800 where StemsCache.open(for: path) == nil {
+                guard let self, !Task.isCancelled, lyricsSong == song, !stemsCacheFailed.contains(path) else { return }
+                if stemsCache.path != path { stemsCache.start(path) }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            guard let self, !Task.isCancelled, lyricsSong == song, let cache = StemsCache.open(for: path) else { return }
+            let started = Date()
+            let fitted = await Task.detached(priority: .utility) { () -> Result<LyricsFit.Outcome?, Error> in
+                Result { try LyricsFit.fit(texts, vocals: NotesPipeline.stemSamples(cache, stem: .vocals), rate: StemsCache.rate) }
+            }.value
+            guard case let .success(outcome?) = fitted else {
+                if case let .failure(error) = fitted { log("lyrics: the fit failed: \(error.localizedDescription)") }
+                return
+            }
+            let took = String(format: "%.1f s", Date().timeIntervalSince(started))
+            if synced {
+                let offset = LyricsFit.offset(of: lyrics, outcome)
+                lyricsStore.setFit(LyricsStore.Fit(key: key, starts: nil, offset: offset ?? 0), for: song)
+                log(offset.map { String(format: "lyrics: their times are off by %+.2f s, by the fit of %d lines in %@", $0, outcome.starts.count, took) }
+                    ?? "lyrics: their times hold, by the fit of \(outcome.starts.count) of \(outcome.sung) lines in \(took)")
+                guard let offset, lyricsSong == song, case let .found(shown) = model.lyrics, shown == lyrics else { return }
+                model.lyrics = .found(shown.moved(by: offset))
+                updateLyricLine()
+            } else {
+                lyricsStore.setFit(LyricsStore.Fit(key: key, starts: outcome.found ? outcome.starts : [:], offset: nil), for: song)
+                guard outcome.found else {
+                    return log("lyrics: the fit found \(outcome.starts.count) of \(outcome.sung) lines in \(took), too few to time them by")
+                }
+                log("lyrics: \(outcome.starts.count) of \(outcome.sung) lines timed by the fit in \(took)")
+                guard lyricsSong == song, case let .found(shown) = model.lyrics, LyricsFit.key(shown) == key else { return }
+                lyricsSync.apply(fitted: outcome.starts)
+                updateLyricLine()
+            }
+        }
     }
 
     /// Whisper as Settings has it: a server, the model on the Mac, or nothing for Apple's speech model.

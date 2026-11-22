@@ -43,6 +43,13 @@ struct Lyrics: Hashable, Sendable {
         }.joined(separator: "\n")
     }
 
+    /// The same lyrics with every line `offset` seconds later.
+    func moved(by offset: Double) -> Lyrics {
+        var moved = self
+        moved.lines = lines.map { Line(time: max(0, $0.time + offset), text: $0.text) }
+        return moved
+    }
+
     /// The line sung at `position`, or nil before the first line.
     func line(at position: Double) -> Int? {
         var low = 0, high = lines.count

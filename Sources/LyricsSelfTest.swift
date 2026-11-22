@@ -46,6 +46,53 @@ enum LyricsSelfTest {
         report(abs(stopped - 24) < 0.01, String(format: "whisper failure  %.1f s heard (want 24.0)", stopped))
 
         sources(report: report)
+        fit(report: report)
+    }
+
+    /// The fit of lyrics onto what a speech model reads, on a reading made up for the test: every sung letter is
+    /// likely for two frames, 100 ms after the letter before it, and one line of the lyrics isn't sung at all.
+    static func fit(report: (Bool, String) -> Void) {
+        let lines = ["The river runs", "Over the stones", "", "Nobody sings this line here", "(oh) Back to the sea", "Under the bridge", "Into the night"]
+        let sungAt: [Int: Double] = [0: 4, 1: 9, 4: 21, 5: 25, 6: 28]
+        let letters = Array("abcdefghijklmnopqrstuvwxyz")
+        func label(_ character: Character) -> Int? { letters.firstIndex(of: Character(character.lowercased())).map { $0 + 1 } }
+        let aligner = ForcedAligner(lines: lines, space: nil, label: label)
+        let width = aligner.labels.count + 1, frames = 1500
+        var values = [Float](repeating: log(1e-4), count: frames * width)
+        for frame in 0 ..< frames { values[frame * width] = log(0.98) }
+        for (line, start) in sungAt {
+            var frame = Int(start / ForcedAligner.Emissions.frameSeconds)
+            for (_, word) in ForcedAligner.sung(lines[line]) {
+                for letter in word.compactMap(label) {
+                    for spike in frame ..< frame + 2 {
+                        values[spike * width] = log(0.1)
+                        values[spike * width + 1 + aligner.labels.firstIndex(of: letter)!] = log(0.8)
+                    }
+                    frame += 5
+                }
+            }
+        }
+        let found = aligner.fit(ForcedAligner.Emissions(frames: frames, width: width, values: values))
+        let starts = found?.starts ?? [:]
+        let right = sungAt.allSatisfy { line, start in starts[line].map { abs($0 - start) < 0.05 } ?? false }
+        report(right && starts.count == sungAt.count,
+               "lyrics fit       \(starts.sorted { $0.key < $1.key }.map { String(format: "line %d at %.2f", $0.key, $0.value) }) (want lines 0, 1, 4, 5 and 6 at 4, 9, 21, 25 and 28)")
+
+        // The same lyrics with times that are two seconds early: the fit finds the two seconds.
+        let early = Lyrics(lines: lines.enumerated().map { Lyrics.Line(time: (sungAt[$0.offset] ?? 15) - 2, text: $0.element) }, timing: .synced)
+        let outcome = LyricsFit.Outcome(starts: starts, words: [], sung: 6)
+        let offset = LyricsFit.offset(of: early, outcome)
+        let small = LyricsFit.offset(of: early.moved(by: 1.8), outcome)
+        // A fit that found two lines of six is too thin to time the rest by.
+        let thin = LyricsFit.Outcome(starts: [0: 4, 1: 9], words: [], sung: 6)
+        report(offset.map { abs($0 - 2) < 0.05 } == true && small == nil && outcome.found && !thin.found,
+               "lyrics offset    \(offset.map { String(format: "%+.2f s", $0) } ?? "none"), and \(small.map { String(format: "%+.2f s", $0) } ?? "none") for lyrics 0.2 s early (want +2.00 s, none)")
+
+        // The lines that the fit found take their times, and the line between them is placed between them.
+        let timed = LyricsAligner(texts: lines, estimate: LyricsAligner.estimate(lines, duration: 30))
+        let times = timed.times(timed.alignment(fitted: starts))
+        let placed = times.count == 7 && abs(times[0] - 3.5) < 0.05 && abs(times[4] - 20.5) < 0.05 && times[3] > times[1] && times[3] < times[4]
+        report(placed, "lyrics fit times \(times.map { String(format: "%.1f", $0) }) (want 3.5 and 8.5 first, the unsung line between 8.5 and 20.5)")
     }
 
     /// The formats of the services after LRCLIB: word-timed LRC, TTML with and without times, and NetEase's credits.

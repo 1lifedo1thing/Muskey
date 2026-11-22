@@ -15,7 +15,19 @@ final class LyricsStore {
         /// The stretches of the song that Whisper has transcribed, as start and end seconds, whether anyone sang in
         /// them or not. Those parts aren't sent to Whisper again.
         var covered: [[Double]]?
+        /// What fitting the lyrics onto the vocals of the whole song found.
+        var fit: Fit?
         var date: Date
+    }
+
+    /// The times found by fitting lyrics onto the vocals of a song, kept so the next play has them from its start.
+    struct Fit: Codable, Equatable {
+        /// The text that was fitted, as `LyricsFit.key` writes it. Other lyrics for the song are fitted again.
+        var key: String
+        /// The second at which the first word of each line is sung, for the lines that were found.
+        var starts: [Int: Double]?
+        /// Seconds that lyrics with times were off by, as a whole.
+        var offset: Double?
     }
 
     private static let limit = 1000
@@ -36,6 +48,11 @@ final class LyricsStore {
     func text(for id: String) -> String? { load()[id]?.text }
     func heard(for id: String) -> [LyricsAligner.Heard] { load()[id]?.heard ?? [] }
     func written(for id: String) -> String? { load()[id]?.written }
+    func fit(for id: String, key: String) -> Fit? { load()[id]?.fit.flatMap { $0.key == key ? $0 : nil } }
+    func setFit(_ fit: Fit?, for id: String) {
+        update(id) { $0.fit = fit }
+    }
+
     func covered(for id: String) -> [ClosedRange<Double>] {
         (load()[id]?.covered ?? []).compactMap { $0.count == 2 && $0[0] <= $0[1] ? $0[0] ... $0[1] : nil }
     }
@@ -67,7 +84,7 @@ final class LyricsStore {
         var entry = entries[id] ?? Entry(date: Date())
         change(&entry)
         entry.date = Date()
-        entries[id] = entry.text == nil && entry.heard == nil && entry.written == nil && entry.covered == nil ? nil : entry
+        entries[id] = entry.text == nil && entry.heard == nil && entry.written == nil && entry.covered == nil && entry.fit == nil ? nil : entry
         if entries.count > Self.limit {
             // The songs heard longest ago go first, but never lyrics added by hand.
             let old = entries.filter { $0.value.text == nil }.sorted { $0.value.date < $1.value.date }.prefix(entries.count - Self.limit)
@@ -208,8 +225,28 @@ final class LyricsSync {
     private var marks: [(audio: Double, song: Double)] = []
     private var started = 0
 
+    /// The lines are timed by the fit of the text onto the vocals of the whole song, so nothing more is heard.
+    private(set) var fitted = false
+
     init(store: LyricsStore) {
         self.store = store
+    }
+
+    /// Times the lines by the first words that fitting the text onto the vocals found, in place of the heard words,
+    /// and stops listening.
+    func apply(fitted starts: [Int: Double]) {
+        guard let aligner, !writing else { return }
+        stopListening()
+        fitted = true
+        // An alignment of heard words that is still being worked out is dropped.
+        appliedAlignment = alignments.withLock {
+            $0 += 1
+            return $0
+        }
+        alignment = aligner.alignment(fitted: starts)
+        anchored = alignment.anchored
+        if downloading { downloading = false }
+        onChange()
     }
 
     var listening: Bool { listener != nil }
@@ -223,6 +260,10 @@ final class LyricsSync {
         let texts = lyrics.lines.map(\.text)
         let aligner = LyricsAligner(texts: texts, estimate: lyrics.lines.map(\.time), keepsSpacing: lyrics.otherVersion)
         self.aligner = aligner
+        if let starts = store.fit(for: song, key: LyricsFit.key(lyrics))?.starts, !starts.isEmpty {
+            apply(fitted: starts)
+            return log("lyrics: \(anchored) lines timed by the fit of an earlier play")
+        }
         stored = store.heard(for: song)
         realign(now: true)
         let lines = texts.filter { !$0.isEmpty }.count
@@ -288,6 +329,7 @@ final class LyricsSync {
         duration = nil
         skipping.withLock { $0 = false }
         text = nil
+        fitted = false
         whisperFailures = 0
         started += 1
         closeSegment()
@@ -592,6 +634,7 @@ final class LyricsSync {
 
     /// Every word that the listener heard so far, in seconds of its audio.
     private func heard(_ words: [LyricsAligner.Heard]) {
+        guard !fitted else { return }
         current = song(words)
         realign()
         // Kept every 10 seconds, so a play that ends early still times the next one.
