@@ -119,7 +119,7 @@ enum LyricsAlignTest {
                     if let outcome {
                         output.found = outcome.found
                         let times = aligner.times(aligner.alignment(fitted: outcome.starts))
-                        let shown = aligner.times(aligner.alignment(heardAlignment, fitted: outcome.starts))
+                        let shown = aligner.times(aligner.alignment(heardAlignment, fitted: outcome.usable ? outcome.starts : [:]))
                         var moved: [Int: Double] = [:]
                         for (index, at) in place {
                             output.lines[at].aligned = outcome.starts[index]
@@ -132,7 +132,7 @@ enum LyricsAlignTest {
                             output.lines[at].words.append(Output.Word(index: word.index, start: word.start, end: word.end, confidence: word.confidence))
                         }
                         output.offset = LyricsFit.offset(of: lyrics, LyricsFit.Outcome(starts: moved, words: [], sung: outcome.sung))
-                        print("fit: \(outcome.starts.count) of \(outcome.sung) lines found")
+                        print("fit: \(outcome.starts.count) of \(outcome.sung) lines found\(outcome.usable ? "" : ", too few to time the lyrics by")")
                     }
                 } catch {
                     print("fit: \(error)")

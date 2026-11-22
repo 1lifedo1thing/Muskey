@@ -16,6 +16,10 @@ enum LyricsFit {
         /// Enough lines were found to say whether lyrics with times are off as a whole. With fewer, the model
         /// didn't make out the singing, or the lyrics are another song's.
         var found: Bool { sung > 0 && starts.count >= 4 && starts.count * 2 >= sung }
+        /// Enough lines were found to time them by. Where the model makes out next to nothing, the one or two lines
+        /// that both fits agree on can be anywhere in the song, and they would hold the heard lines away from where
+        /// they are sung.
+        var usable: Bool { starts.count >= 4 && starts.count * 5 >= sung }
     }
 
     /// Lyrics with times are moved only when they are off by at least this long, since a line's time and the start of

@@ -6233,7 +6233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 lyricsMoved = true
                 updateLyricLine()
             } else {
-                lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: outcome.starts, offset: nil), for: song)
+                lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: outcome.usable ? outcome.starts : [:], offset: nil), for: song)
+                guard outcome.usable else {
+                    return log("lyrics: the fit found \(outcome.starts.count) of \(outcome.sung) lines in \(took), too few to time them by")
+                }
                 log("lyrics: \(outcome.starts.count) of \(outcome.sung) lines timed by the fit in \(took)")
                 guard lyricsSong == song, case let .found(shown) = model.lyrics, LyricsFit.key(shown) == key else { return }
                 lyricsSync.apply(fitted: outcome.starts)

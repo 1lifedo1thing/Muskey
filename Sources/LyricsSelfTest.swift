@@ -83,9 +83,11 @@ enum LyricsSelfTest {
         let outcome = LyricsFit.Outcome(starts: starts, words: [], sung: 6)
         let offset = LyricsFit.offset(of: early, outcome)
         let small = LyricsFit.offset(of: early.moved(by: 1.8), outcome)
-        // A fit that found two lines of six is too thin to time the rest by.
-        let thin = LyricsFit.Outcome(starts: [0: 4, 1: 9], words: [], sung: 6)
-        report(offset.map { abs($0 - 2) < 0.05 } == true && small == nil && outcome.found && !thin.found,
+        // A fit that found four lines of ten times those lines, and is too thin to tell an offset. One that found two
+        // lines does neither.
+        let thin = LyricsFit.Outcome(starts: [0: 4, 1: 9, 2: 14, 3: 19], words: [], sung: 10)
+        let thinner = LyricsFit.Outcome(starts: [0: 4, 1: 9], words: [], sung: 10)
+        report(offset.map { abs($0 - 2) < 0.05 } == true && small == nil && outcome.found && thin.usable && !thin.found && !thinner.usable,
                "lyrics offset    \(offset.map { String(format: "%+.2f s", $0) } ?? "none"), and \(small.map { String(format: "%+.2f s", $0) } ?? "none") for lyrics 0.2 s early (want +2.00 s, none)")
 
         // A kept fit times the lines of the same lyrics in the same file from the start of a play, and isn't used

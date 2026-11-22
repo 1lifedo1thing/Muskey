@@ -160,7 +160,7 @@ The model is Meta's [omniASR CTC model](https://github.com/facebookresearch/omni
 
 Muskey lays the letters of the lyrics over those frames in order, along the path that the model finds most likely. A line that nobody sings can be left out, at a price for each of its letters. The lyrics are fitted twice, with a high and a lower price, and a line counts as found when both fits start it within 0.3 seconds of each other.
 
-- Lyrics without times take the fit's time for every line that it found. The other lines are still timed by ear, and a heard line counts only when it falls between the found lines around it. Muskey stops listening when the fit found nine lines in ten. It separates the stems of the whole song for the fit when the cache doesn't have them, and times every line by ear until the fit is done.
+- Lyrics without times take the fit's time for every line that it found, when it found at least one line in five. The other lines are still timed by ear, and a heard line counts only when it falls between the found lines around it. Muskey stops listening when the fit found nine lines in ten. It separates the stems of the whole song for the fit when the cache doesn't have them, and times every line by ear until the fit is done.
 - Lyrics with times are only checked, and only when the stems are in the cache already. When the fit found at least half of the lines, and those agree that the lyrics are off as a whole by half a second or more, every line moves by that offset.
 
 The times of the fit are kept in `lyrics.json` for that file and those lyrics, so the next play has them from the start. The same song in another file or from another player is not given those times, since its audio can start earlier or later.
