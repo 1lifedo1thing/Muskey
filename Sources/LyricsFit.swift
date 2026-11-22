@@ -40,16 +40,15 @@ enum LyricsFit {
     /// Fits `lines` onto the vocals, mono at `rate`. Returns nil when `stop` says to end early. Takes a few seconds,
     /// so it runs off the main thread.
     static func fit(_ lines: [String], vocals: [Float], rate: Double, stop: () -> Bool = { false }) throws -> Outcome? {
-        let reader = try AlignerModel.reader()
-        // A song is fitted once, and the model takes about a gigabyte of memory while it is loaded.
-        defer { AlignerModel.unload() }
-        let aligner = ForcedAligner(lines: lines, space: reader.space, label: reader.label)
-        let sung = lines.count { line in ForcedAligner.sung(line).contains { $0.word.contains { reader.label($0) != nil } } }
-        guard sung > 0 else { return Outcome(starts: [:], words: [], sung: 0) }
-        let audio = Dettato.resample(vocals, from: rate)
-        guard let emissions = try reader.emissions(audio, columns: aligner.labels, stop: stop) else { return nil }
-        guard let fit = aligner.fit(emissions) else { return Outcome(starts: [:], words: [], sung: sung) }
-        return Outcome(starts: fit.starts, words: fit.words, sung: sung)
+        try AlignerModel.use { reader in
+            let aligner = ForcedAligner(lines: lines, space: reader.space, label: reader.label)
+            let sung = lines.count { reader.sings($0) }
+            guard sung > 0 else { return Outcome(starts: [:], words: [], sung: 0) }
+            let audio = Dettato.resample(vocals, from: rate)
+            guard let emissions = try reader.emissions(audio, columns: aligner.labels, stop: stop) else { return nil }
+            guard let fit = aligner.fit(emissions) else { return Outcome(starts: [:], words: [], sung: sung) }
+            return Outcome(starts: fit.starts, words: fit.words, sung: sung)
+        }
     }
 
     /// The seconds that lyrics with times are off by as a whole: the median of how far each found line's first word

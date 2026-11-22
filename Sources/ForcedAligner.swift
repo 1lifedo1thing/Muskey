@@ -36,6 +36,9 @@ struct ForcedAligner {
         var words: [Word]
         /// Lines that the path left out as not sung.
         var skipped: Set<Int>
+        /// The lines that the audio holds: all of them for a whole song, and for a part of the song the lines from
+        /// the one that the path began at to the one that it ended before.
+        var span: Range<Int>
 
         /// The start of each line's first word, and how sure the model was of the line's words. Nil for a line that
         /// was left out, has no words, or is all in brackets.
@@ -82,12 +85,27 @@ struct ForcedAligner {
     /// Two fits agree on a line when they start it within this many seconds of each other.
     static let agreement = 0.3
 
+    /// What a fit pays to leave out the lines before the first one that is sung in the audio, and the lines after the
+    /// last one, for audio that holds only a part of the song. `enter[line]` is the price of starting at `line`, and
+    /// `leave[line]` the price of ending before `line`, each with one more entry for the place after the last line.
+    /// Lines that repeat, like a chorus, fit a part of the song in more than one place, and the prices say which
+    /// place is the likelier one.
+    struct Ends: Sendable {
+        var enter: [Float]
+        var leave: [Float]
+        /// The lines that are expected in the audio. Leaving one of them out before the first line or after the last
+        /// one costs what it costs between two lines. If it were free, a voice that the model hardly makes out
+        /// would be left out whole.
+        var expected: Range<Int>
+    }
+
     /// The lines that the two fits start at the same moment, with the second their first word is sung at, and every
-    /// word of those lines.
-    func fit(_ emissions: Emissions) -> (starts: [Int: Double], words: [Word])? {
+    /// word of those lines. Without `ends`, the audio is the whole song: the fit starts before the first line and
+    /// ends after the last one.
+    func fit(_ emissions: Emissions, ends: Ends? = nil) -> (starts: [Int: Double], words: [Word], span: Range<Int>)? {
         let tempered = Self.tempered(emissions)
-        guard let high = align(tempered, skippedLetter: Self.skippedLetter.high),
-              let low = align(tempered, skippedLetter: Self.skippedLetter.low) else { return nil }
+        guard let high = align(tempered, skippedLetter: Self.skippedLetter.high, ends: ends),
+              let low = align(tempered, skippedLetter: Self.skippedLetter.low, ends: ends) else { return nil }
         let count = gaps.count - 1
         let first = high.lines(count: count), second = low.lines(count: count)
         var starts: [Int: Double] = [:]
@@ -95,7 +113,7 @@ struct ForcedAligner {
             guard let a = first[line], let b = second[line], abs(a.start - b.start) < Self.agreement else { continue }
             starts[line] = a.start
         }
-        return (starts, high.words.filter { starts[$0.line] != nil })
+        return (starts, high.words.filter { starts[$0.line] != nil }, high.span)
     }
 
     /// The letters with only a part of the model's doubt that anyone sings: each letter's log-probability, less the
@@ -176,8 +194,12 @@ struct ForcedAligner {
     /// Letters in the lyrics, for telling lyrics that are too short to fit from the rest.
     var letters: Int { kinds.count { $0 == .letter } }
 
-    private func align(_ emissions: Emissions, skippedLetter: Float) -> Result? {
+    /// Lines of the lyrics, with the ones that have no words to sing.
+    var lineCount: Int { gaps.count - 1 }
+
+    private func align(_ emissions: Emissions, skippedLetter: Float, ends: Ends? = nil) -> Result? {
         let frames = emissions.frames, width = emissions.width, states = kinds.count
+        if let ends, ends.enter.count != gaps.count || ends.leave.count != gaps.count { return nil }
         // The path keeps a byte for each letter in each frame, which a recording of hours with long lyrics would
         // turn into gigabytes.
         guard frames > 1, width == labels.count + 1, !words.isEmpty, frames * states <= Self.largestTable else { return nil }
@@ -206,8 +228,26 @@ struct ForcedAligner {
         // The move that reached each state in each frame: 0 stayed, 1 from the state before, 2 from two before, 4 from
         // the gap before the line that was left out.
         var moves = [UInt8](repeating: 0, count: frames * states)
-        score[0] = gapScore[0]
-        for line in skipCost.indices { score[gaps[line + 1]] = max(score[gaps[line + 1]], score[gaps[line]] - skipCost[line]) }
+        // The price of the expected lines that are left out by starting at each line, and by ending before it.
+        var enterCost = [Float](repeating: 0, count: gaps.count), leaveCost = enterCost
+        if let ends {
+            for line in skipCost.indices where ends.expected.contains(line) {
+                for later in line + 1 ..< gaps.count { enterCost[later] += skipCost[line] }
+                for earlier in 0 ... line { leaveCost[earlier] += skipCost[line] }
+            }
+            for line in gaps.indices {
+                enterCost[line] += ends.enter[line]
+                leaveCost[line] += ends.leave[line]
+            }
+            // Audio of a part of the song starts at any line, at that line's price.
+            for (line, gap) in gaps.enumerated() { score[gap] = gapScore[0] - enterCost[line] }
+        } else {
+            score[0] = gapScore[0]
+        }
+        for line in skipCost.indices where score[gaps[line]] - skipCost[line] > score[gaps[line + 1]] {
+            score[gaps[line + 1]] = score[gaps[line]] - skipCost[line]
+            moves[gaps[line + 1]] = 4
+        }
         let isGap = kinds.map { $0 == .gap }
 
         emissions.values.withUnsafeBufferPointer { values in
@@ -245,14 +285,34 @@ struct ForcedAligner {
         // Back from the gap after the last line: the first and the last frame of each state on the path.
         var enter = [Int](repeating: -1, count: states), leave = enter
         var skipped: Set<Int> = []
+        var span = 0 ..< gaps.count - 1
         var state = states - 1, frame = frames - 1
         var lineOfGap: [Int: Int] = [:]
         for (line, gap) in gaps.enumerated() { lineOfGap[gap] = line }
+        if ends != nil {
+            // The path ends before the line whose price leaves it the most likely, and the lines from there on
+            // weren't heard.
+            var best = -Float.infinity
+            for (line, gap) in gaps.enumerated() where score[gap] - leaveCost[line] > best {
+                best = score[gap] - leaveCost[line]
+                state = gap
+            }
+            if let line = lineOfGap[state] {
+                skipped.formUnion(line ..< gaps.count - 1)
+                span = 0 ..< line
+            }
+        }
         while frame >= 0 {
             let move = moves[frame * states + state]
             if move == 4 || (frame == 0 && state != 0) {
                 // Only a gap is reached by leaving a line out, in the first frame too.
                 guard let line = lineOfGap[state], line > 0 else { return nil }
+                if ends != nil, move != 4 {
+                    // The path began at this line, and the lines before it weren't heard.
+                    skipped.formUnion(0 ..< line)
+                    span = min(line, span.upperBound) ..< span.upperBound
+                    break
+                }
                 skipped.insert(line - 1)
                 state = gaps[line - 1]
                 continue
@@ -263,7 +323,7 @@ struct ForcedAligner {
             frame -= 1
         }
 
-        var result = Result(words: [], skipped: skipped)
+        var result = Result(words: [], skipped: skipped, span: span)
         let seconds = Emissions.frameSeconds
         for word in words where !skipped.contains(word.line) && enter[word.first] >= 0 {
             var sum: Float = 0, count: Float = 0

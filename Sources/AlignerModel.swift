@@ -2,6 +2,24 @@ import Accelerate
 import CoreML
 import Foundation
 
+/// Something that reads sung words for the fit of lyrics: the speech model, or a reading made up for a test.
+protocol LyricsReading {
+    /// The label that the reader writes between words.
+    var space: Int? { get }
+    /// The reader's label for a character of the lyrics, or nil for one that it doesn't write.
+    func label(_ character: Character) -> Int?
+    /// What the reader makes of `samples`, mono at 16 kHz: for each 20 ms, the log-probability of the blank and of
+    /// each of `columns`. Nil when `stop` says to end early.
+    func emissions(_ samples: [Float], columns: [Int], stop: () -> Bool) throws -> ForcedAligner.Emissions?
+}
+
+extension LyricsReading {
+    /// The line has a word to sing that the reader can write, outside brackets.
+    func sings(_ line: String) -> Bool {
+        ForcedAligner.sung(line).contains { $0.word.contains { label($0) != nil } }
+    }
+}
+
 /// The speech model that reads sung words for timing lyrics: Meta's omniASR CTC model of 300 million weights
 /// (Apache-2.0), which writes the characters of over 1600 languages, as a Core ML package next to the list of its
 /// characters. `make aligner-model` converts it and checks it against the original on each kind of processor. It
@@ -40,7 +58,19 @@ enum AlignerModel {
 
     static func unload() { loading.withLock { loaded = nil } }
 
-    final class Reader {
+    private static let fitting = NSLock()
+
+    /// Loads the model for one fit and unloads it after, since it takes about a gigabyte of memory while it is
+    /// loaded. One fit runs at a time: a second one that started while the first still held the model would load a
+    /// second copy of it.
+    static func use<T>(_ fit: (Reader) throws -> T) throws -> T {
+        try fitting.withLock {
+            defer { unload() }
+            return try fit(reader())
+        }
+    }
+
+    final class Reader: LyricsReading {
         private let model: MLModel
         private let labels: [Character: Int]
         private let input: MLMultiArray
@@ -73,6 +103,10 @@ enum AlignerModel {
                 if let first = bare.first, let label = labels[first] { return label }
             }
             return nil
+        }
+
+        func emissions(_ samples: [Float], columns: [Int], stop: () -> Bool) throws -> ForcedAligner.Emissions? {
+            try emissions(samples, columns: columns, progress: { _ in }, stop: stop)
         }
 
         /// What the model reads in `samples`, mono at 16 kHz: for each 20 ms, the log-probability of the blank and of
