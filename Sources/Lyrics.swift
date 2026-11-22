@@ -616,7 +616,7 @@ enum LyricsTimingFix: Equatable {
     case unchecked
     /// The share of the song separated, or nil while the lyrics are fitted.
     case working(Double?)
-    /// An offset that a fit found and that isn't applied: the pill turns red, and a click moves the lines.
+    /// An offset that a fit found and that isn't applied: the pill turns honey amber, and a click moves the lines.
     case found(Double)
     /// The lines show moved by the offset. A click puts them back at their original times.
     case applied(Double)
@@ -635,7 +635,8 @@ struct LyricsTimingPill {
     var dismiss: () -> Void
 }
 
-/// The Fix timing pill: a clock pill that turns red with the offset that a fit found, then shows the offset applied.
+/// The Fix timing pill: a clock pill that turns honey amber with the offset that a fit found, then shows the offset
+/// applied.
 struct LyricsTimingButton: View {
     let pill: LyricsTimingPill
     let palette: Palette
@@ -645,7 +646,7 @@ struct LyricsTimingButton: View {
     var body: some View {
         switch pill.fix {
         case .unchecked:
-            button(Label("Fix timing", systemImage: "clock.arrow.circlepath"), red: false,
+            button(Label("Fix timing", systemImage: "clock.arrow.circlepath"), ready: false,
                    help: "Find the offset of the times from the vocals and move the lines by it")
         case let .working(fraction):
             HStack(spacing: 5) {
@@ -659,14 +660,14 @@ struct LyricsTimingButton: View {
             .background(Capsule().fill(palette.ink.opacity(0.08)))
             .fixedSize()
         case let .found(offset):
-            button(HStack(spacing: 4) { Text("Fix timing"); Text(Self.seconds(offset)).monospacedDigit() }, red: true,
+            button(HStack(spacing: 4) { Text("Fix timing"); Text(Self.seconds(offset)).monospacedDigit() }, ready: true,
                    help: String(format: "Move the lines %.1f seconds %@", abs(offset), offset > 0 ? "later" : "earlier"))
         case let .applied(offset):
-            button(HStack(spacing: 4) { Text("Timing"); Text(Self.seconds(offset)).monospacedDigit() }, red: false, help: "Use the original times")
+            button(HStack(spacing: 4) { Text("Timing"); Text(Self.seconds(offset)).monospacedDigit() }, ready: false, help: "Use the original times")
         case .onTime:
             status("On time", symbol: "checkmark")
         case .unknown:
-            status("Offset unknown", symbol: "questionmark")
+            status("No fix found", symbol: "clock.badge.xmark").help("No single offset fits the lines")
         case .failed:
             HStack(spacing: 6) {
                 Label("Fix timing", systemImage: "clock.arrow.circlepath")
@@ -697,15 +698,20 @@ struct LyricsTimingButton: View {
 
     private var font: Font { .system(size: large ? 11 : 10, weight: .semibold, design: .rounded) }
 
-    private func button(_ label: some View, red: Bool, help: String) -> some View {
+    /// Honey amber for a fix that is ready, apart from the red of a failure: deeper text and a stronger tint than the
+    /// honey of the keys, so the pill stands out on the light glass as much as on the dark one.
+    private var amberText: Color { .oklch(colorScheme == .dark ? 0.87 : 0.47, 0.14, 70) }
+    private var amberFill: Color { .oklch(colorScheme == .dark ? 0.72 : 0.82, 0.15, 74, opacity: colorScheme == .dark ? 0.32 : 0.55) }
+
+    private func button(_ label: some View, ready: Bool, help: String) -> some View {
         Button(action: pill.press) {
             label
                 .labelStyle(.titleAndIcon)
                 .font(font)
-                .foregroundStyle(red ? StripColors.text(.red, colorScheme) : palette.muted)
+                .foregroundStyle(ready ? amberText : palette.muted)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(Capsule().fill(red ? StripColors.tint(.red, strong: false, colorScheme) : palette.ink.opacity(0.08)))
+                .background(Capsule().fill(ready ? amberFill : palette.ink.opacity(0.08)))
                 .contentShape(Capsule())
                 .fixedSize()
         }
