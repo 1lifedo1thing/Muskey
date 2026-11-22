@@ -224,7 +224,7 @@ release:
 	gh release create v$(VERSION) -F ReleaseNotes/$(VERSION).md "Releases/$(APP)-$(VERSION).dmg#$(APP).dmg"
 	git fetch --tags
 
-.PHONY: all install clean setversion build appcast upload release stems-model winds-model dettato-model
+.PHONY: all install clean setversion build appcast upload release stems-model winds-model dettato-model aligner-model
 
 # The Core ML models behind the stems. Each prints the size and the SHA-256 of its zip, which go into ModelDownload.
 # stems-model: BS-Roformer-SW, from its checkpoint and YAML config.
@@ -251,3 +251,15 @@ $(DETTATO_VENV)/bin/python:
 dettato-model: $(DETTATO_VENV)/bin/python
 	@test -n "$(AUDIO)" || (echo "usage: make dettato-model AUDIO=song-16k.wav" && exit 1)
 	$(DETTATO_VENV)/bin/python Scripts/dettato-model/convert.py "$(abspath $(AUDIO))" $(BUILD)/dettato-model
+
+
+# aligner-model: the speech model that reads sung words for timing lyrics, Meta's omniASR CTC model of 300 million
+# weights. AUDIO is a 16 kHz mono WAV of sung vocals, at least 30 seconds long, which the conversion is checked on.
+# Upload the zip as Aligner-omniASR-CTC-300M.zip. fairseq2 pins its own torch, so this venv doesn't share the others'.
+ALIGNER_VENV := $(BUILD)/aligner-venv
+$(ALIGNER_VENV)/bin/python:
+	$(MODEL_PYTHON) -m venv $(ALIGNER_VENV) && $(ALIGNER_VENV)/bin/pip install -q omnilingual-asr==0.2.0 torch==2.8.0 torchaudio==2.8.0 \
+		"pyarrow<20" coremltools==9.0 soundfile
+aligner-model: $(ALIGNER_VENV)/bin/python
+	@test -n "$(AUDIO)" || (echo "usage: make aligner-model AUDIO=vocals-16k.wav" && exit 1)
+	$(ALIGNER_VENV)/bin/python Scripts/aligner-model/convert.py "$(abspath $(AUDIO))" $(BUILD)/aligner-model

@@ -61,6 +61,18 @@ final class ModelDownload: NSObject, ObservableObject {
         }, install: { zip in try ModelDownload.installDettato(from: zip) }
     )
 
+    /// The model that reads sung words for timing lyrics, as a zipped Core ML package and the list of its characters.
+    /// `make aligner-model` converts it from facebook/omniASR-CTC-300M.
+    static let aligner = ModelDownload(
+        name: "lyrics timing model",
+        url: URL(string: "https://files.lowtechguys.com/muskey/models/Aligner-omniASR-CTC-300M.zip")!,
+        sha256: "211faa03ba3b7c14d6b6bc79bc4c155ad51c923d5b61c482fb1956d2ca962e77", size: 288_928_893,
+        installed: { AlignerModel.installed }, remove: {
+            AlignerModel.unload()
+            try? FileManager.default.removeItem(at: AlignerModel.folder)
+        }, install: { zip in try ModelDownload.installAligner(from: zip) }
+    )
+
     @Published private(set) var state = State.idle
     @Published private(set) var installed: Bool
 
@@ -145,7 +157,7 @@ final class ModelDownload: NSObject, ObservableObject {
         state = .failed
     }
 
-    /// `--stems-install PATH`, `--winds-install PATH` and `--dettato-install PATH` install the model from a copy of the file, the way a download
+    /// `--stems-install PATH`, `--winds-install PATH`, `--dettato-install PATH` and `--aligner-install PATH` install the model from a copy of the file, the way a download
     /// does, and quit.
     func installForTesting(_ path: String) {
         let copy = FileManager.default.temporaryDirectory.appending(path: "muskey-model-test")
@@ -250,6 +262,25 @@ final class ModelDownload: NSObject, ObservableObject {
             try FileManager.default.moveItem(at: unpacked.appending(path: file), to: ready.appending(path: file))
         }
         try place(ready, at: Dettato.folder)
+    }
+
+    /// Unzips the lyrics timing model, compiles it for this Mac and puts it with its list of characters where it loads from.
+    nonisolated static func installAligner(from zip: URL) throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "muskey-aligner-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["-x", "-k", zip.path, folder.path]
+        try ditto.run()
+        ditto.waitUntilExit()
+        guard ditto.terminationStatus == 0 else { throw StemError.unpack }
+        let unpacked = folder.appending(path: "Aligner")
+        let ready = folder.appending(path: "Ready")
+        try FileManager.default.createDirectory(at: ready, withIntermediateDirectories: true)
+        let compiled = try MLModel.compileModel(at: unpacked.appending(path: "Aligner.mlpackage"))
+        try FileManager.default.moveItem(at: compiled, to: ready.appending(path: "Aligner.mlmodelc"))
+        try FileManager.default.moveItem(at: unpacked.appending(path: "labels.json"), to: ready.appending(path: "labels.json"))
+        try place(ready, at: AlignerModel.folder)
     }
 
     nonisolated static func place(_ item: URL, at destination: URL) throws {
