@@ -151,6 +151,8 @@ $(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB
 
 install: $(BUNDLE)
 	killall "$(APP)" || true
+	@# open would only bring forward a copy that is still quitting, and then nothing runs.
+	@for i in $$(seq 1 100); do pgrep -x "$(APP)" >/dev/null || break; sleep 0.1; done
 	rm -rf "$(INSTALL_DIR)/$(APP).app"
 	ditto $(BUNDLE) "$(INSTALL_DIR)/$(APP).app"
 	open "$(INSTALL_DIR)/$(APP).app"
