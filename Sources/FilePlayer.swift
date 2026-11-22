@@ -699,7 +699,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
     /// the song that plays later.
     static func named(_ json: String) -> FilePlayer.Song? {
         guard let info = try? JSONDecoder().decode(PageInfo.self, from: Data(json.utf8)), let title = info.song.title, !title.isEmpty else { return nil }
-        return FilePlayer.Song(path: "", title: title, artist: info.song.artist)
+        return FilePlayer.Song(path: "", title: SongName.title(title), artist: info.song.artist)
     }
 
     /// yt-dlp downloads the audio alone, in a format that AVFoundation plays. With ffmpeg, it converts any audio to
@@ -837,7 +837,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
         var song = FilePlayer.Song(path: ok ? target.path : file)
         if let info {
             let named = info.song
-            song.title = named.title
+            song.title = named.title.map(SongName.title)
             song.artist = named.artist
             song.album = info.album
             if let thumbnail = info.thumbnail.flatMap(URL.init(string:)), thumbnail.scheme == "https",

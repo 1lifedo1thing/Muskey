@@ -86,6 +86,8 @@ struct ShortcutsSheet: View {
             Row(caps: [.key("⌘"), .key("V")], name: "play copied file or link"),
             Row(caps: [.key("⌘"), .key("O")], name: "open file"),
             Row(caps: [.key("⌘"), .key("L")], name: "open URL"),
+            Row(caps: [.key("esc")], name: "cancel", condition: "while a song opens"),
+            Row(caps: [.key("⌫")], name: "continue in background", condition: "while a song opens"),
         ])
         let waveform = KeyGroup(name: "Waveform and loop", symbol: "waveform", hue: 74, rows: [
             Row(caps: [.key("W")], name: "waveform"),

@@ -34,7 +34,8 @@ struct QueueItem: Identifiable, Equatable {
 
     mutating func apply(cached song: FilePlayer.Song) {
         downloaded = song.path
-        if let title = song.title { self.title = title }
+        // Without the extension of a media file, as Now Playing's title of the same song is read.
+        if let title = song.title { self.title = SongName.title(title) }
         artist = song.artist ?? artist
         album = song.album ?? album
         if artwork == nil, let path = song.artwork { artwork = NSImage(contentsOfFile: path) }
@@ -71,7 +72,7 @@ struct QueueItem: Identifiable, Equatable {
             return value?.isEmpty == false ? value : nil
         }
         var details = Details()
-        details.title = await string(.commonKeyTitle)
+        details.title = await string(.commonKeyTitle).map(SongName.title)
         details.artist = await string(.commonKeyArtist)
         details.album = await string(.commonKeyAlbumName)
         if let seconds = try? await asset.load(.duration).seconds, seconds.isFinite, seconds > 0 { details.duration = seconds }

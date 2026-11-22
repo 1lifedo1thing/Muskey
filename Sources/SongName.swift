@@ -55,12 +55,17 @@ enum SongName {
         ]
         let misnamed = links.filter { link(URL(string: $0.0)!) != $0.1 }.map { "\($0.0) → \(link(URL(string: $0.0)!) ?? "nil")" }
         report(misnamed.isEmpty, "a link to a file names its song by the file\(misnamed.isEmpty ? "" : ": " + misnamed.joined(separator: ", "))")
+        let reported = NowPlaying.Track.decode(Data(#"{"title": "concert.mp4", "artist": "Mira Vale", "artworkBytes": 0}"#.utf8))
+        let whole = NowPlaying.Track.decode(Data(#"{"title": "Mr. Brightside", "artworkBytes": 0}"#.utf8))
+        report(reported?.title == "concert" && reported?.artist == "Mira Vale" && whole?.title == "Mr. Brightside",
+               "a title from Now Playing loses its file extension where the report is read (\(reported?.title ?? "nil"), \(whole?.title ?? "nil"))")
         let both = split("Daft Punk - Around the World")
         report(both.title == "Around the World" && both.artist == "Daft Punk" && split("Moonlight Sonata").artist == nil, "a name like Artist - Title gives both")
 
         let pages: [(FilePlayer.Song?, String, String?)] = [
             (LinkDownload.named(#"{"title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)", "channel": "Rick Astley"}"#), "Never Gonna Give You Up", "Rick Astley"),
             (LinkDownload.named(#"{"title": "Midnight City (Official Video)", "uploader": "M83VEVO"}"#), "Midnight City", "M83"),
+            (LinkDownload.named(#"{"title": "rehearsal take 3.mp4"}"#), "rehearsal take 3", nil),
             (LinkDownload.named(#"{"title": "Around the World - Remastered", "track": "Around the World", "artist": "Daft Punk, Someone"}"#), "Around the World", "Daft Punk"),
         ]
         let raw = pages.filter { $0.0?.title != $0.1 || $0.0?.artist != $0.2 }.map { "\($0.1) → \($0.0?.title ?? "nil") by \($0.0?.artist ?? "nil")" }

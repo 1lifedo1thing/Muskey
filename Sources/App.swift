@@ -2993,6 +2993,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model.phase = .idle
                 model.shown = true
                 raisedForOpening = true
+                // A HUD that closed while the song kept opening has no record to keep in place any more.
+                model.openingGlass = nil
                 panel.present()
                 // The buttons take clicks also on a HUD that closed while the song kept opening and opens again.
                 panel.setInteraction(clickable: true, keyboard: false)
@@ -7347,6 +7349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.hovering = false
         model.moved = nil
         model.shortcuts = false
+        model.openingGlass = nil
         model.lyricsShown = false
         model.lyricsFocus = false
         lyricsSong = nil
