@@ -228,29 +228,32 @@ final class LyricsSync {
     private var marks: [(audio: Double, song: Double)] = []
     private var started = 0
 
-    /// The lines are timed by the fit of the text onto the vocals of the whole song, so nothing more is heard.
-    private(set) var fitted = false
+    /// The first word of each line that the fit of the text onto the vocals of the whole song found, in seconds. Those
+    /// lines keep these times, and the heard words time the rest.
+    private var fittedStarts: [Int: Double] = [:]
+    var fitted: Bool { !fittedStarts.isEmpty }
 
     init(store: LyricsStore) {
         self.store = store
     }
 
-    /// Times the lines by the first words that fitting the text onto the vocals found, in place of the heard words,
-    /// and stops listening.
+    /// Times the lines whose first words the fit of the text onto the vocals found. The heard words keep timing the
+    /// other lines, and the listening stops when the fit left almost none.
     func apply(fitted starts: [Int: Double]) {
-        guard let aligner, !writing else { return }
-        stopListening()
-        fitted = true
-        // An alignment of heard words that is still being worked out is dropped.
-        appliedAlignment = alignments.withLock {
-            $0 += 1
-            return $0
+        guard aligner != nil, !writing, !starts.isEmpty else { return }
+        fittedStarts = starts
+        realign(now: true)
+        if anchored >= sungLines * 9 / 10, listener != nil {
+            stopListening()
+            if downloading {
+                downloading = false
+                onChange()
+            }
         }
-        alignment = aligner.alignment(fitted: starts)
-        anchored = alignment.anchored
-        if downloading { downloading = false }
-        onChange()
     }
+
+    /// Lines of the lyrics with words to sing.
+    private var sungLines = 0
 
     var listening: Bool { listener != nil }
 
@@ -264,13 +267,14 @@ final class LyricsSync {
         let texts = lyrics.lines.map(\.text)
         let aligner = LyricsAligner(texts: texts, estimate: lyrics.lines.map(\.time), keepsSpacing: lyrics.otherVersion)
         self.aligner = aligner
+        let lines = texts.filter { !$0.isEmpty }.count
+        sungLines = lines
         if let file, let starts = store.fit(for: song, key: LyricsFit.key(lyrics), file: file)?.starts, !starts.isEmpty {
-            apply(fitted: starts)
-            return log("lyrics: \(anchored) lines timed by the fit of an earlier play")
+            fittedStarts = starts
+            log("lyrics: \(starts.count) lines timed by the fit of an earlier play")
         }
         stored = store.heard(for: song)
         realign(now: true)
-        let lines = texts.filter { !$0.isEmpty }.count
         guard anchored < lines * 9 / 10 else { return log("lyrics: \(anchored) of \(lines) lines timed from an earlier play") }
         text = texts.joined(separator: "\n")
         listen(to: text)
@@ -333,7 +337,7 @@ final class LyricsSync {
         duration = nil
         skipping.withLock { $0 = false }
         text = nil
-        fitted = false
+        fittedStarts = [:]
         whisperFailures = 0
         started += 1
         closeSegment()
@@ -638,7 +642,6 @@ final class LyricsSync {
 
     /// Every word that the listener heard so far, in seconds of its audio.
     private func heard(_ words: [LyricsAligner.Heard]) {
-        guard !fitted else { return }
         current = song(words)
         realign()
         // Kept every 10 seconds, so a play that ends early still times the next one.
@@ -678,11 +681,12 @@ final class LyricsSync {
             $0 += 1
             return $0
         }
-        if now { return apply(aligner.align(heard), number: number) }
+        let fitted = fittedStarts
+        if now { return apply(aligner.alignment(aligner.align(heard), fitted: fitted), number: number) }
         let alignments = alignments
         Self.aligning.async { [weak self] in
             guard alignments.withLock({ $0 }) == number else { return }
-            let alignment = aligner.align(heard)
+            let alignment = aligner.alignment(aligner.align(heard), fitted: fitted)
             DispatchQueue.main.async { self?.apply(alignment, number: number) }
         }
     }

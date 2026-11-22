@@ -1,10 +1,11 @@
 import AVFoundation
 import Foundation
 
-/// `--lyrics-align FILE --lyrics-ref LYRICS` times the lyrics of a song file two ways and prints how far each lands
+/// `--lyrics-align FILE --lyrics-ref LYRICS` times the lyrics of a song file three ways and prints how far each lands
 /// from the reference: by the words that Apple's speech model hears, as lyrics without times are timed while a song
-/// plays, and by fitting the text onto the vocals with the lyrics timing model. LYRICS is a TTML or LRC file whose
-/// times are the reference, and whose text is what both ways are given, without its times. The stems come from the
+/// plays, by fitting the text onto the vocals with the lyrics timing model, and by both together, as the lyrics show
+/// them. LYRICS is a TTML or LRC file whose times are the reference, and whose text is what each way is given,
+/// without its times. The stems come from the
 /// cache (`--stems-cache-dir DIR` keeps it elsewhere) and are separated first when they aren't there.
 ///
 /// `--lyrics-heard mix` lets the speech model hear the whole song instead of the vocals, and `--lyrics-heard none`
@@ -20,8 +21,10 @@ enum LyricsAlignTest {
             var heardMatched = false
             /// The start of the line's first word by the fit, for a line that was found.
             var aligned: Double?
-            /// The start by the fit as the lyrics show it: the found lines, and the rest placed between them.
+            /// The start by the fit alone: the found lines, and the rest placed between them.
             var fitted: Double?
+            /// The start as the lyrics show it: the lines that the fit found, and the heard words for the rest.
+            var shown: Double?
             var words: [Word] = []
         }
 
@@ -35,7 +38,7 @@ enum LyricsAlignTest {
         var lines: [Line] = []
         var heardSeconds: Double?
         var fitSeconds: Double?
-        /// Whether enough lines were found for the fit to be used.
+        /// Whether enough lines were found to tell an offset of lyrics with times.
         var found: Bool?
         var offset: Double?
     }
@@ -82,6 +85,7 @@ enum LyricsAlignTest {
             let rate = vocalsRate
             var output = Output(lines: lyrics.lines.map { Output.Line(text: $0.text, reference: $0.time) })
             let aligner = LyricsAligner(texts: plain.lines.map(\.text), estimate: plain.lines.map(\.time))
+            var heardAlignment = LyricsAligner.Alignment()
 
             let hearing = TestFlags.value("--lyrics-heard") ?? "vocals"
             if hearing != "none" {
@@ -93,6 +97,7 @@ enum LyricsAlignTest {
                     (samples, rate) = (vocals, vocalsRate)
                 }
                 if let alignment = await heard(plain, aligner: aligner, samples: samples, rate: rate) {
+                    heardAlignment = alignment
                     let times = aligner.times(alignment)
                     // Lines show half a second before their first word, which the comparison takes back.
                     for (index, at) in place {
@@ -114,10 +119,12 @@ enum LyricsAlignTest {
                     if let outcome {
                         output.found = outcome.found
                         let times = aligner.times(aligner.alignment(fitted: outcome.starts))
+                        let shown = aligner.times(aligner.alignment(heardAlignment, fitted: outcome.starts))
                         var moved: [Int: Double] = [:]
                         for (index, at) in place {
                             output.lines[at].aligned = outcome.starts[index]
                             output.lines[at].fitted = times[index] + LyricsAligner.lead
+                            output.lines[at].shown = shown[index] + LyricsAligner.lead
                             if let start = outcome.starts[index] { moved[at] = start }
                         }
                         for word in outcome.words {
@@ -125,7 +132,7 @@ enum LyricsAlignTest {
                             output.lines[at].words.append(Output.Word(index: word.index, start: word.start, end: word.end, confidence: word.confidence))
                         }
                         output.offset = LyricsFit.offset(of: lyrics, LyricsFit.Outcome(starts: moved, words: [], sung: outcome.sung))
-                        print("fit: \(outcome.starts.count) of \(outcome.sung) lines found, \(outcome.found ? "enough to use" : "too few to use")")
+                        print("fit: \(outcome.starts.count) of \(outcome.sung) lines found")
                     }
                 } catch {
                     print("fit: \(error)")
@@ -186,7 +193,8 @@ enum LyricsAlignTest {
         stats("heard, every line", \.heard)
         stats("heard, matched lines", { $0.heardMatched ? $0.heard : nil })
         stats("fit, found lines", \.aligned)
-        stats("fit, every line", \.fitted)
+        stats("fit alone, every line", \.fitted)
+        stats("fit and heard, every line", \.shown)
         if let seconds = output.heardSeconds { print(String(format: "heard in %.1f s", seconds)) }
         if let seconds = output.fitSeconds { print(String(format: "fitted in %.1f s", seconds)) }
         print(output.offset.map { String(format: "the reference would be moved by %+.2f s", $0) } ?? "the reference would stay where it is")

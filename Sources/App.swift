@@ -6187,9 +6187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// With the lyrics timing model installed, fits the lyrics of a song that Muskey Player plays onto its vocals, which
-    /// times every line before it is sung, and keeps what the fit found for the next play. Lyrics without times
-    /// separate the stems of the whole song for it when the cache doesn't have them, and are timed by listening until
-    /// the fit is done. Lyrics with times are only checked for an offset, and only when the stems are there already.
+    /// times the lines it finds before they are sung, and keeps what the fit found for the next play. Lyrics without
+    /// times separate the stems of the whole song for it when the cache doesn't have them, and the heard words time
+    /// every line until the fit is done, and the lines that it didn't find after that. Lyrics with times are only
+    /// checked for an offset, and only when the stems are there already.
     private func fitLyrics(_ lyrics: Lyrics, song: String, duration: Double?) {
         lyricsFit?.cancel()
         lyricsFit = nil
@@ -6232,10 +6233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 lyricsMoved = true
                 updateLyricLine()
             } else {
-                lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: outcome.found ? outcome.starts : [:], offset: nil), for: song)
-                guard outcome.found else {
-                    return log("lyrics: the fit found \(outcome.starts.count) of \(outcome.sung) lines in \(took), too few to time them by")
-                }
+                lyricsStore.setFit(LyricsStore.Fit(key: key, file: file, starts: outcome.starts, offset: nil), for: song)
                 log("lyrics: \(outcome.starts.count) of \(outcome.sung) lines timed by the fit in \(took)")
                 guard lyricsSong == song, case let .found(shown) = model.lyrics, LyricsFit.key(shown) == key else { return }
                 lyricsSync.apply(fitted: outcome.starts)

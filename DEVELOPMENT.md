@@ -158,10 +158,10 @@ For a song that Muskey Player plays, Muskey can time the lyrics before they are 
 
 The model is Meta's [omniASR CTC model](https://github.com/facebookresearch/omnilingual-asr) of 300 million weights (Apache-2.0), converted to Core ML. It reads the vocals 30 seconds at a time and gives, for every 20 ms, how likely each character is. It writes the characters of over 1600 languages, so Muskey doesn't need a dictionary or the language of the lyrics.
 
-Muskey lays the letters of the lyrics over those frames in order, along the path that the model finds most likely. A line that nobody sings can be left out, at a price for each of its letters. The lyrics are fitted twice, with a high and a lower price, and a line counts as found when both fits start it within 0.3 seconds of each other. The other lines are placed between the found ones, like the lines that no heard word matched.
+Muskey lays the letters of the lyrics over those frames in order, along the path that the model finds most likely. A line that nobody sings can be left out, at a price for each of its letters. The lyrics are fitted twice, with a high and a lower price, and a line counts as found when both fits start it within 0.3 seconds of each other.
 
-- Lyrics without times take the times of the fit when it found at least half of their lines. Until then, and when it found fewer, they are timed by ear. Muskey separates the stems of the whole song for the fit when the cache doesn't have them.
-- Lyrics with times are only checked, and only when the stems are in the cache already. When the found lines agree that the lyrics are off as a whole by half a second or more, every line moves by that offset.
+- Lyrics without times take the fit's time for every line that it found. The other lines are still timed by ear, and a heard line counts only when it falls between the found lines around it. Muskey stops listening when the fit found nine lines in ten. It separates the stems of the whole song for the fit when the cache doesn't have them, and times every line by ear until the fit is done.
+- Lyrics with times are only checked, and only when the stems are in the cache already. When the fit found at least half of the lines, and those agree that the lyrics are off as a whole by half a second or more, every line moves by that offset.
 
 The times of the fit are kept in `lyrics.json` for that file and those lyrics, so the next play has them from the start. The same song in another file or from another player is not given those times, since its audio can start earlier or later.
 
@@ -257,7 +257,7 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--lyrics-lookup "Title\|Artist\|Album\|Seconds"` | Look up the lyrics of that song the way the lyrics panel does, print the service, the timing and the first lines, and quit |
 | `--lyrics-source NAME` | Ask only one lyrics service: `lrclib`, `lrcred`, `netease` or `amll` |
 | `--lyrics-plain` | Drop the times of synced lyrics, time them by listening, and log how far the heard times are from the dropped ones. With `--pick`, the lyrics show from the start. |
-| `--lyrics-align FILE --lyrics-ref LYRICS` | Time the lyrics of a song file by the heard words and by the fit onto the vocals, print how far each lands from the times in LYRICS (TTML or LRC), and quit. The last line is the offset that LYRICS would be moved by. |
+| `--lyrics-align FILE --lyrics-ref LYRICS` | Time the lyrics of a song file by the heard words, by the fit onto the vocals, and by both together as the lyrics show them. Print how far each lands from the times in LYRICS (TTML or LRC), and quit. The last line is the offset that LYRICS would be moved by. |
 | `--lyrics-heard mix`, `--lyrics-heard none` | For `--lyrics-align`: let the speech model hear the whole song instead of the vocals, or skip it |
 | `--lyrics-vocals FILE` | For `--lyrics-align`: take the vocals from an audio file instead of separating the song |
 | `--lyrics-align-out FILE` | For `--lyrics-align`: write the time of every line and word as JSON |

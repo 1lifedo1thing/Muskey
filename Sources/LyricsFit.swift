@@ -2,8 +2,8 @@ import CryptoKit
 import Foundation
 
 /// Times lyrics by fitting their text onto the vocals of the whole song, for a song whose stems are in the cache.
-/// Lyrics without times get the start of every line that was found, and lyrics with times that are off as a whole
-/// get moved by the offset.
+/// Lyrics without times get the start of every line that was found, while the heard words time the other lines.
+/// Lyrics with times that are off as a whole get moved by the offset.
 enum LyricsFit {
     struct Outcome: Sendable {
         /// The second at which the first word is sung, for each line that was found.
@@ -13,8 +13,8 @@ enum LyricsFit {
         /// Lines with words to sing, without the ones in brackets.
         var sung: Int
 
-        /// Enough lines were found for their times to carry the rest. With fewer, the model didn't make out the
-        /// singing, or the lyrics are another song's, and the lines are timed by listening as before.
+        /// Enough lines were found to say whether lyrics with times are off as a whole. With fewer, the model
+        /// didn't make out the singing, or the lyrics are another song's.
         var found: Bool { sung > 0 && starts.count >= 4 && starts.count * 2 >= sung }
     }
 

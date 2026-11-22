@@ -123,6 +123,31 @@ struct LyricsAligner {
         return alignment
     }
 
+    /// The lines that the fit found together with the lines that heard words matched. The fit's lines keep their
+    /// times. A heard line stays only when it falls between the fit's lines around it, since heard words can match
+    /// the same words in another verse, and the fit hears the whole song.
+    func alignment(_ heard: Alignment, fitted starts: [Int: Double]) -> Alignment {
+        guard !starts.isEmpty else { return heard }
+        var merged = alignment(fitted: starts)
+        let fitted = merged
+        let lines = fitted.lineStart.keys.sorted()
+        for (line, start) in heard.lineStart where fitted.lineStart[line] == nil {
+            let before = lines.last { $0 < line }.flatMap { fitted.lineStart[$0] } ?? -.infinity
+            let after = lines.first { $0 > line }.flatMap { fitted.lineStart[$0] } ?? .infinity
+            if start > before, start < after { merged.lineStart[line] = start }
+        }
+        for point in heard.points {
+            let before = fitted.points.last { $0.prior <= point.prior }
+            let after = fitted.points.first { $0.prior > point.prior }
+            guard before?.prior != point.prior, point.time > before?.time ?? -.infinity, point.time < after?.time ?? .infinity else { continue }
+            merged.points.append(point)
+        }
+        merged.points.sort { $0.prior < $1.prior }
+        merged.after = heard.after
+        if heard.anchored > 0 { merged.lastMatchedEnd = heard.lastMatchedEnd }
+        return merged
+    }
+
     /// The start of each line. `listening` is the part of the song that the transcriber has heard so far without a
     /// break, while it listens: after a few seconds without a word, the singer has paused, and the next line waits
     /// for its first word instead of starting on time.

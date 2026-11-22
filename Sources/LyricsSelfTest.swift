@@ -93,18 +93,31 @@ enum LyricsSelfTest {
         let folder = FileManager.default.temporaryDirectory.appending(path: "muskey-lyrics-selftest-\(getpid())")
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = LyricsStore(url: folder.appending(path: "lyrics.json"))
-        let plain = Lyrics.estimate(plain: lines.joined(separator: "\n"), duration: 30)!
-        let kept = LyricsStore.Fit(key: LyricsFit.key(plain), file: "one.stems", starts: starts, offset: nil)
+        // Every line of these lyrics was found, so the play has nothing left to listen for.
+        let sungLines = sungAt.keys.sorted().map { lines[$0] }
+        let plain = Lyrics.estimate(plain: sungLines.joined(separator: "\n"), duration: 30)!
+        let kept = LyricsStore.Fit(key: LyricsFit.key(plain), file: "one.stems", starts: [0: 4, 1: 9, 2: 21, 3: 25, 4: 28], offset: nil)
         store.setFit(kept, for: "song")
         let sync = LyricsSync(store: store)
         sync.begin(song: "song", lyrics: plain, file: "one.stems")
         let shown = sync.times(at: 0) ?? []
-        let begun = sync.fitted && sync.anchored == sungAt.count && !sync.listening && shown.count == lines.count && abs(shown[4] - 20.5) < 0.05
+        let begun = sync.fitted && sync.anchored == sungLines.count && !sync.listening && shown.count == sungLines.count && abs(shown[2] - 20.5) < 0.05
         sync.end()
         let other = store.fit(for: "song", key: kept.key, file: "two.stems") == nil && store.fit(for: "song", key: LyricsFit.key(early), file: "one.stems") == nil
         let decoded = (try? JSONEncoder().encode(kept)).flatMap { try? JSONDecoder().decode(LyricsStore.Fit.self, from: $0) }
         report(begun && other && !sync.fitted && decoded == kept,
                "lyrics fit kept  \(sync.anchored == 0 ? "ended" : "not ended"), \(begun ? "timed from the start" : "not timed"), \(other ? "only for its file and text" : "used for another file or text"), \(decoded == kept ? "read back the same" : "read back changed")")
+
+        // Heard words time a line that the fit didn't find, when they fall between the fit's lines around it. Words
+        // heard in the wrong place, here the unsung line at the end of the song, are left out.
+        let both = LyricsAligner(texts: lines, estimate: LyricsAligner.estimate(lines, duration: 30))
+        func words(_ text: String, at start: Double) -> [LyricsAligner.Heard] {
+            text.split(separator: " ").enumerated().map { LyricsAligner.Heard(start: start + Double($0.offset) * 0.4, end: start + Double($0.offset) * 0.4 + 0.3, text: String($0.element)) }
+        }
+        let between = both.times(both.alignment(both.align(words(lines[3], at: 17)), fitted: starts))
+        let wrong = both.times(both.alignment(both.align(words(lines[3], at: 29)), fitted: starts))
+        report(abs(between[3] - 16.5) < 0.05 && abs(between[4] - 20.5) < 0.05 && abs(wrong[3] - 14.5) < 0.05 && abs(wrong[6] - 27.5) < 0.05,
+               String(format: "lyrics fit+heard heard line at %.1f, and at %.1f when heard after the last line (want 16.5, and 14.5)", between[3], wrong[3]))
 
         // The lines that the fit found take their times, and the line between them is placed between them.
         let timed = LyricsAligner(texts: lines, estimate: LyricsAligner.estimate(lines, duration: 30))
