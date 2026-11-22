@@ -102,11 +102,18 @@ struct OpeningView: View {
             VStack(spacing: 0) {
                 RecordDisc(track: deck.track, artwork: deck.artwork, spinning: deck.spinning, side: cardRecord, flash: deck.flash)
                     .frame(width: cardRing, height: cardRing)
+                    // The record alone doesn't say which song it is, as the deck of the wide layout does with its title.
+                    .overlay(alignment: .bottom) {
+                        playingLine(deck.track)
+                            .frame(maxWidth: cardRing - 40)
+                            // Just under the record, and well apart from the step of the song that opens.
+                            .padding(.bottom, (cardRing - cardRecord) / 2 - 20)
+                    }
                 status(titleSize: 22)
                     .frame(height: 118)
                     .frame(maxHeight: deck.glass == nil ? nil : .infinity)
                     // Into the room that the ring of keys leaves empty under the record.
-                    .padding(.top, -30)
+                    .padding(.top, -12)
             }
             .padding(.horizontal, 18)
             .padding(.top, 16)
@@ -156,6 +163,16 @@ struct OpeningView: View {
         }
     }
 
+    /// The song that plays, on one line under its record: `Armor · Sara Bareilles`.
+    private func playingLine(_ track: NowPlaying.Track) -> some View {
+        let parts = [track.title, track.artist].compactMap { $0?.isEmpty == false ? $0 : nil }
+        return Text(parts.joined(separator: " · "))
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .foregroundStyle(palette.muted)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+
     /// The artist, then the part done, under the name: `Rick Astley · 45%`.
     private var byline: Text {
         let artist = opening.artist?.isEmpty == false ? opening.artist : nil
@@ -193,7 +210,7 @@ struct OpeningView: View {
                     OpeningButton(title: "Cancel", key: "esc", palette: palette, solid: StripColors.solid(.red, colorScheme), action: cancel)
                         .help("Stop opening the song")
                     OpeningButton(title: "Continue in Background", key: "⌫", palette: palette, action: background)
-                        .help("Close the HUD and keep opening the song")
+                        .help("Keep opening the song in the background")
                 }
                 .padding(.top, 9)
             }

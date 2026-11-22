@@ -2955,6 +2955,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Plays files or links: dropped on the HUD, pasted, or picked with Open File… and Open URL….
     private func open(_ urls: [URL]) {
         log("opening \(urls.count == 1 ? (urls[0].isFileURL ? "a file" : "a link") : "\(urls.count) items")")
+        // A song that a person opens shows, also over one that keeps opening in the background.
+        openingInBackground = false
         raisesHUD = true
         filePlayer.open(urls)
         raisesHUD = false
@@ -2967,14 +2969,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var raisesHUD = false
     /// The HUD was closed when the song started to open, so Cancel closes it again.
     private var raisedForOpening = false
+    /// Continue in Background over a song with changes: the HUD shows that song again, and the song that opens shows
+    /// in the activity pill until it plays.
+    private var openingInBackground = false
+    /// The step that the log named last, which a song that keeps opening in the background still has.
+    private var loggedOpening: OpeningState?
 
     /// The HUD shows the song that opens, and the activity pill shows it while the HUD is closed.
     private func syncOpening() {
-        let opening = OpeningState(openActivity)
+        let actual = OpeningState(openActivity)
         // One line per step, not per part done.
-        if opening?.step != model.opening?.step || opening?.failed != model.opening?.failed {
-            log(opening.map { "opening: \($0.step ?? "failed")" } ?? "opening: done")
+        if actual?.step != loggedOpening?.step || actual?.failed != loggedOpening?.failed {
+            log(actual.map { "opening: \($0.step ?? "failed")" } ?? "opening: done")
         }
+        loggedOpening = actual
+        if actual == nil { openingInBackground = false }
+        let opening = openingInBackground ? nil : actual
         let started = model.opening == nil && opening != nil
         // The HUD shows the record of a song, which stays where it is: the glass keeps its size until the song has
         // opened. Karaoke, the shortcuts and the stem picker of T have no record at that place.
@@ -3019,17 +3029,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !model.openingOverSong, model.playing, model.track?.title?.isEmpty == false { model.openingOverSong = true }
     }
 
-    /// Continue in Background, and Backspace: the HUD closes while the song keeps opening, the activity pill shows
-    /// the step, and the HUD opens again when the song plays.
+    /// Continue in Background, and Backspace: the song keeps opening in the activity pill, and the HUD opens again when
+    /// it plays. Over a song that plays with changes (a pitch or tempo change, stems, a loop, karaoke or the key
+    /// picker), the HUD goes back to that song. Otherwise it closes.
     private func continueOpeningInBackground() {
         guard model.opening != nil else { return }
-        log("opening continues in the background")
-        dismiss()
+        let changed = changesRun || model.loop != nil || model.lyricsFocus || model.picking
+        guard model.openingOverSong, changed, !raisedForOpening else {
+            log("opening continues in the background")
+            return dismiss()
+        }
+        log("opening continues in the background, back to the song that plays")
+        openingInBackground = true
+        syncOpening()
     }
 
     /// The pill at the top right shows a song that opens only while the HUD doesn't, and a save once that is done.
     private func syncActivityPill() {
-        let onHUD = state != .idle && model.saving == nil
+        let onHUD = state != .idle && model.saving == nil && !openingInBackground
         activityPill.show(onHUD ? saveActivity : openActivity ?? saveActivity)
     }
 
