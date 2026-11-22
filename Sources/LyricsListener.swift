@@ -20,12 +20,28 @@ final class LyricsListener: @unchecked Sendable {
         }
     }
 
+    /// The language of the lyrics, as a two-letter code. Each line of eight letters or more votes for its own language,
+    /// weighted by its letters, so that a word repeated in many lines can't decide it alone: the text of a whole song
+    /// with "till" in a dozen lines reads as Swedish to the recognizer, and most of its lines read as English.
+    static func language(of text: String) -> String? {
+        var letters: [NLLanguage: Int] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            let count = line.count(where: \.isLetter)
+            guard count >= 8 else { continue }
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(String(line))
+            if let language = recognizer.dominantLanguage { letters[language, default: 0] += count }
+        }
+        if let most = letters.max(by: { $0.value < $1.value }) { return most.key.rawValue }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        return recognizer.dominantLanguage?.rawValue
+    }
+
     /// The language of the lyrics, as one of the speech models' languages, or nil when no model knows it. A model
     /// that is on the Mac already comes first, then the one for the Mac's region, then the most common one.
     static func locale(for text: String) async -> Locale? {
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(text)
-        guard let language = recognizer.dominantLanguage?.rawValue else { return nil }
+        guard let language = language(of: text) else { return nil }
         let region = Locale.current.region?.identifier
         let common = ["en": "US", "es": "ES", "fr": "FR", "de": "DE", "pt": "BR", "it": "IT", "zh": "CN", "ja": "JP", "ko": "KR"][language]
         let regions = [region, common].compactMap { $0 }

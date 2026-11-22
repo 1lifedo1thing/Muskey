@@ -1,5 +1,4 @@
 import Foundation
-import NaturalLanguage
 import Speech
 import os
 
@@ -559,9 +558,7 @@ final class LyricsSync {
 
     /// The two-letter language of the lyrics, for Whisper.
     private static func language(_ text: String) -> String? {
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(text)
-        return recognizer.dominantLanguage?.rawValue
+        LyricsListener.language(of: text)
     }
 
     private func write(_ phrases: [[LyricsAligner.Heard]]) {

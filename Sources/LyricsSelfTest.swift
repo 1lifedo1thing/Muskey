@@ -45,6 +45,21 @@ enum LyricsSelfTest {
         let stopped = feed(failing, silent: 16, seconds: 41)
         report(abs(stopped - 24) < 0.01, String(format: "whisper failure  %.1f s heard (want 24.0)", stopped))
 
+        // Made-up lyrics in capitals, with "till" in most lines: as one text the recognizer reads them as Swedish.
+        let till = """
+        TILL THE MORNING COMES AROUND
+        TILL THE RIVER FINDS THE SEA
+        I WILL WAIT HERE ON THE GROUND
+        TILL YOU COME BACK HOME TO ME
+        TILL THE LIGHTS GO DOWN
+        TILL THE STARS ARE GONE
+        TILL THE LAST TRAIN LEAVES THE TOWN
+        I WILL KEEP THE LANTERN ON
+        """
+        let romanian = "Te aștept în fiecare seară\nLângă fereastra de la drum\nȘi nu mai știu ce să-ți spun"
+        let languages = [LyricsListener.language(of: till), LyricsListener.language(of: romanian)]
+        report(languages == ["en", "ro"], "lyrics language  \(languages.map { $0 ?? "none" }) (want en, ro)")
+
         sources(report: report)
         fit(report: report)
     }
