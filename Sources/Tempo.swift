@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 
 /// The tempo of a song, from a listen or from Noiseblend, for the pill under the key.
@@ -93,5 +94,39 @@ enum TempoDetector {
         print(String(format: "tempo: %@  confidence %.2f  %.2fs", found.map { String(format: "%.1f BPM", $0.bpm) } ?? "none", found?.confidence ?? 0,
                      Date().timeIntervalSince(started)))
         return 0
+    }
+}
+
+extension KeyAnalyzer {
+    /// The longest part of a file that `read` decodes, from its start.
+    static let fileLimit = 600.0
+
+    /// The key, the peak and the tempo of a song's file, read from the file instead of heard as it plays: the whole
+    /// song up to 10 minutes, mixed to mono at the file's rate. A song shorter than a listen gets its key from all of
+    /// it. Nil when the file can't be decoded.
+    static func read(_ path: String) -> (result: EKResult, peak: Float, tempo: (bpm: Double, confidence: Float)?, seconds: Double)? {
+        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else { return nil }
+        let rate = file.processingFormat.sampleRate
+        let total = AVAudioFrameCount(min(Double(file.length), fileLimit * rate))
+        let chunk: AVAudioFrameCount = 1 << 16
+        guard total > 0, let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunk) else { return nil }
+        var mono = [Float]()
+        mono.reserveCapacity(Int(total))
+        var peak: Float = 0
+        while mono.count < Int(total) {
+            let wanted = min(chunk, total - AVAudioFrameCount(mono.count))
+            guard (try? file.read(into: buffer, frameCount: wanted)) != nil, buffer.frameLength > 0, let channels = buffer.floatChannelData else { break }
+            let count = Int(buffer.frameLength), channelCount = Int(buffer.format.channelCount)
+            var mixed = [Float](repeating: 0, count: count)
+            for channel in 0 ..< channelCount {
+                vDSP_vsma(channels[channel], 1, [1 / Float(channelCount)], mixed, 1, &mixed, 1, vDSP_Length(count))
+            }
+            peak = max(peak, vDSP.maximumMagnitude(mixed))
+            mono += mixed
+        }
+        guard !mono.isEmpty else { return nil }
+        let result = mono.withUnsafeBufferPointer { ek_key($0.baseAddress, UInt32($0.count), rate, profile) }
+        let tempo = peak >= 0.0005 ? TempoDetector.bpm(mono, sourceRate: rate) : nil
+        return (result, peak, tempo, Double(mono.count) / rate)
     }
 }

@@ -18,6 +18,12 @@ struct LoopRegion: Equatable {
 
     func time(of end: LoopEnd) -> Double? { end == .start ? start : self.end }
 
+    /// The loop repeats the whole song, as ⇧R sets it.
+    func coversSong(_ duration: Double?) -> Bool {
+        guard let end, let duration, duration > 0 else { return false }
+        return start <= 0.05 && end >= duration - 0.05
+    }
+
     /// The ends stay in the song, and at least a quarter of a second apart.
     func clamped(_ end: LoopEnd, _ time: Double, duration: Double) -> Double {
         switch end {

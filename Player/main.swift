@@ -158,6 +158,11 @@ final class Player: NSObject, NSApplicationDelegate {
                 endWatch?.cancel()
                 endWatch = Task { @MainActor [weak self] in
                     for await _ in NotificationCenter.default.notifications(named: AVPlayerItem.didPlayToEndTimeNotification, object: item) {
+                        // A loop that reaches the end of the song starts over instead of letting the next song play.
+                        if let start = self?.loopStart {
+                            self?.playFrom(start)
+                            continue
+                        }
                         self?.report()
                         self?.say("ended")
                     }
@@ -217,10 +222,12 @@ final class Player: NSObject, NSApplicationDelegate {
     private func play(_ playing: Bool) -> MPRemoteCommandHandlerStatus {
         guard let item = player.currentItem else { return .noActionableNowPlayingItem }
         if playing {
-            // Play at the end starts the song over, as music apps do.
+            // Play at the end starts the song over, as music apps do. The song plays and is reported once the move is
+            // done: reported right away, its time still read the end, and Muskey took the song for paused at its end
+            // and stopped its output while the song played from the start.
             if item.currentTime() >= item.duration - CMTime(seconds: 0.2, preferredTimescale: 600) {
-                player.seek(to: .zero)
-                say("moved 0.000")
+                playFrom(0)
+                return .success
             }
             player.play()
         } else {
@@ -228,6 +235,21 @@ final class Player: NSObject, NSApplicationDelegate {
         }
         report()
         return .success
+    }
+
+    /// Moves the song to `seconds` and plays it from there once the move is done, and reports it only then. Reported
+    /// at once, its time still read the end of the song, and Muskey took the song for paused at its end and stopped its
+    /// output while the song played from the start.
+    private func playFrom(_ seconds: Double) {
+        say(String(format: "moved %.3f", max(0, seconds)))
+        player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.player.play()
+                self.report()
+                self.reportAgain()
+            }
+        }
     }
 
     /// The player says when the song reaches the end of the loop, at the exact time, and the song moves back to its
@@ -238,7 +260,10 @@ final class Player: NSObject, NSApplicationDelegate {
         loopStart = nil
         guard ends.count == 2, ends[1] > ends[0] + 0.05 else { return }
         loopStart = ends[0]
-        let end = NSValue(time: CMTime(seconds: ends[1], preferredTimescale: 48000))
+        // A loop of the whole song goes back a moment before the end: at the end itself, the song stops before the
+        // boundary is reached.
+        let length = player.currentItem.map { $0.duration.seconds } ?? .infinity
+        let end = NSValue(time: CMTime(seconds: length.isFinite ? min(ends[1], length - 0.05) : ends[1], preferredTimescale: 48000))
         loopObserver = player.addBoundaryTimeObserver(forTimes: [end], queue: .main) { [weak self] in
             guard let self, let start = loopStart else { return }
             seek(to: start)

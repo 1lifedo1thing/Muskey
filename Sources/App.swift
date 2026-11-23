@@ -2370,6 +2370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let spec = Self.stringOption("--lyrics-lookup") { return lookUpLyrics(spec) }
         if let spec = Self.stringOption("--key-lookup") { return lookUpKeyForTesting(spec) }
         if let path = Self.stringOption("--tempo") { return tempoForTesting(path) }
+        if let path = Self.stringOption("--key-file") { return keyFileForTesting(path) }
         if let dir = Self.stringOption("--dettato-check") {
             DettatoCheck.run(dir)
             return
@@ -4172,6 +4173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func karaokeFromMenu() { toggleKaraoke() }
     @objc private func lanesFromMenu() { toggleWaveformLanes() }
     @objc private func loopFromMenu() { pressLoop(snapping: true) }
+    @objc private func songLoopFromMenu() { toggleSongLoop() }
     @objc private func zoomInFromMenu() { zoomWaveform(1.5) }
     @objc private func zoomOutFromMenu() { zoomWaveform(1 / 1.5) }
     @objc private func wholeSongFromMenu() { zoomWaveform(0) }
@@ -4213,6 +4215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.seekable || model.loop != nil {
             let title = model.loop == nil ? "Start Region Loop" : model.loop?.end == nil ? "End Region Loop" : "Clear Region Loop"
             item(title, #selector(loopFromMenu), key: "r")
+            item("Loop Song", #selector(songLoopFromMenu), key: "r", modifiers: .shift, on: model.loop?.coversSong(nowPlaying.track?.duration) == true)
         }
         if keyed, model.waveformShown, model.waveformStyle == .ribbon, model.wave.waveform != nil {
             item("Zoom In", #selector(zoomInFromMenu), key: "+", modifiers: .command)
@@ -4697,6 +4700,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.present()
         startedAt = Date()
         listenHeardPlaying = false
+        listenFromFile = false
+        if let path = listenFile { return readKey(of: path) }
 
         let tap = SystemAudioTap()
         self.tap = tap
@@ -4711,6 +4716,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         ticker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.tick() }
         startOnKnownKey()
+    }
+
+    /// The listen reads the song's file instead of recording the song as it plays.
+    private var listenFromFile = false
+
+    /// The file of the song that Muskey Player plays, which a listen reads instead of recording it.
+    private var listenFile: String? {
+        guard playsInFilePlayer, let path = filePlayer.current?.path, FileManager.default.isReadableFile(atPath: path) else { return nil }
+        return path
+    }
+
+    /// A song that Muskey Player plays has its file, so its key comes from the whole file at once, whatever its length,
+    /// instead of from a listen that records it as it plays. A key known from before still shows at once.
+    private func readKey(of path: String) {
+        listenFromFile = true
+        listenSong = listenSong ?? nowPlaying.track?.song
+        startOnKnownKey()
+        guard state == .listening else { return }
+        let current = session
+        log("reading the key from the file")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let read = KeyAnalyzer.read(path)
+            DispatchQueue.main.async { [self] in
+                guard session == current, state == .listening, listenFromFile else { return }
+                guard let read else { return fail(.failed, "the song's file can't be read for its key") }
+                state = .showing
+                model.progress = 1
+                log(String(format: "read %.1f s of the file in %.2f s", read.seconds, Date().timeIntervalSince(startedAt)))
+                finishListen(read.result, peak: read.peak, bpm: read.tempo, elapsed: read.seconds)
+            }
+        }
     }
 
     /// Sends what the tap records to the listen's analyzer, whose estimates show while this listen runs.
@@ -4729,6 +4765,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// again. A listen that starts on a paused player still ends on Nothing playing.
     private func pauseListen() {
         guard state == .listening, listenPausedAt == nil else { return }
+        // A song shorter than a listen stops at its end before the listen does: the key comes from all of it.
+        if estimated, let track = nowPlaying.track, let duration = track.duration, let now = track.position(at: Date()), now >= duration - 1 {
+            log("the song ended before the listen, which ends with it")
+            return finish()
+        }
         ticker?.invalidate()
         ticker = nil
         tap?.stop()
@@ -4895,40 +4936,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         analyzer.finish { [self] result, peak, bpm in
             guard session == current else { return }
-            let target = follow
-            let byPerson = followByPerson
-            follow = nil
-            followByPerson = false
-            guard peak >= 0.0005, let key = DetectedKey(result) else {
-                if target != nil { return followFailed(String(format: "no key found in the new song after %.1fs", elapsed)) }
-                return fail(.silent, String(format: "silence after %.1fs", elapsed))
-            }
-            model.key = key
-            model.phase = .done
-            noteKey(key, final: true)
-            // A listen during a pitch change hears the original song, so this is the key the change starts from.
-            if let target {
-                shiftBase = key
-                retarget(key, to: target, final: true, byPerson: byPerson)
-            } else if model.picking || model.shift != 0 {
-                shiftBase = key
-                if model.picking, keptKey != nil { keptKey = model.heard }
-                refreshStatus()
-            }
-            log(String(format: "%@ (relative %@)  strength %.3f  %.1fs", key.name, key.relative.name, result.strength, elapsed))
-            if let remembered, remembered != key { log("the full listen found \(key.name), not the \(remembered.name) that it started on") }
-            let tempo = heardTempo(bpm, in: listenSong ?? nowPlaying.track?.song)
-            if let song = listenSong, let track = nowPlaying.track, track.playing, track.song == song {
-                if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, bpm: tempo, for: song, replace: redetecting)) }
-                if let id = KeyCache.id(song) { heardKeys[id] = (key, tempo) }
-                keyLookup.heard(key, for: song)
-            }
-            redetecting = false
-            updateHoverKeys()
-            guard !model.picking else { return }
-            panel.setInteraction(clickable: true, keyboard: false)
-            if let delay = resultHideDelay { dismiss(after: delay) }
+            finishListen(result, peak: peak, bpm: bpm, elapsed: elapsed)
         }
+    }
+
+    /// The final key of a listen, or of a song's file, with the tempo found in the same audio.
+    private func finishListen(_ result: EKResult, peak: Float, bpm: (bpm: Double, confidence: Float)?, elapsed: Double) {
+        let target = follow
+        let byPerson = followByPerson
+        follow = nil
+        followByPerson = false
+        guard peak >= 0.0005, let key = DetectedKey(result) else {
+            if target != nil { return followFailed(String(format: "no key found in the new song after %.1fs", elapsed)) }
+            return fail(.silent, String(format: "silence after %.1fs", elapsed))
+        }
+        model.key = key
+        model.phase = .done
+        noteKey(key, final: true)
+        // A listen during a pitch change hears the original song, so this is the key the change starts from.
+        if let target {
+            shiftBase = key
+            retarget(key, to: target, final: true, byPerson: byPerson)
+        } else if model.picking || model.shift != 0 {
+            shiftBase = key
+            if model.picking, keptKey != nil { keptKey = model.heard }
+            refreshStatus()
+        }
+        log(String(format: "%@ (relative %@)  strength %.3f  %.1fs", key.name, key.relative.name, result.strength, elapsed))
+        if let remembered, remembered != key { log("the full listen found \(key.name), not the \(remembered.name) that it started on") }
+        let tempo = heardTempo(bpm, in: listenSong ?? nowPlaying.track?.song)
+        if let song = listenSong, let track = nowPlaying.track, track.playing || listenFromFile, track.song == song {
+            if prefs.rememberKeys { log(keyCache.store(key, strength: result.strength, bpm: tempo, for: song, replace: redetecting)) }
+            if let id = KeyCache.id(song) { heardKeys[id] = (key, tempo) }
+            keyLookup.heard(key, for: song)
+        }
+        redetecting = false
+        updateHoverKeys()
+        guard !model.picking else { return }
+        panel.setInteraction(clickable: true, keyboard: false)
+        if let delay = resultHideDelay { dismiss(after: delay) }
     }
 
     private func fail(_ phase: HUDModel.Phase, _ reason: String) {
@@ -5187,9 +5233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             option ? toggleWaveformLanes() : toggleWaveform()
             return true
         }
-        // R starts the region loop, ends it and clears it, in every layout. ⌥R doesn't snap the end.
-        if code == kVK_ANSI_R, !shift {
-            pressLoop(snapping: !option)
+        // R starts the region loop, ends it and clears it, in every layout. ⌥R doesn't snap the end, and ⇧R loops the
+        // whole song.
+        if code == kVK_ANSI_R {
+            shift ? toggleSongLoop() : pressLoop(snapping: !option)
             return true
         }
         if model.lyricsShown {
@@ -5382,7 +5429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             changes.stemGains = Stem.allCases.map { model.stemsMuted.contains($0) ? 0 : Float(model.stemVolumes[$0] ?? 1) }
         }
         // A region loop with both ends saves only the region.
-        if let loop = model.loop, let end = loop.end, end > loop.start { changes.range = loop.start ... end }
+        if let loop = model.loop, let end = loop.end, end > loop.start, !loop.coversSong(nowPlaying.track?.duration) { changes.range = loop.start ... end }
         return changes.isEmpty ? nil : changes
     }
 
@@ -6169,6 +6216,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         forgetLoopPresses()
     }
 
+    /// ⇧R loops the whole song with a region loop from its start to its end, and clears that loop. It takes the place of
+    /// a region loop that is set.
+    private func toggleSongLoop() {
+        guard let track = nowPlaying.track, track.title?.isEmpty == false, let duration = track.duration, duration > 0 else {
+            return log("region loop: the player gives no length for the song")
+        }
+        guard model.seekable else { return log("region loop: the song can't move at once now") }
+        if model.loop?.coversSong(duration) == true { return clearLoop() }
+        loopSnap?.cancel()
+        withAnimation(.easeOut(duration: 0.2)) { model.loop = LoopRegion(start: 0, end: duration) }
+        loopSong = track.song
+        log(String(format: "region loop: the whole song, %.2f s", duration))
+        applyLoop()
+    }
+
     /// The notes of the song in the notes window, once they are done: R then snaps the ends of the loop to them instead of
     /// to the attacks in the audio.
     private var loopNotes: Score? {
@@ -6306,7 +6368,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let now = track.position(at: Date()) else { return }
         // A seek that the player hasn't reported yet.
         if let target = seekTarget, Date().timeIntervalSince(target.at) < 1 { return }
-        guard now >= end - 0.03, now < end + 3 else { return }
+        // A loop of the whole song goes back a little before the end, before the player moves on to the next song.
+        let lead = loop.coversSong(track.duration) ? 0.4 : 0.03
+        guard now >= end - lead, now < end + 3 else { return }
         seekTarget = (track.song, loop.start, Date())
         moveSong(track, to: loop.start)
     }
@@ -7295,6 +7359,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// `--tempo FILE` finds the tempo of the part of FILE that a listen would hear: `--seconds` (20 by default) from
     /// `--tempo-at` (45 by default). Prints the tempo and quits.
+    /// `--key-file PATH` prints the key and the tempo that a listen reads from a song's file, and how long it took.
+    private func keyFileForTesting(_ path: String) {
+        let started = Date()
+        guard let read = KeyAnalyzer.read(path) else {
+            print("can't read \(path)")
+            exit(1)
+        }
+        let key = DetectedKey(read.result)
+        print(String(format: "key: %@  strength %.3f  peak %.3f  tempo %@  %.1f s of song in %.2f s", key?.name ?? "none", read.result.strength, read.peak,
+                     read.tempo.map { String(format: "%.1f BPM", $0.bpm) } ?? "none", read.seconds, Date().timeIntervalSince(started)))
+        exit(0)
+    }
+
     private func tempoForTesting(_ path: String) {
         let seconds = Self.stringOption("--seconds").flatMap(Double.init) ?? 20
         let start = Self.stringOption("--tempo-at").flatMap(Double.init) ?? 45
@@ -7466,7 +7543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ? shows the shortcuts.
         var keys: [(Int, Int)] = [kVK_Escape, kVK_Space, kVK_ANSI_N, kVK_ANSI_P].map { ($0, 0) } + question
         if keyed { keys += [kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_S].map { ($0, 0) } + [(kVK_ANSI_W, 0), (kVK_ANSI_W, optionKey)] }
-        if model.seekable || model.loop != nil { keys += [(kVK_ANSI_R, 0), (kVK_ANSI_R, optionKey)] }
+        if model.seekable || model.loop != nil { keys += [(kVK_ANSI_R, 0), (kVK_ANSI_R, optionKey), (kVK_ANSI_R, shiftKey)] }
         // Over the tab of an end of the region loop, the arrows nudge it.
         if model.loop != nil, model.wave.loopEnd != nil { keys += [kVK_LeftArrow, kVK_RightArrow].flatMap { [($0, 0), ($0, optionKey)] } }
         // Q shows the queue, which takes the arrows, Return and Delete while it shows, and M the mini player.
