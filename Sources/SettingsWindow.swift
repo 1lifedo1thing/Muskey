@@ -1125,7 +1125,13 @@ private struct WindowTitle: NSViewRepresentable {
 }
 
 /// The app has no Dock icon, so it shows one while Settings is open, to keep the window in ⌘Tab.
+///
+/// A closed Settings window is released, not only ordered out. A window that was kept after closing still showed in
+/// window switchers as a hidden window of Muskey, and its views kept updating while nobody could see them.
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+    /// Runs on the turn after the window closed, once AppKit is done with it, so the owner can let go of it.
+    var onClosed: () -> Void = {}
+
     convenience init(view: some View) {
         let hosting = NSHostingController(rootView: view)
         hosting.sizingOptions = [.minSize]
@@ -1141,6 +1147,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         self.init(window: window)
         window.delegate = self
         window.center()
+        // Each opening makes a new window, which opens where the last one was closed.
+        window.setFrameAutosaveName("Settings")
     }
 
     /// ⌘, in the menu bar menu runs while the menu still tracks the keyboard, and the window that opens then ends up
@@ -1156,6 +1164,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        DispatchQueue.main.async { [self] in
+            // Muskey stays in the Dock while the notes window is open.
+            if !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) { NSApp.setActivationPolicy(.accessory) }
+            onClosed()
+        }
     }
 }

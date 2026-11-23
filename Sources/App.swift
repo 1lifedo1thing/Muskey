@@ -2361,10 +2361,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let prefs = Preferences.shared
     private var prefChanges: Set<AnyCancellable> = []
-    private lazy var settingsWindow: SettingsWindowController = {
+    /// Made when Settings opens and let go when it closes. The pane shown is kept in `SettingsRoute`.
+    private var openSettings: SettingsWindowController?
+    private var settingsWindow: SettingsWindowController {
+        if let openSettings { return openSettings }
         let view = SettingsView(hud: model, keyCache: keyCache, setLayout: { [weak self] card in self?.setLayout(card: card) })
-        return SettingsWindowController(view: view)
-    }()
+        let controller = SettingsWindowController(view: view)
+        controller.onClosed = { [weak self, weak controller] in
+            // Settings may have opened again before this ran, and then the same window stays.
+            guard let self, let controller, openSettings === controller, controller.window?.isVisible != true else { return }
+            openSettings = nil
+            log("settings: closed and released")
+        }
+        openSettings = controller
+        return controller
+    }
 
     // The estimate kept getting more accurate the longer a listen ran, and stopping early once it held steady lost
     // accuracy, so a listen has a fixed length.
