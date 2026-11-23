@@ -59,6 +59,21 @@ struct SongWaveform: Codable, Equatable {
     /// The level under which a stem counts as silent: separation leaves a little of the other instruments in each stem.
     static let bleed: Float = 18
 
+    /// How much a stem sounds between `from` and `to` seconds: its levels above the bleed, added up, so a stem that
+    /// plays longer or louder counts more. Nil without that stem's row.
+    func sound(of stem: Stem, from: Double = 0, to: Double? = nil) -> Int? {
+        guard let data = stems?[stem.rawValue], !data.isEmpty else { return nil }
+        let a = max(0, Int((from * Self.rate).rounded(.down))), b = min(data.count, Int(((to ?? duration) * Self.rate).rounded(.up)))
+        guard b > a else { return 0 }
+        let bleed = Int(Self.bleed)
+        return data.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var total = 0
+            for i in a ..< b where Int(bytes[i]) > bleed { total += Int(bytes[i]) - bleed }
+            return total
+        }
+    }
+
     /// `count` bars between `from` and `to` seconds, from 0 to 1, or -1 where nothing was heard. A bar is the average
     /// level under it, stretched between the quiet and the loud parts of the song: songs are mastered loud, and
     /// their loudest moments under each bar would make an even block.

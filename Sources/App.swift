@@ -3214,12 +3214,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func toggleNotesPicker() {
         if model.notesPicking != nil { return closeNotesPicker() }
         let stems = notesStems
-        let selected = shownNotesStem(stems) ?? lastNotesStem.flatMap { stems.contains($0) ? $0 : nil } ?? (stems.contains(.bass) ? .bass : stems[0])
         model.queueShown = false
         // A song from another app is transcribed from what Muskey heard of it, which its waveform's recorder keeps.
         let live = !playsInFilePlayer
         let recorder = live ? liveRecorder : nil
         let region = notesRegion(recorder: recorder, live: live)
+        let selected = shownNotesStem(stems) ?? richestNotesStem(stems, in: region) ?? lastNotesStem.flatMap { stems.contains($0) ? $0 : nil }
+            ?? (stems.contains(.bass) ? .bass : stems[0])
         model.notesPicking = NotesPicking(stems: stems, selected: selected, available: live ? recorder?.captures == true : true,
                                           duration: model.track?.duration, heard: live ? recorder?.capturedSeconds ?? 0 : nil, missing: notesMissing,
                                           region: region)
@@ -3430,6 +3431,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if lanes.count == 1 { return lanes[0] }
         let playing = model.stemsEngaged ? Stem.shown.filter { !model.stemsMuted.contains($0) } : []
         return playing.count == 1 && stems.contains(playing[0]) ? playing[0] : nil
+    }
+
+    /// The stem that sounds the most in the part that T picks first, the region loop or the whole song, as the levels
+    /// of the stems on the waveform show. Nil until the stems of the song are known.
+    private func richestNotesStem(_ stems: [Stem], in region: ClosedRange<Double>?) -> Stem? {
+        guard let waveform = model.wave.waveform else { return nil }
+        let sounds = stems.compactMap { stem in
+            waveform.sound(of: stem, from: region?.lowerBound ?? 0, to: region?.upperBound).map { (stem, $0) }
+        }
+        guard let richest = sounds.max(by: { $0.1 < $1.1 }), richest.1 > 0 else { return nil }
+        log("notes: \(richest.0.name) sounds the most" + (region == nil ? "" : " in the region loop") + ": "
+            + sounds.sorted { $0.1 > $1.1 }.map { "\($0.0.name) \($0.1)" }.joined(separator: ", "))
+        return richest.0
     }
 
     /// The region loop that T offers to transcribe in place of the whole song, and picks first: both of its ends are
