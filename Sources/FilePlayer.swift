@@ -940,7 +940,9 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
 }
 
 /// The songs that links were downloaded into, in `~/Library/Caches/Muskey/Links`, so a link opened again plays at
-/// once. The oldest songs go once the folder holds more than 2 GB.
+/// once. The songs opened longest ago go once the folder holds more than 2 GB. When a song was opened is its file's
+/// access date: the stems, the waveform and the notes of a song are cached under its file's modification date, which
+/// has to stay the date of the download.
 final class LinkCache {
     let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "Muskey/Links")
     private var index: URL { folder.appending(path: "links.json") }
@@ -956,7 +958,10 @@ final class LinkCache {
     func song(for url: URL) -> FilePlayer.Song? {
         guard let song = Self.queue.sync(execute: load)[url.absoluteString], FileManager.default.fileExists(atPath: song.path) else { return nil }
         // Opened again, so it is the newest for the limit.
-        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: song.path)
+        var values = URLResourceValues()
+        values.contentAccessDate = Date()
+        var file = URL(fileURLWithPath: song.path)
+        try? file.setResourceValues(values)
         return song
     }
 
@@ -969,7 +974,7 @@ final class LinkCache {
     func recent(_ limit: Int) -> [(link: URL, song: FilePlayer.Song)] {
         Self.queue.sync(execute: load).compactMap { key, song -> (URL, FilePlayer.Song, Date)? in
             guard let link = URL(string: key),
-                  let date = try? URL(fileURLWithPath: song.path).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                  let date = try? URL(fileURLWithPath: song.path).resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate
             else { return nil }
             return (link, song, date)
         }
@@ -994,11 +999,11 @@ final class LinkCache {
 
     /// Deletes the songs that weren't opened for `age`, except the ones at `kept`, and forgets their links.
     func sweep(olderThan age: TimeInterval, keeping kept: Set<String>) -> Int {
-        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentAccessDateKey])) ?? []
         let deadline = Date().addingTimeInterval(-age)
         var removed = 0
         for file in files where file.lastPathComponent != "links.json" && !kept.contains(file.path) {
-            guard let date = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date < deadline else { continue }
+            guard let date = try? file.resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate, date < deadline else { continue }
             if (try? FileManager.default.removeItem(at: file)) != nil { removed += 1 }
         }
         guard removed > 0 else { return 0 }
@@ -1010,11 +1015,11 @@ final class LinkCache {
     }
 
     private func trim(_ songs: inout [String: FilePlayer.Song]) {
-        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentAccessDateKey]
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys)) ?? []
         let sized = files.filter { $0.lastPathComponent != "links.json" }.compactMap { file -> (URL, Int, Date)? in
             guard let values = try? file.resourceValues(forKeys: Set(keys)) else { return nil }
-            return (file, values.fileSize ?? 0, values.contentModificationDate ?? .distantPast)
+            return (file, values.fileSize ?? 0, values.contentAccessDate ?? .distantPast)
         }.sorted { $0.2 < $1.2 }
         var total = sized.reduce(0) { $0 + $1.1 }
         for (file, size, _) in sized where total > Self.limit {
