@@ -95,7 +95,8 @@ enum SaveFormat: String, CaseIterable {
 
     var type: UTType {
         switch self {
-        case .m4a: .mpeg4Audio
+        // MPEG-4 audio's extension is mp4, so the save panel gave a typed name .mp4.
+        case .m4a: UTType("com.apple.m4a-audio") ?? UTType(filenameExtension: "m4a", conformingTo: .audio) ?? .mpeg4Audio
         case .mp3: .mp3
         case .wav: .wav
         }

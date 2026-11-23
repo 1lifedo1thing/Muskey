@@ -4116,8 +4116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.prompt = "Add to Queue"
-        guard inFront({ panel.runModal() }) == .OK else { return }
-        add(panel.urls, next: false)
+        showInFront(panel) { [weak self] chosen in
+            if chosen { self?.add(panel.urls, next: false) }
+        }
     }
 
     @objc private func addLocation() {
@@ -4446,8 +4447,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.allowedContentTypes = [.audio, .movie]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        guard inFront({ panel.runModal() }) == .OK else { return }
-        open(panel.urls)
+        showInFront(panel) { [weak self] chosen in
+            if chosen { self?.open(panel.urls) }
+        }
     }
 
     /// A link to a song or a video, or the path of a file, in a glass bar like the HUD's.
@@ -4457,27 +4459,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         locationPanel.show()
     }
 
-    /// Runs a dialog in front of the app that is active, with the keyboard on the dialog. macOS brings only a regular
-    /// app to the front, so Muskey shows in the Dock while the dialog is open, as it does for Settings.
+    /// The open or save panel on screen, which a second Save Song or Open File brings to the front instead of opening
+    /// another.
+    private var shownPanel: NSSavePanel?
+
+    /// Shows an open or save panel in front of the app that is active, with the keyboard on the panel. macOS brings
+    /// only a regular app to the front, so Muskey shows in the Dock while the panel is open, as it does for Settings.
     /// The app that was in front gets the keyboard back afterwards, as when the HUD closes.
-    private func inFront<T>(_ run: () -> T) -> T {
+    ///
+    /// The panel isn't modal: while `runModal` runs a save panel, the main queue runs almost nothing, so Muskey
+    /// Player's moves never reached the stems from the cache. A region loop that went back to its start then
+    /// lost the song, and the stems were separated as it played again.
+    private func showInFront(_ panel: NSSavePanel, then done: @escaping (Bool) -> Void) {
+        if let shownPanel { return shownPanel.makeKeyAndOrderFront(nil) }
         let accessory = NSApp.activationPolicy() == .accessory
         if accessory { NSApp.setActivationPolicy(.regular) }
         NSApp.takeFocus()
-        // The HUD, karaoke's blur and the activity pill sit at the status bar's level, above a modal dialog, which
-        // macOS keeps at its own level: the HUD hid half of the save panel and took the clicks meant for its Format
-        // picker. They go below the dialog while it is open.
+        // The HUD, karaoke's blur and the activity pill sit at the status bar's level, above the panel: the HUD hid
+        // half of the save panel and took the clicks meant for its Format picker. They go below the panel while it is
+        // open, and the panel goes above the floating level that they take meanwhile.
         let raised = NSApp.windows.filter { $0.isVisible && $0.level == .statusBar }
         raised.forEach { $0.level = .floating }
+        panel.level = .modalPanel
         dialogOpen = true
-        let result = run()
-        dialogOpen = false
-        raised.forEach { $0.level = .statusBar }
-        if accessory, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
-            NSApp.setActivationPolicy(.accessory)
-            if let lastOtherApp, lastOtherApp != .current { frontAfterClose(lastOtherApp) }
+        shownPanel = panel
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            shownPanel = nil
+            dialogOpen = false
+            raised.forEach { $0.level = .statusBar }
+            if accessory, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
+                NSApp.setActivationPolicy(.accessory)
+                if let lastOtherApp, lastOtherApp != .current { frontAfterClose(lastOtherApp) }
+            }
+            done(response == .OK)
         }
-        return result
     }
 
     /// ⌘V over the HUD: plays the files or the link on the clipboard. Returns false when the clipboard holds neither.
@@ -5366,8 +5382,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let track = nowPlaying.track
         let tags = SongTags(title: track?.title ?? filePlayer.current?.title, artist: track?.artist, album: track?.album,
                             cover: SongTags.jpeg(nowPlaying.artwork))
-        guard let (url, format) = askWhereToSave(fileName(name, changes), caveat: caveat) else { return log("save: cancelled") }
-        startSave(SaveJob(name: name, source: source, changes: changes, url: url, format: format, tags: tags))
+        askWhereToSave(fileName(name, changes), caveat: caveat) { [weak self] url, format in
+            guard let self else { return }
+            guard let url, let format else { return log("save: cancelled") }
+            guard saveJob == nil else { return log("save: a song is being saved already") }
+            startSave(SaveJob(name: name, source: source, changes: changes, url: url, format: format, tags: tags))
+        }
     }
 
     /// `1:02` for a moment of a song, in the name of a saved region.
@@ -5397,7 +5417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return parts.isEmpty ? name : "\(name) (\(parts.joined(separator: ", ")))"
     }
 
-    private func askWhereToSave(_ name: String, caveat: String?) -> (URL, SaveFormat)? {
+    private func askWhereToSave(_ name: String, caveat: String?, then done: @escaping (URL?, SaveFormat?) -> Void) {
         let panel = NSSavePanel()
         panel.title = "Save Song"
         panel.canCreateDirectories = true
@@ -5422,9 +5442,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             RunLoop.main.add(timer, forMode: .common)
         }
-        guard inFront({ panel.runModal() }) == .OK, let url = panel.url else { return nil }
-        prefs.saveFormat = format
-        return (url, format)
+        showInFront(panel) { [weak self] saved in
+            guard saved, let url = panel.url else { return done(nil, nil) }
+            self?.prefs.saveFormat = format
+            done(url, format)
+        }
     }
 
     private func retrySave() {
