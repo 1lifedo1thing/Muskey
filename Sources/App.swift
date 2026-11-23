@@ -2754,7 +2754,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Right after the hotkey, the HUD is the key window without the pointer over it, and the hover keys aren't
         // registered: ↑, ↓ and Return reach the recents from the panel's own key events.
         recentsKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === panel, model.recentsFlipped, model.opening == nil,
+            if let self, Self.logKeys, model.recentsFlipped {
+                log("recents: key \(event.keyCode) in \(event.window === panel ? "the HUD" : event.window == nil ? "no window" : "another window")")
+            }
+            guard let self, event.window == nil || event.window === panel, model.recentsFlipped, model.opening == nil,
                   event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
                   [kVK_UpArrow, kVK_DownArrow, kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode))
             else { return event }
@@ -5121,6 +5124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.recentsSelection = model.recents.first?.id
             model.recentsShown = true
             log("recents shown: \(model.recents.count) song\(model.recents.count == 1 ? "" : "s")")
+            if Self.logKeys {
+                log("recents: the HUD \(panel.isKeyWindow ? "has" : "doesn't have") the keyboard, \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nothing") is in front")
+            }
         }
     }
 
