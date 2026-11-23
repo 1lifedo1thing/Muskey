@@ -1188,7 +1188,19 @@ final class HUDPanel: NSPanel {
     /// Only while a key is being picked, so Esc and the arrow keys reach the HUD. The panel is non-activating,
     /// so the app in front stays in front.
     private var takesKeyboard = false
-    override var canBecomeKey: Bool { takesKeyboard }
+    override var canBecomeKey: Bool { takesKeyboard || holdsFront }
+    /// While the pointer over the HUD keeps Muskey the active app with another window of Muskey open, the panel is its
+    /// key and main window, since an app that becomes active brings its key and main windows in front: Settings or the
+    /// notes window came up over the app that was in front.
+    var holdsFront = false
+    override var canBecomeMain: Bool { holdsFront }
+
+    /// A key typed while the panel holds the front only for the pointer was meant for the app that was in front, and
+    /// makes no sound.
+    override func noResponder(for eventSelector: Selector) {
+        if holdsFront, !takesKeyboard, eventSelector == #selector(NSResponder.keyDown(with:)) { return }
+        super.noResponder(for: eventSelector)
+    }
     private let model: HUDModel
 
     init(model: HUDModel) {
@@ -1511,6 +1523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.pointerMoved = { [weak self] in
             self?.checkClipboard()
             self?.followPointer()
+            self?.hoverFocus(moved: true)
         }
         return panel
     }()
@@ -2289,9 +2302,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let keyLookup = KeyLookup()
     private var keyMonitor: Any?
     private var magnifyMonitor: Any?
-    /// Sees the pinches while the HUD shows, whichever app they go to.
-    private var pinchTap: CFMachPort?
-    private var pinchTapSource: CFRunLoopSource?
     /// Gets keyboard focus back when the key picker closes, if a click on the HUD made Muskey the active app.
     private var lastOtherApp = NSWorkspace.shared.frontmostApplication
     private var signalSources: [DispatchSourceSignal] = []
@@ -2600,11 +2610,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateHoverKeys()
             self?.updateKeysActive()
             self?.warmUpStems()
+            self?.hoverFocus(moved: false)
         }
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
             NotificationCenter.default.addObserver(forName: name, object: panel, queue: .main) { [weak self] _ in
                 self?.updateKeysActive()
             }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
+            self?.keepPickerKeyboard()
         }
         statusItem.onFindKey = { [weak self] in
             if self?.state == .idle { self?.start() }
@@ -2710,12 +2724,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if scrollOverStillBar { return nil }
             return adjust(event) || swipe(event) ? nil : event
         }
-        // A pinch reaches this monitor only while Muskey is the active app, and without the HUD's window: trackpad
-        // gestures go to the key window of the active app, and the HUD never activates Muskey. The event tap of
-        // `watchPinch` sees every pinch, so this monitor only zooms when the tap couldn't be created.
+        // A pinch reaches this monitor only while Muskey is the active app, since macOS sends trackpad gestures to the
+        // active app alone. Muskey becomes the active app while the pointer is over the HUD (`hoverFocus`).
         magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
-            guard let self, pinchTap == nil else { return event }
-            return pinch(event, global: false) ? nil : event
+            guard let self else { return event }
+            return pinch(event) ? nil : event
         }
         nowPlaying.log = { [weak self] in self?.log($0) }
         nowPlaying.heard = { [weak self] report in self?.slow.heard(report) ?? report }
@@ -2807,7 +2820,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.syncPauseStop() }
             self?.updateWatching(shown: shown)
             self?.watchOption(shown)
-            self?.watchPinch(shown)
+            if !shown { DispatchQueue.main.async { self?.hoverFocus(moved: false) } }
             self?.updateLyricsClock(shown: shown)
             self?.updateStemMeters(shown: shown)
             self?.prepareStemModel(shown: shown)
@@ -3191,6 +3204,135 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard model.hovering != on else { return }
         if Self.logKeys { log("hover \(on ? "started" : "ended") with a move of the pointer") }
         model.hovering = on
+    }
+
+    // MARK: Focus over the HUD
+
+    /// The app that was in front when the pointer came over the HUD and made Muskey the active app. macOS sends
+    /// trackpad gestures like a pinch only to the active app, so the waveform zooms with a pinch only while Muskey is
+    /// active. That app gets the front back when the pointer leaves the HUD.
+    private var focusReturn: NSRunningApplication?
+    private var focusWork: DispatchWorkItem?
+    /// The pointer came over the glass with a move, and nothing covers the glass under it, as `hoverFocus` saw last.
+    private var pointerOverHUD = false
+    /// The key picker takes the keyboard back from the app that got the front back, until then.
+    private var pickerKeyboardUntil: Date?
+    /// The last window logged above the glass, so a pointer that moves over it logs it once.
+    private var coverLogged = 0
+
+    /// Makes Muskey the active app a moment after the pointer comes over the HUD, and gives the front back to the app
+    /// that had it a moment after the pointer leaves. A pointer that crosses the HUD on its way elsewhere, or a hover
+    /// that ends for an instant while the layout changes, leaves the front where it is.
+    private func hoverFocus(moved: Bool) {
+        let over: Bool
+        if !model.shown || !panel.pointerOnGlass {
+            over = false
+        } else if pointerOverHUD {
+            over = true
+        } else {
+            // A menu or another window above the glass gets the pointer, and a glass that appears or grows under a
+            // pointer that rests there leaves the app in front alone until the pointer moves, since that app is
+            // likely the one being typed in.
+            // The window server can still let the pointer through the panel for an instant after it starts taking the
+            // mouse, and then names a window below it, which doesn't count.
+            let hit = moved ? NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) : panel.windowNumber
+            let cover = hit == panel.windowNumber ? nil : Self.otherAppWindow(hit).flatMap { $0.layer >= panel.level.rawValue ? $0 : nil }
+            over = moved && cover == nil
+            if let cover, Self.logKeys, hit != coverLogged {
+                coverLogged = hit
+                log("focus: a window of \(cover.owner) at level \(cover.layer) is above the glass under the pointer")
+            }
+        }
+        guard over != pointerOverHUD else { return }
+        pointerOverHUD = over
+        focusWork?.cancel()
+        focusWork = nil
+        if over {
+            guard focusReturn == nil else { return }
+            let work = DispatchWorkItem { [weak self] in self?.takeFront() }
+            focusWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+        } else if focusReturn != nil {
+            let work = DispatchWorkItem { [weak self] in self?.giveFrontBack() }
+            focusWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + (model.shown ? 0.15 : 0), execute: work)
+        }
+    }
+
+    private func takeFront() {
+        focusWork = nil
+        // A drag that comes over the HUD, like a file on its way to be dropped, keeps going in the app it started in.
+        // Muskey counts as active while the key picker holds the keyboard with another app in front, so the app in
+        // front decides.
+        guard pointerOverHUD, !dialogOpen, NSApp.modalWindow == nil, NSEvent.pressedMouseButtons == 0,
+              let front = NSWorkspace.shared.frontmostApplication, front != .current
+        else { return }
+        focusReturn = front
+        if NSApp.windows.contains(where: { $0 !== panel && $0.isVisible && $0.styleMask.contains(.titled) }) {
+            panel.holdsFront = true
+            panel.makeKey()
+            panel.makeMain()
+        }
+        NSApp.takeFocus()
+        log("focus: Muskey is the active app while the pointer is over the HUD, in place of \(Self.appName(front))")
+        logFront()
+    }
+
+    private func giveFrontBack() {
+        focusWork = nil
+        guard let app = focusReturn else { return }
+        // A loop time being typed keeps the keyboard, and the front goes back once the field closes.
+        if loopTyping { return }
+        focusReturn = nil
+        panel.holdsFront = false
+        guard NSWorkspace.shared.frontmostApplication == .current else {
+            return log("focus: another app became active while the pointer was over the HUD")
+        }
+        // A window of Muskey that took the keyboard while the pointer was over the HUD keeps the front: Settings, the
+        // notes window, Open URL, a dialog.
+        if let key = NSApp.keyWindow, key !== panel { return log("focus: \(key.title.isEmpty ? "another window" : key.title) keeps Muskey in front") }
+        guard NSApp.modalWindow == nil, !dialogOpen, !app.isTerminated else { return }
+        pickerKeyboardUntil = model.picking ? Date().addingTimeInterval(1) : nil
+        NSApp.yieldActivation(to: app)
+        app.activate()
+        log("focus: \(Self.appName(app)) is the active app again, the pointer left the HUD")
+        logFront()
+    }
+
+    /// With `--log-keys`, the app in front and the window with the keyboard, a moment after the front changed hands.
+    private func logFront() {
+        guard Self.logKeys else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            let front = NSWorkspace.shared.frontmostApplication.map(Self.appName) ?? "no app"
+            let keyboard = panel.isKeyWindow ? "the HUD" : NSApp.keyWindow.map { $0.title.isEmpty ? "\(type(of: $0))" : $0.title } ?? "no window of Muskey"
+            log("focus: \(front) is in front, \(keyboard) has the keyboard")
+        }
+    }
+
+    /// The key picker holds the keyboard while another app is in front, as it did before the pointer came over the
+    /// HUD, so Escape and the arrow keys still reach it after the front goes back.
+    private func keepPickerKeyboard() {
+        guard let until = pickerKeyboardUntil else { return }
+        pickerKeyboardUntil = nil
+        guard Date() < until, model.picking, panel.isVisible else { return }
+        // After the other app's window took the keyboard, which happens once Muskey stopped being active.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, model.picking, panel.isVisible, !panel.isKeyWindow else { return }
+            panel.makeKey()
+        }
+    }
+
+    private static func appName(_ app: NSRunningApplication) -> String {
+        app.localizedName ?? app.bundleIdentifier ?? "another app"
+    }
+
+    /// The owner and the level of a window of another app.
+    private static func otherAppWindow(_ number: Int) -> (owner: String, layer: Int)? {
+        guard number > 0, NSApp.window(withWindowNumber: number) == nil,
+              let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(number)) as? [[String: Any]])?.first
+        else { return nil }
+        return (info[kCGWindowOwnerName as String] as? String ?? "another app", info[kCGWindowLayer as String] as? Int ?? 0)
     }
 
     /// A layout that changes under a pointer that stays still can end SwiftUI's hover, which turns the keys over the
@@ -6064,6 +6206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.setInteraction(clickable: true, keyboard: true)
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKey()
+        } else if !pointerOverHUD, focusReturn != nil {
+            giveFrontBack()
         }
         updateHoverKeys()
     }
@@ -6285,47 +6429,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return model.scroll.frames.values.contains { $0.region == .waveform && $0.frame.contains(point) }
     }
 
-    /// While the HUD shows, a listen-only event tap sees the pinches, which go to the key window of the active app and
-    /// reach neither the HUD nor a global monitor (none logged on a real trackpad). It can't keep a pinch from the app in
-    /// front, which may zoom too. Gesture events are type 29, and the pinches among them convert to `.magnify`.
-    private func watchPinch(_ shown: Bool) {
-        if shown, pinchTap == nil {
-            let mask: CGEventMask = (1 << 29) | (1 << 30)
-            let callback: CGEventTapCallBack = { _, type, event, info in
-                guard let info else { return Unmanaged.passUnretained(event) }
-                let app = Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue()
-                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    if let tap = app.pinchTap { CGEvent.tapEnable(tap: tap, enable: true) }
-                } else if let pinch = NSEvent(cgEvent: event), pinch.type == .magnify {
-                    _ = app.pinch(pinch, global: true)
-                }
-                return Unmanaged.passUnretained(event)
-            }
-            guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap, options: .listenOnly, eventsOfInterest: mask,
-                                              callback: callback, userInfo: Unmanaged.passUnretained(self).toOpaque())
-            else { return log("pinch: the event tap couldn't be created, so only a pinch while Muskey is active zooms") }
-            let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
-            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-            pinchTap = tap
-            pinchTapSource = source
-        } else if !shown, let tap = pinchTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            if let source = pinchTapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
-            CFMachPortInvalidate(tap)
-            pinchTap = nil
-            pinchTapSource = nil
-        }
-    }
-
-    /// A pinch with the pointer over the waveform zooms it. The pointer comes from the screen, since a pinch that goes
-    /// to another app has no window of Muskey's. Returns true when the waveform zoomed.
-    private func pinch(_ event: NSEvent, global: Bool) -> Bool {
-        let point = NSEvent.mouseLocation
-        let over = model.shown && overWaveform(screen: point)
-        // Every pinch that begins over the HUD is logged, with the monitor that saw it.
-        if event.phase == .began, global ? panel.isVisible && panel.frame.contains(point) : true {
-            log("pinch began, seen \(global ? "by the event tap" : "by Muskey"), " + (over ? "over the waveform" : "away from the waveform"))
-        }
+    /// A pinch with the pointer over the waveform zooms it. Returns true when the waveform zoomed.
+    private func pinch(_ event: NSEvent) -> Bool {
+        let over = model.shown && overWaveform(screen: NSEvent.mouseLocation)
+        if event.phase == .began { log("pinch began " + (over ? "over the waveform" : "away from the waveform")) }
         guard over else { return false }
         zoomWaveform(1 + Double(event.magnification))
         return true
