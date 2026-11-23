@@ -1399,8 +1399,9 @@ private struct NotesStatusBar: View {
             // A narrow window keeps the hints that it has room for, and the state of the song always.
             ViewThatFits(in: .horizontal) {
                 if model.view == .tab, model.hasTab {
-                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["⌥", "↑", "↓"], "capo"), (["esc"], "close")])
+                    hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇧", "R"], "loop song"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["⌥", "↑", "↓"], "capo"), (["esc"], "close")])
                 }
+                hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇧", "R"], "loop song"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["esc"], "close")])
                 hints([(["space"], "play or pause"), (["R"], "region loop"), (["⇥"], "view"), (["←", "→"], "page"), (["↑", "↓"], "transpose"), (["esc"], "close")])
                 hints([(["space"], "play or pause"), (["R"], "region loop"), (["←", "→"], "page"), (["↑", "↓"], "transpose")])
                 hints([(["space"], "play or pause"), (["R"], "region loop"), (["↑", "↓"], "transpose")])
@@ -1768,29 +1769,40 @@ private struct NotesPageView: View {
         }
     }
 
-    /// The region loop on the lines of one half of a page, in the coordinates of that half.
+    /// The region loop on the lines of one half of a page, in the coordinates of that half. A loop that R started and
+    /// hasn't ended yet grows from its start to the place that plays, as the song plays.
     @ViewBuilder private func region(_ painter: NotesPainter, page: Int, top: Bool) -> some View {
-        let beats = model.score.beats
-        // A drag shows the region from the point where it started to the pointer. Once released, the region widens to
-        // the notes that it cuts, which the edges slide to.
-        let loop: (Double, Double)? = drag.map { (min($0.from, $0.to), max($0.from, $0.to)) }
-            ?? model.loop.flatMap { loop in loop.end.map { (Score.position(of: loop.start, in: beats), Score.position(of: $0, in: beats)) } }
-        if let (start, end) = loop {
-            let honey = NotesAccent.color(colorScheme)
-            let rects = painter.region(from: start, to: end, page: page, rows: painter.layout.rows(top: top))
-            let dy = top ? 0 : painter.layout.middle
-            ZStack(alignment: .topLeading) {
-                ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(honey.opacity(0.16))
-                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(honey.opacity(0.55), lineWidth: 1))
-                        .frame(width: rect.width, height: rect.height)
-                        .offset(x: rect.minX, y: rect.minY - dy)
-                }
+        if drag == nil, let loop = model.loop, loop.end == nil {
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !model.playing)) { _ in
+                let now = model.now() ?? loop.start
+                regionRects(painter, page: page, top: top, from: Score.position(of: loop.start, in: model.score.beats),
+                            to: Score.position(of: max(now, loop.start), in: model.score.beats), animated: false)
             }
-            .allowsHitTesting(false)
-            .animation(drag == nil ? .easeOut(duration: 0.18) : nil, value: [start, end])
+        } else {
+            let beats = model.score.beats
+            // A drag shows the region from the point where it started to the pointer. Once released, the region widens
+            // to the notes that it cuts, which the edges slide to.
+            let loop: (Double, Double)? = drag.map { (min($0.from, $0.to), max($0.from, $0.to)) }
+                ?? model.loop.flatMap { loop in loop.end.map { (Score.position(of: loop.start, in: beats), Score.position(of: $0, in: beats)) } }
+            if let (start, end) = loop { regionRects(painter, page: page, top: top, from: start, to: end, animated: drag == nil) }
         }
+    }
+
+    private func regionRects(_ painter: NotesPainter, page: Int, top: Bool, from start: Double, to end: Double, animated: Bool) -> some View {
+        let honey = NotesAccent.color(colorScheme)
+        let rects = painter.region(from: start, to: end, page: page, rows: painter.layout.rows(top: top))
+        let dy = top ? 0 : painter.layout.middle
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(honey.opacity(0.16))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(honey.opacity(0.55), lineWidth: 1))
+                    .frame(width: rect.width, height: rect.height)
+                    .offset(x: rect.minX, y: rect.minY - dy)
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(animated ? .easeOut(duration: 0.18) : nil, value: [start, end])
     }
 
     /// A click moves the song to the place under the pointer, where the faint line over the notes shows it, and a drag
@@ -2349,6 +2361,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     var onClosed: () -> Void = {}
     /// R and ⌥R, which start, end and clear the region loop as over the HUD.
     var onLoopKey: (Bool) -> Void = { _ in }
+    /// ⇧R, which loops the whole song as over the HUD.
+    var onSongLoopKey: () -> Void = {}
     var log: (String) -> Void = { _ in }
 
     var isShown: Bool { window?.isVisible == true }
@@ -2433,7 +2447,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         case kVK_Escape: close()
         case kVK_Return where model.phase == .quiet, kVK_ANSI_KeypadEnter where model.phase == .quiet: model.onTranscribeAnyway()
         case kVK_Space: model.onPlayPause()
-        case kVK_ANSI_R: onLoopKey(!flags.contains(.option))
+        case kVK_ANSI_R: flags.contains(.shift) ? onSongLoopKey() : onLoopKey(!flags.contains(.option))
         case kVK_Tab:
             let all = NotesView.allCases
             let index = all.firstIndex(of: model.view) ?? 0
@@ -2771,8 +2785,9 @@ extension NotesModel {
         model.speed = speed
         model.speedAdjustable = true
     }
-    if let loop = TestFlags.value("--notes-loop")?.split(separator: "-").compactMap({ Double($0) }), loop.count == 2 {
-        model.loop = LoopRegion(start: loop[0], end: loop[1], startPress: nil)
+    // `--notes-loop A-` sets a loop that R started at A and hasn't ended, which grows to `--notes-at`.
+    if let loop = TestFlags.value("--notes-loop")?.split(separator: "-").compactMap({ Double($0) }), (1 ... 2).contains(loop.count) {
+        model.loop = LoopRegion(start: loop[0], end: loop.count == 2 ? loop[1] : nil, startPress: nil)
     }
     // `--notes-loop-beats A-B` sets the loop that a drag from beat A to beat B sets, widened to the notes it would cut.
     if let beats = TestFlags.value("--notes-loop-beats")?.split(separator: "-").compactMap({ Double($0) }), beats.count == 2 {

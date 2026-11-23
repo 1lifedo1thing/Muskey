@@ -3752,6 +3752,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         notes.onTurnPage = { [weak self] in self?.notesWindow.turnPage() }
         notesWindow.onLoopKey = { [weak self] snapping in self?.pressLoop(snapping: snapping) }
+        notesWindow.onSongLoopKey = { [weak self] in self?.toggleSongLoop() }
         notesWindow.log = { [weak self] in self?.log($0) }
         notesWindow.onClosed = { [weak self] in self?.notesClosed() }
         notesSinks = []
@@ -4214,7 +4215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if model.seekable || model.loop != nil {
             let title = model.loop == nil ? "Start Region Loop" : model.loop?.end == nil ? "End Region Loop" : "Clear Region Loop"
-            item(title, #selector(loopFromMenu), key: "r")
+            item(title, #selector(loopFromMenu), key: "r", enabled: model.loop != nil || model.playing)
             item("Loop Song", #selector(songLoopFromMenu), key: "r", modifiers: .shift, on: model.loop?.coversSong(nowPlaying.track?.duration) == true)
         }
         if keyed, model.waveformShown, model.waveformStyle == .ribbon, model.wave.waveform != nil {
@@ -6205,6 +6206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if snapping, lines == nil, let score = loopNotes { snapToNotes(.end, at: end, in: score) }
             else if snapping, lines == nil { snap(.end, at: end) } else { applyLoop() }
         } else {
+            // A loop started on a paused song would end a quarter of a second later, at the next R.
+            guard playGuess?.playing ?? track.playing else { return log("region loop: the song is paused, so R starts no loop") }
             var start = now
             if let lines, let line = model.lyricLine, lines.indices.contains(line) { start = lines[line].time }
             model.loop = LoopRegion(start: start, end: nil, startPress: now)
