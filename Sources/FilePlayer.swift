@@ -78,6 +78,8 @@ final class FilePlayer {
     var onChange: () -> Void = {}
     /// Muskey Player moved its song to a place, in seconds, for any move. Now Playing reports some of them seconds later.
     var onMove: (Double) -> Void = { _ in }
+    /// Where Muskey Player's song was at a Unix time, and the rate it moves at, with every report it makes.
+    var onClock: (_ elapsed: Double, _ at: Double, _ rate: Double) -> Void = { _, _, _ in }
     /// Another file, or the same one again, took the place of the song that played: it starts over, without the region
     /// loop, which Muskey Player drops when it opens a file.
     var onReplace: () -> Void = {}
@@ -500,6 +502,9 @@ final class FilePlayer {
             skip(1)
         } else if line.hasPrefix("moved "), let seconds = Double(line.dropFirst(6)) {
             onMove(seconds)
+        } else if line.hasPrefix("at ") {
+            let values = line.dropFirst(3).split(separator: " ").compactMap { Double($0) }
+            if values.count == 3 { onClock(values[0], values[1], values[2]) }
         } else if line == "next" || line == "previous" {
             log("\(line) song in Muskey Player")
             skip(line == "next" ? 1 : -1)

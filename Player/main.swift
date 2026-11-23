@@ -16,6 +16,9 @@
 //   ended             the song played to its end
 //   moved <seconds>   the song moved to that place, for any move: Muskey's, Control Center's scrubber, Previous that
 //                     starts the song over, or play at the end. Now Playing reports some of these seconds later.
+//   at <seconds> <time> <rate>   with every report to Now Playing: the song was at that place at that Unix time and
+//                     moves on at that rate. Now Playing stamps a report when it gets to it, about half a second later,
+//                     so Muskey takes the song's place from these lines.
 //   next, previous    the next or previous track command came, from the media keys, Control Center or Muskey's HUD;
 //                     Muskey keeps the songs, so it opens the other one. Previous more than 3 seconds into a song
 //                     starts it over, as music apps do, and says nothing.
@@ -240,6 +243,9 @@ final class Player: NSObject, NSApplicationDelegate {
             guard let self, let start = loopStart else { return }
             seek(to: start)
         }
+        // A snap can move the end a moment past the press, which the song can reach before the loop arrives here. The
+        // boundary never fires for a time that already passed, and the song played on past the loop.
+        if player.currentTime().seconds >= ends[1] { seek(to: ends[0]) }
     }
 
     private func setSpeed(_ rate: Float) {
@@ -277,7 +283,9 @@ final class Player: NSObject, NSApplicationDelegate {
         guard !info.isEmpty else { return }
         let center = MPNowPlayingInfoCenter.default()
         var info = info
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position ?? player.currentTime().seconds
+        let elapsed = position ?? player.currentTime().seconds
+        say(String(format: "at %.4f %.4f %.3f", elapsed, Date().timeIntervalSince1970, Double(player.rate)))
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPNowPlayingInfoPropertyPlaybackRate] = Double(player.rate)
         info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = Double(speed)
         center.nowPlayingInfo = info

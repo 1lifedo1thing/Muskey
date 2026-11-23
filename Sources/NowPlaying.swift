@@ -225,7 +225,7 @@ final class NowPlaying {
         reported = nil
         track = nil
         player = nil
-        move = nil
+        clock = nil
         artwork = nil
         playerArtwork = nil
         onTrack()
@@ -273,14 +273,24 @@ final class NowPlaying {
         return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
     }
 
-    /// The time of Muskey Player's last move, which the track keeps until Now Playing reports a later one. Now Playing
-    /// ignores a report whose elapsed time is the one it already holds, which a region loop sends on every pass, and
-    /// the song then seemed to play on past the loop.
-    private var move: (elapsed: Double, at: Double, bundleID: String)?
+    /// Muskey Player's own clock: where its song was at a time, and the rate it moves at, from its `moved` and `at`
+    /// lines. The track takes the song's place from it instead of from Now Playing, which ignores a report whose elapsed
+    /// time is the one it already holds (a region loop's start on every pass) and stamps the others when it gets to
+    /// them, about half a second late, which set the line of the notes back that far after every loop pass.
+    private var clock: (elapsed: Double, at: Double, rate: Double?, bundleID: String)?
 
     /// Muskey Player moved its song to `seconds`, which the track shows at once.
     func moved(to seconds: Double, bundleID: String) {
-        move = (seconds, Date().timeIntervalSince1970, bundleID)
+        clock = (seconds, Date().timeIntervalSince1970, clock?.bundleID == bundleID ? clock?.rate : nil, bundleID)
+        guard let player, player.bundleID == bundleID else { return }
+        update(player, cover: nil)
+    }
+
+    /// Muskey Player reported where its song was at `at`, moving on at `rate`.
+    func clock(elapsed: Double, at: Double, rate: Double, bundleID: String) {
+        // A move that came after this report is newer.
+        if let clock, clock.bundleID == bundleID, clock.at > at { return }
+        clock = (elapsed, at, rate, bundleID)
         guard let player, player.bundleID == bundleID else { return }
         update(player, cover: nil)
     }
@@ -295,15 +305,12 @@ final class NowPlaying {
             let now = Date().timeIntervalSince1970
             log(String(format: "report: elapsed %.3f, stamped %.3f s ago, rate %.2f, gives %.3f%@", track.elapsed ?? -1, now - (track.timestamp ?? now),
                        track.rate ?? 0, track.position(at: Date()) ?? -1,
-                       move.map { String(format: ", move to %.3f %.3f s ago", $0.elapsed, now - $0.at) } ?? ""))
+                       clock.map { String(format: ", clock %.3f %.3f s ago", $0.elapsed, now - $0.at) } ?? ""))
         }
-        if let move {
-            if track.bundleID == move.bundleID, (track.timestamp ?? 0) < move.at {
-                track.elapsed = move.elapsed
-                track.timestamp = move.at
-            } else {
-                self.move = nil
-            }
+        if let clock, track.bundleID == clock.bundleID {
+            track.elapsed = clock.elapsed
+            track.timestamp = clock.at
+            if let rate = clock.rate { track.rate = rate }
         }
         if let cover {
             playerArtwork = cover

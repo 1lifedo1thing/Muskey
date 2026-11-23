@@ -2671,6 +2671,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.syncWaveform()
         }
         filePlayer.onMove = { [weak self] in self?.playerMoved(to: $0) }
+        filePlayer.onClock = { [weak self] elapsed, at, rate in
+            self?.nowPlaying.clock(elapsed: elapsed, at: at, rate: rate, bundleID: FilePlayer.bundleID)
+        }
         // Muskey Player drops its loop when it opens a file, while the same song in another file stays the same song.
         filePlayer.onReplace = { [weak self] in self?.clearLoop() }
         stemsCache.log = { [weak self] in self?.log($0) }
