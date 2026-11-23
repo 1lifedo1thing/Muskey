@@ -1,3 +1,48 @@
+# 1.2.1
+
+**[Download Muskey 1.2.1 →](https://files.lowtechguys.com/releases/Muskey-1.2.1.dmg)**
+## Features
+
+- **Recents** on the back of the record when nothing plays
+    > Pick a song with `↑` `↓` and `Return`
+
+![Recents](https://files.lowtechguys.com/changelog/muskey/1.2.1-recents.png)
+
+- **Open folders** from *Open File*, *Add Files to Queue*, a drop or a paste
+
+- **Loop the whole song** with `⇧R`
+
+- **On the record** layout for the mini player, with the song's title, artist and album drawn on the record
+
+![On the record layout](https://files.lowtechguys.com/changelog/muskey/1.2.1-mini-on-record.png)
+
+## Fixes
+
+- Fix the notes line falling half a second behind the song after every loop pass
+- Fix the song sometimes playing past a region loop that was just set
+- Fix a seek or a pause in Spotify sometimes clearing the region loop or changing the key
+- Fix the instruments of a song from a link being separated again every time the link opens
+- Fix region loops breaking while the save or open panel is open
+- Make sure saved M4A files get the `.m4a` extension when a name is typed without one
+- Fix the Settings window staying in window switchers after it was closed
+
+## Improvements
+
+- New keys over the waveform:
+    > Seek 5 seconds with `←` `→`
+    >
+    > Go to the start of the region loop with `0`
+    >
+    > Go to a numbered bar of the zoomed waveform with `1` to `9`
+- Pinch over the waveform zooms it while another app is in front
+- **Transcribe notes** works on the region loop when one is set
+- The *Transcribe notes* picker starts on the instrument that plays the most
+- The key and the tempo in the notes window's status bar can be changed with a click or a scroll
+- **Save Song** saves only the region loop when one is set
+- Saved M4A and MP3 files keep the song's title, artist, album and cover
+- Songs opened in Muskey get their key from the whole file at once, instead of from a listen
+- Play at the end of a song starts it over, as music apps do
+
 # 1.2.0
 
 **[Download Muskey 1.2.0 →](https://files.lowtechguys.com/releases/Muskey-1.2.0.dmg)**
