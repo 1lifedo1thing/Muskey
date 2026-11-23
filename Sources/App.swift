@@ -2461,6 +2461,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.miniPanel.chooseSide() }
         }.store(in: &prefChanges)
         prefs.$miniDirection.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.miniPanel.chooseSide() } }.store(in: &prefChanges)
+        prefs.$miniSongOnRecord.dropFirst().sink { [weak self] onRecord in
+            self?.mini.songOnRecord = onRecord
+            DispatchQueue.main.async { self?.miniPanel.chooseSide() }
+        }.store(in: &prefChanges)
+        // Published before the change, so the panel takes its new size on the next turn, once the setting reads it.
+        prefs.$miniRecordScale.dropFirst().sink { [weak self] scale in
+            self?.mini.recordScale = scale
+            DispatchQueue.main.async { self?.miniPanel.resize() }
+        }.store(in: &prefChanges)
         model.$track.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.syncMini() } }.store(in: &prefChanges)
         model.$lyricsShown.dropFirst().removeDuplicates().sink { [weak self] _ in DispatchQueue.main.async { self?.syncChords() } }.store(in: &prefChanges)
         mini.onHide = { [weak self] in self?.hideMiniPlayer() }
@@ -7706,6 +7715,7 @@ extension EnvironmentValues {
         mini.side = side
         mini.layout = layout
         mini.background = background
+        mini.songOnRecord = false
         let view = MiniPlayerView(model: model, mini: mini)
             .background(LinearGradient(colors: [Color(red: 0.36, green: 0.42, blue: 0.5), Color(red: 0.62, green: 0.55, blue: 0.5)], startPoint: .top, endPoint: .bottom))
             .environment(\.renderingPreview, true)
@@ -7715,10 +7725,73 @@ extension EnvironmentValues {
             try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-\(name).png"))
         }
     }
-    for (name, background) in [("mini-editor", MiniBackground()), ("mini-editor-bg", makeBackground(.glass, roundness: 0.6, tint: ember))] {
+    // The song on the record: three, two and one lines, long lines (a title of 72 characters), the smallest and the
+    // largest record, a light cover, and pills beside the record, each over a light and a dark wallpaper.
+    let darkCover = model.artwork
+    let lightCover = NSImage(size: NSSize(width: 300, height: 300), flipped: false) { rect in
+        NSGradient(colors: [NSColor(white: 0.99, alpha: 1), NSColor(calibratedRed: 1, green: 0.93, blue: 0.74, alpha: 1)])?.draw(in: rect, angle: 90)
+        NSColor(calibratedRed: 0.97, green: 0.83, blue: 0.52, alpha: 1).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 160, y: 170, width: 90, height: 90)).fill()
+        return true
+    }
+    let noAlbum = MiniLayout(line: [], track: true, artist: true, album: false)
+    let titleOnly = MiniLayout(line: [], track: true, artist: false, album: false)
+    let full = MiniLayout(line: [])
+    let records: [(String, MiniLayout, Double, Bool, NSImage?)] = [
+        ("record-3", full, 1, false, darkCover), ("record-2", noAlbum, 1, false, darkCover), ("record-1", titleOnly, 1, false, darkCover),
+        ("record-long", full, 1, true, darkCover), ("record-1-long", titleOnly, 1, true, darkCover),
+        ("record-small", full, MiniPlayerView.scales.lowerBound, false, darkCover), ("record-small-long", full, MiniPlayerView.scales.lowerBound, true, darkCover),
+        ("record-large", full, MiniPlayerView.scales.upperBound, false, darkCover), ("record-large-long", full, MiniPlayerView.scales.upperBound, true, darkCover),
+        ("record-light-cover", full, 1, false, lightCover), ("record-light-cover-long", full, 1, true, lightCover),
+        ("record-pills", MiniLayout(line: [.key, .tempo, .timeLeft]), 1, false, darkCover),
+        // The pointer over the record: the lines make way for the buttons.
+        ("record-hover", full, 1, false, darkCover),
+    ]
+    for (name, layout, scale, long, cover) in records {
+        let sample = HUDSample.track
+        model.track = long
+            ? NowPlaying.Track(title: "Paper Lanterns Over the Harbour (Extended Version, Live at Harbour Hall)", artist: "Mira Vale and the Low Tide Orchestra",
+                               album: "Low Tide Radio: The Complete Harbour Sessions", duration: sample.duration, elapsed: sample.elapsed,
+                               timestamp: sample.timestamp, rate: 0, bundleID: nil)
+            : sample
+        model.artwork = cover
+        MiniPlayerView.renderScale = scale
+        for (scheme, wallpaper) in [("light", Color(white: 0.86)), ("dark", Color(white: 0.12))] {
+            let mini = MiniState()
+            mini.key = DetectedKey(pitchClass: 1, minor: true)
+            mini.side = .below
+            mini.layout = layout
+            mini.songOnRecord = true
+            let view = MiniPlayerView(model: model, mini: mini)
+                .background(wallpaper)
+                .environment(\.renderingPreview, true)
+                .environment(\.recordHovered, name == "record-hover")
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: dir).appending(path: "mini-\(name)-\(scheme).png"))
+            }
+        }
+    }
+    MiniPlayerView.renderScale = nil
+    model.artwork = darkCover
+    model.track = HUDSample.track
+    // Settings > Mini player > Record, in both schemes.
+    for scheme in [ColorScheme.light, .dark] {
+        let form = Form {
+            Section("Record") { MiniRecordSizeRow(scale: .constant(1.25)) }
+        }
+        .formStyle(.grouped)
+        renderOffscreen(form, size: CGSize(width: 520, height: 110), scheme: scheme,
+                        to: URL(fileURLWithPath: dir).appending(path: "mini-record-size-\(scheme == .dark ? "dark" : "light").png"))
+    }
+    // The editor once more with the song on the record, where only the line's pills stay under it.
+    for (name, background) in [("mini-editor", MiniBackground()), ("mini-editor-bg", makeBackground(.glass, roundness: 0.6, tint: ember)),
+                               ("mini-editor-record", MiniBackground())] {
         let mini = MiniState()
         mini.layout = MiniLayout(top: .key, line: [.tempo, .pitch])
         mini.background = background
+        mini.songOnRecord = name == "mini-editor-record"
         let editor = MiniPlayerView(model: model, mini: mini, editing: true)
             .padding(18)
             .background(Color(red: 0.16, green: 0.13, blue: 0.14))

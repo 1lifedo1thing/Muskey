@@ -283,6 +283,15 @@ final class Preferences: ObservableObject {
     @Published var miniDirection: MiniDirection {
         didSet { defaults.set(miniDirection.rawValue, forKey: "miniDirection") }
     }
+    /// The song's title, artist and album on the mini player's record, in place of beside it (Settings > Mini player >
+    /// Song > On the record).
+    @Published var miniSongOnRecord: Bool {
+        didSet { defaults.set(miniSongOnRecord, forKey: "miniSongOnRecord") }
+    }
+    /// The size of the mini player's record against its usual size (Settings > Mini player > Record > Size).
+    @Published var miniRecordScale: Double {
+        didSet { defaults.set(miniRecordScale, forKey: "miniRecordScale") }
+    }
 
     private init() {
         defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "lyricsLiveTiming": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true])
@@ -317,6 +326,9 @@ final class Preferences: ObservableObject {
         miniLayout = defaults.data(forKey: "miniLayout").flatMap { try? JSONDecoder().decode(MiniLayout.self, from: $0) } ?? MiniLayout()
         miniBackground = defaults.data(forKey: "miniBackground").flatMap { try? JSONDecoder().decode(MiniBackground.self, from: $0) } ?? MiniBackground()
         miniDirection = defaults.string(forKey: "miniDirection").flatMap(MiniDirection.init) ?? .automatic
+        miniSongOnRecord = defaults.bool(forKey: "miniSongOnRecord")
+        let scales = MiniPlayerView.scales
+        miniRecordScale = (defaults.object(forKey: "miniRecordScale") as? Double).map { min(max($0, scales.lowerBound), scales.upperBound) } ?? 1
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }

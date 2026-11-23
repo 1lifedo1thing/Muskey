@@ -280,6 +280,10 @@ private struct MiniPlayerPane: View {
                 Toggle("Track", isOn: $prefs.miniLayout.track)
                 Toggle("Artist", isOn: $prefs.miniLayout.artist)
                 Toggle("Album", isOn: $prefs.miniLayout.album)
+                Toggle("On the record", isOn: $prefs.miniSongOnRecord)
+            }
+            Section("Record") {
+                MiniRecordSizeRow(scale: $prefs.miniRecordScale)
             }
             Section("Direction") {
                 MiniDirectionTiles(direction: $prefs.miniDirection)
@@ -378,6 +382,38 @@ private struct MiniDirectionPreview: View {
             Capsule().fill(.white.opacity(0.5)).frame(width: width * 0.86, height: small ? 2 : 3)
         }
         .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
+    }
+}
+
+/// Settings > Mini player > Record > Size: a slider from three quarters of the usual record to nearly twice its size,
+/// with the size in a pill. It takes a binding so renders can show it without touching the saved settings.
+struct MiniRecordSizeRow: View {
+    @Binding var scale: Double
+
+    var body: some View {
+        LabeledContent("Size") {
+            HStack(spacing: 10) {
+                Slider(value: $scale, in: MiniPlayerView.scales) {
+                    Text("Size")
+                } minimumValueLabel: {
+                    Image(systemName: "circle.fill").font(.system(size: 7))
+                } maximumValueLabel: {
+                    Image(systemName: "circle.fill").font(.system(size: 13))
+                }
+                .labelsHidden()
+                .frame(width: 200)
+                Text("\(Int((scale * 100).rounded()))%")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(.quaternary))
+                    .frame(minWidth: 46, alignment: .trailing)
+            }
+        }
     }
 }
 

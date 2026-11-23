@@ -361,6 +361,11 @@ final class MiniState: ObservableObject {
     @Published var background = Preferences.shared.miniBackground
     /// The luminance of the wallpaper under the player, which shows through glass and the lighter materials.
     @Published var behind = 0.2
+    /// The song's title, artist and album on the record, in place of beside it.
+    @Published var songOnRecord = Preferences.shared.miniSongOnRecord
+    /// The size of the record against its usual size, which `MiniPlayerView.record` reads. A change draws the player
+    /// again.
+    @Published var recordScale = Preferences.shared.miniRecordScale
     /// The size of the song's text, which decides which sides have room for it.
     var textSize = CGSize(width: 180, height: 60) {
         didSet { if abs(textSize.width - oldValue.width) > 1 || abs(textSize.height - oldValue.height) > 1 { onTextSize() } }
@@ -387,7 +392,12 @@ struct MiniPlayerView: View {
     var onDrop: (MiniElement, MiniPlace) -> Void = { _, _ in }
     var onRemove: (MiniElement) -> Void = { _ in }
 
-    static let record: CGFloat = 132
+    /// The record at the usual size, which Settings > Mini player > Record > Size scales by `scales`.
+    static let baseRecord: CGFloat = 132
+    static let scales: ClosedRange<Double> = 0.75 ... 1.75
+    /// The size that renders draw the record at, without touching the saved setting.
+    nonisolated(unsafe) static var renderScale: Double?
+    static var record: CGFloat { (baseRecord * (renderScale ?? Preferences.shared.miniRecordScale)).rounded() }
     /// Room around the record for the pills on its rim.
     static let margin: CGFloat = 12
     static var box: CGFloat { record + margin * 2 }
@@ -426,8 +436,9 @@ struct MiniPlayerView: View {
     private static var recordBox: CGRect { CGRect(x: -box / 2, y: -box / 2, width: box, height: box) }
 
     /// The panel has room for the text on every side, so the record stays where it is when the text moves, and for
-    /// the background around the widest and tallest song at full roundness, which is the largest it gets.
-    static let panelSize: CGSize = {
+    /// the background around the widest and tallest song at full roundness, which is the largest it gets. It grows
+    /// and shrinks with the record.
+    static var panelSize: CGSize {
         var half = CGSize(width: box / 2 + sideWidth + textGap, height: box / 2 + textHeight + textGap)
         for side in [MiniTextSide.below, .above, .left, .right] {
             let reach = textReach(side)
@@ -441,7 +452,7 @@ struct MiniPlayerView: View {
             }
         }
         return CGSize(width: (half.width + 1).rounded(.up) * 2, height: (half.height + 1).rounded(.up) * 2)
-    }()
+    }
 
     @State private var target: MiniPlace?
 
@@ -522,7 +533,8 @@ struct MiniPlayerView: View {
     private var vinyl: some View {
         Group {
             if let track = model.track, track.title?.isEmpty == false {
-                MiniRecord(track: track, artwork: model.artwork, spinning: model.playing && !editing, side: recordSide, flash: editing ? nil : model.playFlash)
+                MiniRecord(track: track, artwork: model.artwork, spinning: model.playing && !editing, side: recordSide, flash: editing ? nil : model.playFlash,
+                           lines: recordLines)
             } else {
                 EmptyPlatter(side: recordSide)
             }
@@ -555,9 +567,19 @@ struct MiniPlayerView: View {
 
     // MARK: The song
 
+    /// With the song on the record, only the pills of its line stay beside it.
     private var hasText: Bool {
-        editing || (layout.track && model.track?.title?.isEmpty == false) || (layout.artist && model.track?.artist?.isEmpty == false)
-            || (layout.album && model.track?.album?.isEmpty == false) || layout.line.contains { value($0) != nil }
+        editing || (!mini.songOnRecord && ((layout.track && model.track?.title?.isEmpty == false) || (layout.artist && model.track?.artist?.isEmpty == false)
+            || (layout.album && model.track?.album?.isEmpty == false))) || layout.line.contains { value($0) != nil }
+    }
+
+    /// The song's lines that the record shows, while Settings puts the song on the record.
+    private var recordLines: [RecordSongLine] {
+        guard mini.songOnRecord, let track = editing ? HUDSample.track : model.track else { return [] }
+        func text(_ shown: Bool, _ value: String?) -> String? { shown ? value.flatMap { $0.isEmpty ? nil : $0 } : nil }
+        return [text(layout.track, track.title).map { RecordSongLine(text: $0, kind: .title) },
+                text(layout.artist, track.artist).map { RecordSongLine(text: $0, kind: .artist) },
+                text(layout.album, track.album).map { RecordSongLine(text: $0, kind: .album) }].compactMap { $0 }
     }
 
     private var alignment: HorizontalAlignment {
@@ -613,9 +635,11 @@ struct MiniPlayerView: View {
         let track = editing ? HUDSample.track : model.track
         let dark = darkText
         let ink = dark ? Color(red: 0.08, green: 0.07, blue: 0.07) : Color(red: 0.96, green: 0.95, blue: 0.93)
-        let title = layout.track ? track?.title.flatMap { $0.isEmpty ? nil : $0 } : nil
-        let album = layout.album ? track?.album.flatMap { $0.isEmpty ? nil : $0 } : nil
-        let artist = layout.artist ? track?.artist.flatMap { $0.isEmpty ? nil : $0 } : nil
+        // With the song on the record, the record draws its lines.
+        let outside = !mini.songOnRecord
+        let title = outside && layout.track ? track?.title.flatMap { $0.isEmpty ? nil : $0 } : nil
+        let album = outside && layout.album ? track?.album.flatMap { $0.isEmpty ? nil : $0 } : nil
+        let artist = outside && layout.artist ? track?.artist.flatMap { $0.isEmpty ? nil : $0 } : nil
         // Beside the record, the pills wrap at the width of the song's text, so they never reach further from the
         // record than the song does.
         let beside = !editing && (mini.side == .left || mini.side == .right)
@@ -1043,7 +1067,13 @@ final class MiniPlayerPanel: NSPanel {
     /// Whether the player shows any of the song's lines or pills beside the record.
     private var hasSong: Bool {
         let layout = mini.layout
-        return layout.track || layout.artist || layout.album || !layout.line.isEmpty
+        return (!mini.songOnRecord && (layout.track || layout.artist || layout.album)) || !layout.line.isEmpty
+    }
+
+    /// Settings changed the record's size: the panel takes its new size around the same middle.
+    func resize() {
+        place()
+        chooseSide()
     }
 
     /// Moves the record in from the edge when the song grew past it on a fixed side. Automatic keeps the side it
@@ -1275,5 +1305,131 @@ struct FlowRow: Layout {
             }
             y += (row.map(\.1.height).max() ?? 0) + spacing
         }
+    }
+}
+
+/// One line of the song on the mini player's record.
+struct RecordSongLine: Equatable {
+    enum Kind { case title, artist, album }
+    let text: String
+    let kind: Kind
+}
+
+/// The song's title, artist and album on the mini player's record (Settings > Mini player > Song > On the record): one
+/// line each, centred as a block on the record however many lines there are. Each line stays inside the record's
+/// circle: a line wider than the circle at its height is drawn smaller (`RecordLinesFit`), and only cut short at 8
+/// points. The record is dimmed under the lines, which are white with a shadow, like the play glyph over the cover. They
+/// fade out while the pointer over the record shows its buttons.
+struct RecordSongLines: View {
+    let lines: [RecordSongLine]
+    let diameter: CGFloat
+    @Environment(\.recordButtonsShown) private var buttonsShown
+
+    /// The circle that the lines stay inside, against the record, which leaves the outer grooves clear.
+    static let inside: CGFloat = 0.84
+
+    var body: some View {
+        ZStack {
+            Circle().fill(RadialGradient(stops: [
+                .init(color: .black.opacity(0.55), location: 0),
+                .init(color: .black.opacity(0.42), location: 0.62),
+                .init(color: .black.opacity(0.12), location: 1),
+            ], center: .center, startRadius: 0, endRadius: diameter / 2))
+            let fitted = RecordLinesFit.fit(lines, diameter: diameter * Self.inside) { diameter * size($0) }
+            ZStack {
+                ForEach(Array(zip(lines, fitted).enumerated()), id: \.offset) { _, pair in
+                    let (line, fit) = pair
+                    Text(line.text)
+                        .font(.system(size: fit.size, weight: line.kind == .title ? .heavy : .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(line.kind == .title ? 1 : line.kind == .artist ? 0.92 : 0.78))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: fit.width)
+                        .frame(height: fit.height)
+                        .offset(y: fit.y)
+                }
+            }
+            .shadow(color: .black.opacity(0.85), radius: diameter * 0.03, y: 1)
+        }
+        .frame(width: diameter, height: diameter)
+        .opacity(buttonsShown ? 0 : 1)
+        .animation(.easeOut(duration: 0.15), value: buttonsShown)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The size of each line's text against the record's diameter: 14 points of title on the usual record.
+    private func size(_ kind: RecordSongLine.Kind) -> CGFloat {
+        switch kind {
+        case .title: 0.105
+        case .artist: 0.083
+        case .album: 0.078
+        }
+    }
+}
+
+/// The size and place of each line of the song inside a circle. The lines are stacked and centred on the circle's
+/// middle. Each line gets the width of the circle at the edge of the line that is furthest from the middle, where the
+/// circle is narrowest along it, and its text gets as small as that width needs, down to `smallest` points. The title
+/// stays the largest line, so a long title never sits under a larger artist. Smaller lines take less height, which
+/// moves every line and changes its width, so the sizes are found again a few times.
+struct RecordLinesFit {
+    struct Line {
+        let size: CGFloat
+        let width: CGFloat
+        let height: CGFloat
+        /// The middle of the line, in points below the circle's middle.
+        let y: CGFloat
+    }
+
+    static let smallest: CGFloat = 8
+
+    static func fit(_ lines: [RecordSongLine], diameter: CGFloat, base: (RecordSongLine.Kind) -> CGFloat) -> [Line] {
+        let radius = diameter / 2
+        let spacing = diameter * 0.015
+        let natural = lines.map { width($0.text, size: base($0.kind), kind: $0.kind) }
+        var sizes = lines.map { base($0.kind) }
+        var placed: [Line] = []
+        for _ in 0 ..< 4 {
+            let heights = zip(sizes, lines).map { height(size: $0, kind: $1.kind) }
+            let total = heights.reduce(0, +) + spacing * CGFloat(max(0, lines.count - 1))
+            var top = -total / 2
+            placed = []
+            for index in lines.indices {
+                let far = max(abs(top), abs(top + heights[index]))
+                let chord = 2 * max(0, radius * radius - far * far).squareRoot()
+                placed.append(Line(size: sizes[index], width: chord, height: heights[index], y: top + heights[index] / 2))
+                top += heights[index] + spacing
+            }
+            var next = lines.indices.map { index in
+                let full = base(lines[index].kind)
+                let fitting = natural[index] > 0 ? full * placed[index].width / natural[index] : full
+                return min(full, max(min(smallest, full), fitting))
+            }
+            // The artist and the album never get larger than the title, at the same ratio as their usual sizes.
+            if let title = lines.firstIndex(where: { $0.kind == .title }) {
+                let ratio = next[title] / base(.title)
+                for index in lines.indices where index != title {
+                    next[index] = min(next[index], max(min(smallest, next[index]), base(lines[index].kind) * ratio))
+                }
+            }
+            if next == sizes { break }
+            sizes = next
+        }
+        return placed
+    }
+
+    static func font(size: CGFloat, kind: RecordSongLine.Kind) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size, weight: kind == .title ? .heavy : .semibold)
+        return base.fontDescriptor.withDesign(.rounded).flatMap { NSFont(descriptor: $0, size: size) } ?? base
+    }
+
+    static func width(_ text: String, size: CGFloat, kind: RecordSongLine.Kind) -> CGFloat {
+        ((text as NSString).size(withAttributes: [.font: font(size: size, kind: kind)]).width + 2).rounded(.up)
+    }
+
+    static func height(size: CGFloat, kind: RecordSongLine.Kind) -> CGFloat {
+        let font = font(size: size, kind: kind)
+        return (font.ascender - font.descender).rounded(.up)
     }
 }

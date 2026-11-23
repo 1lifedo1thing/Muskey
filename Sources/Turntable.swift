@@ -465,6 +465,8 @@ struct MiniRecord: View {
     let spinning: Bool
     let side: CGFloat
     var flash: PlayFlash?
+    /// The song's lines drawn on the record (Settings > Mini player > Song > On the record).
+    var lines: [RecordSongLine] = []
     @Environment(\.renderingPreview) private var renderingPreview
 
     static let label: CGFloat = 0.64
@@ -487,7 +489,8 @@ struct MiniRecord: View {
             .id(song)
             .transition(.opacity.combined(with: .scale(scale: 0.92)))
             MiniTimeRing(track: track, diameter: side * Self.label + 9)
-            PlayFlashView(flash: flash, size: 44)
+            if !lines.isEmpty { RecordSongLines(lines: lines, diameter: side).id(song) }
+            PlayFlashView(flash: flash, size: 44 * side / MiniPlayerView.baseRecord)
         }
         .frame(width: side, height: side)
         .modifier(RecordControls(diameter: side, label: Self.label))
