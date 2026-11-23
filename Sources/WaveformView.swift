@@ -462,14 +462,19 @@ struct WaveformView: View {
         .frame(height: height)
     }
 
-    /// The box on the strip that shows which part of the song the close-up shows.
+    /// The box on the strip that shows which part of the song the close-up shows. The close-up keeps the playhead in
+    /// its middle, so near either end of the song part of it is before the start or after the end, and the box covers
+    /// only the part of the song in it, inside the strip.
     private func window(from: Double) -> some View {
         GeometryReader { geo in
-            let w = max(6, geo.size.width * span / max(duration, 0.001))
+            let length = max(duration, 0.001)
+            let low = min(max(from, 0), length), high = min(max(from + span, 0), length)
+            let w = min(geo.size.width, max(6, geo.size.width * (high - low) / length))
+            let x = min(max(0, low / length * geo.size.width), geo.size.width - w)
             RoundedRectangle(cornerRadius: 3)
                 .strokeBorder(palette.ink.opacity(0.7), lineWidth: 1.2)
                 .frame(width: w, height: geo.size.height + 4)
-                .offset(x: (from + span / 2) / max(duration, 0.001) * geo.size.width - w / 2, y: -2)
+                .offset(x: x, y: -2)
         }
         .allowsHitTesting(false)
     }
@@ -717,7 +722,7 @@ struct LoopFlags: View {
             .contentShape(Rectangle())
             // The arrow pointer, as on a button: a click nudges, and the drag that also works is the strip's job.
             .gesture(move(end, time: time, direction: direction))
-            .help("Move \(end == .start ? "A" : "B") \(Int(LoopRegion.nudge * 1000)) ms \(direction < 0 ? "earlier" : "later"), or a beat with ⌥ (\(direction < 0 ? "←" : "→"))")
+            .help("Move \(end == .start ? "starting point" : "ending point") \(Int(LoopRegion.nudge * 1000))ms left/right with ← → or one beat left/right with ⌥ ← →")
     }
 
     /// A drag moves the end with the pointer. A click without a drag nudges it on an arrow (`direction`), or moves the

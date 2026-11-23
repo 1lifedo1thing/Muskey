@@ -1636,7 +1636,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dialogOpen = false
             if model.picking, self.panel.isVisible { return self.panel.makeKey() }
             if NSApp.isActive, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }),
-               let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
+               let lastOtherApp, lastOtherApp != .current { frontAfterClose(lastOtherApp) }
         }
         return panel
     }()
@@ -3219,6 +3219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pickerKeyboardUntil: Date?
     /// The last window logged above the glass, so a pointer that moves over it logs it once.
     private var coverLogged = 0
+    private var tookFrontAt = Date.distantPast
 
     /// Makes Muskey the active app a moment after the pointer comes over the HUD, and gives the front back to the app
     /// that had it a moment after the pointer leaves. A pointer that crosses the HUD on its way elsewhere, or a hover
@@ -3236,14 +3237,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The window server can still let the pointer through the panel for an instant after it starts taking the
             // mouse, and then names a window below it, which doesn't count.
             let hit = moved ? NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) : panel.windowNumber
-            let cover = hit == panel.windowNumber ? nil : Self.otherAppWindow(hit).flatMap { $0.layer >= panel.level.rawValue ? $0 : nil }
+            // Windows of the window server itself and the ones at the level of the screen saver and above, like the
+            // cursor and screen overlays, cover nothing (one at level 2147483646 sat over the whole HUD on gray).
+            let top = Int(CGWindowLevelForKey(.screenSaverWindow))
+            let cover = hit == panel.windowNumber ? nil : Self.otherAppWindow(hit).flatMap {
+                $0.layer >= panel.level.rawValue && $0.layer < top && $0.owner != "Window Server" ? $0 : nil
+            }
             over = moved && cover == nil
             if let cover, Self.logKeys, hit != coverLogged {
                 coverLogged = hit
                 log("focus: a window of \(cover.owner) at level \(cover.layer) is above the glass under the pointer")
             }
         }
-        guard over != pointerOverHUD else { return }
+        guard over != pointerOverHUD else {
+            // Something took the front while the pointer stayed over the HUD, like a song that opened from a link: the
+            // next move of the pointer takes it again, at most once a second.
+            if over, moved, focusWork == nil, Date().timeIntervalSince(tookFrontAt) > 1,
+               let front = NSWorkspace.shared.frontmostApplication, front != .current {
+                let work = DispatchWorkItem { [weak self] in self?.takeFront() }
+                focusWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+            }
+            return
+        }
         pointerOverHUD = over
         focusWork?.cancel()
         focusWork = nil
@@ -3268,6 +3284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let front = NSWorkspace.shared.frontmostApplication, front != .current
         else { return }
         focusReturn = front
+        tookFrontAt = Date()
         if NSApp.windows.contains(where: { $0 !== panel && $0.isVisible && $0.styleMask.contains(.titled) }) {
             panel.holdsFront = true
             panel.makeKey()
@@ -3276,6 +3293,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.takeFocus()
         log("focus: Muskey is the active app while the pointer is over the HUD, in place of \(Self.appName(front))")
         logFront()
+        // macOS can leave the other app in front, as right after it got the front back: Muskey asks once more.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, pointerOverHUD, focusReturn != nil, let now = NSWorkspace.shared.frontmostApplication, now != .current else { return }
+            log("focus: \(Self.appName(now)) stayed in front, Muskey asks for the front again")
+            focusReturn = now
+            NSApp.takeFocus()
+            logFront()
+        }
+    }
+
+    /// A window of Muskey that closes while the pointer is over the HUD leaves Muskey in front, and the app that was in
+    /// front before gets the front back once the pointer leaves the HUD.
+    private func frontAfterClose(_ app: NSRunningApplication) {
+        guard pointerOverHUD, model.shown else { app.activate(); return }
+        focusReturn = app
+        tookFrontAt = Date()
     }
 
     private func giveFrontBack() {
@@ -4436,7 +4469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         raised.forEach { $0.level = .statusBar }
         if accessory, !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
             NSApp.setActivationPolicy(.accessory)
-            if let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
+            if let lastOtherApp, lastOtherApp != .current { frontAfterClose(lastOtherApp) }
         }
         return result
     }

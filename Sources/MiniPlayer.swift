@@ -1047,9 +1047,13 @@ final class MiniPlayerPanel: NSPanel {
         setFrame(CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height), display: true)
     }
 
-    /// A player that was left on a screen that is gone comes back to the main one.
+    /// A player that was left on a screen that is gone comes back to the main one. A record that hangs over an edge
+    /// of its screen, even with its middle past it, stays where it was put.
     private func keepOnScreen() {
-        guard !NSScreen.screens.contains(where: { $0.frame.contains(center) }), let visible = NSScreen.main?.visibleFrame else { return }
+        let reach = MiniPlayerView.box
+        guard !NSScreen.screens.contains(where: { $0.frame.insetBy(dx: -reach, dy: -reach).contains(center) }),
+              let visible = NSScreen.main?.visibleFrame
+        else { return }
         center = CGPoint(x: visible.maxX - 130, y: visible.minY + 150)
     }
 
@@ -1060,7 +1064,8 @@ final class MiniPlayerPanel: NSPanel {
     }
 
     /// With a fixed direction, the record stops short of an edge where the song on its side would leave the screen,
-    /// so the song never moves to another side. Automatic leaves the record anywhere and moves the song instead.
+    /// so the song never moves to another side. Automatic leaves the record anywhere and moves the song instead. The
+    /// bottom edge never stops it, since a player half below the screen keeps out of the way.
     private func fit(_ point: CGPoint) -> CGPoint {
         guard let side = Preferences.shared.miniDirection.side, hasSong,
               let visible = (NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main)?.visibleFrame
@@ -1070,17 +1075,16 @@ final class MiniPlayerPanel: NSPanel {
         func clamp(_ value: CGFloat, _ low: CGFloat, _ high: CGFloat) -> CGFloat { low > high ? value : min(max(value, low), high) }
         switch side {
         case .below:
-            y = max(y, visible.minY + half + gap + song.height)
             x = clamp(x, visible.minX + song.width / 2, visible.maxX - song.width / 2)
         case .above:
             y = min(y, visible.maxY - half - gap - song.height)
             x = clamp(x, visible.minX + song.width / 2, visible.maxX - song.width / 2)
         case .right:
             x = min(x, visible.maxX - half - gap - song.width)
-            y = clamp(y, visible.minY + song.height / 2, visible.maxY - song.height / 2)
+            y = min(y, visible.maxY - song.height / 2)
         case .left:
             x = max(x, visible.minX + half + gap + song.width)
-            y = clamp(y, visible.minY + song.height / 2, visible.maxY - song.height / 2)
+            y = min(y, visible.maxY - song.height / 2)
         }
         return CGPoint(x: x, y: y)
     }
