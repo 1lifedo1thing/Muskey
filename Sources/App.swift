@@ -3547,11 +3547,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.$shift.sink { [weak notes] in notes?.shift = $0 }.store(in: &notesSinks)
         model.$capo.sink { [weak notes] in notes?.capo = $0 }.store(in: &notesSinks)
         // The HUD shows a change of speed only for a song whose speed Muskey can change, and so does the notes window.
-        model.$speed.combineLatest(model.$speedAdjustable).sink { [weak notes] speed, adjustable in notes?.speed = adjustable ? speed : 1 }
-            .store(in: &notesSinks)
+        model.$speed.combineLatest(model.$speedAdjustable).sink { [weak notes] speed, adjustable in
+            notes?.speed = adjustable ? speed : 1
+            notes?.speedAdjustable = adjustable
+        }
+        .store(in: &notesSinks)
+        model.$fastestSpeed.sink { [weak notes] in notes?.fastestSpeed = $0 }.store(in: &notesSinks)
+        model.$relative.sink { [weak notes] in notes?.relative = $0 }.store(in: &notesSinks)
         notes.onCapo = { [weak self] step in
             guard let self else { return }
             setCapo(model.capo + step)
+        }
+        // The key and the tempo of the status bar change the song as the HUD's key row and tempo pill do, with the HUD
+        // closed, so the window keeps the keyboard.
+        notes.onPickKey = { [weak self] shift, relative in
+            guard let self, model.pending == nil else { return }
+            setShift(shift, relative: relative)
+        }
+        notes.onSpeedStep = { [weak self] step in self?.changeSpeed(by: step) }
+        notes.onSpeed = { [weak self] speed in
+            guard let self else { return }
+            playSpeed(min(max(speed, 0.5), fastestSpeed))
         }
         model.$loop.sink { [weak notes] in notes?.loop = $0 }.store(in: &notesSinks)
     }

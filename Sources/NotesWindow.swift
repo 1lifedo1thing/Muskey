@@ -117,6 +117,11 @@ final class NotesModel: ObservableObject {
     @Published var capo = 0 { didSet { if capo != oldValue { rebuild() } } }
     /// The speed that Muskey plays the song at against its own tempo, 1 while the tempo isn't changed.
     @Published var speed = 1.0
+    /// The HUD can change the speed of the song, so the tempo in the status bar changes it too.
+    @Published var speedAdjustable = false
+    @Published var fastestSpeed = 1.5
+    /// The HUD names the key in the other mode than the song's, as the key row's second row does.
+    @Published var relative = false
     /// The page that the song is on, counted from 0, and how many pages the notes take in this view and window size.
     @Published var page = 0
     @Published var pageCount = 1
@@ -156,6 +161,12 @@ final class NotesModel: ObservableObject {
     var onPlayPause: () -> Void = {}
     var onTranspose: (Int) -> Void = { _ in }
     var onCapo: (Int) -> Void = { _ in }
+    /// A key picked in the status bar: the shift, and whether the key is in the other mode than the song.
+    var onPickKey: (Int, Bool) -> Void = { _, _ in }
+    /// The tempo's arrows and the keys [ and ]: a step slower or faster, and 0 for the song's own tempo.
+    var onSpeedStep: (Int) -> Void = { _ in }
+    /// A scroll over the tempo: the speed to play at.
+    var onSpeed: (Double) -> Void = { _ in }
     var onRetry: () -> Void = {}
     var onStopHere: () -> Void = {}
     var onTranscribeAnyway: () -> Void = {}
@@ -1176,13 +1187,206 @@ private struct NotesViewSwitch: View {
     }
 }
 
+/// `--notes-hover key,tempo` renders the key or the tempo of the status bar as the pointer over it shows them.
+private let notesHoverInRenders = TestFlags.value("--notes-hover") ?? ""
+
+/// The ‹ and › of a control in the status bar, which show while the pointer is over it, in the room that the control
+/// keeps for them on each side, so nothing moves when they appear.
+private struct StatusArrow: View {
+    let symbol: String
+    let help: String
+    let shown: Bool
+    let palette: Palette
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 8, weight: .heavy))
+                .foregroundStyle(palette.ink.opacity(0.7))
+                .frame(width: 13, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(help)
+        .opacity(shown ? 1 : 0)
+        .allowsHitTesting(shown)
+    }
+}
+
+/// The key in the status bar. The pointer over it shows the relative key in a pill above it and the arrows that move
+/// the key a semitone, and a click opens the HUD's key row to pick another key. Every change goes through the HUD's
+/// pitch change, so the HUD and the window show the same key.
+private struct NotesKeyControl: View {
+    @ObservedObject var model: NotesModel
+    let palette: Palette
+    @State private var hovering = notesHoverInRenders.contains("key")
+    @State private var picking = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// The key that the song plays in now, named in the mode that the HUD names it.
+    private var shown: DetectedKey? {
+        model.key.map { key in
+            let moved = key.transposed(by: model.shift)
+            return model.relative ? moved.relative : moved
+        }
+    }
+
+    var body: some View {
+        let active = hovering || picking
+        HStack(spacing: 5) {
+            if let shown { Text(shown.name) }
+            if model.shift != 0 { Text(Shift.short(model.shift)).foregroundStyle(NotesAccent.color(colorScheme)) }
+        }
+        .padding(.horizontal, 15)
+        .frame(maxHeight: .infinity)
+        .background(RoundedRectangle(cornerRadius: 6).fill(palette.ink.opacity(active ? 0.07 : 0)).padding(.vertical, 4).padding(.horizontal, 1))
+        .contentShape(Rectangle())
+        .onTapGesture { if model.key != nil { picking = true } }
+        .overlay(alignment: .leading) {
+            StatusArrow(symbol: "chevron.left", help: "Semitone down (↓)", shown: active, palette: palette) { model.onTranspose(-1) }
+                .disabled(model.shift <= Shift.range.lowerBound)
+                .padding(.leading, 2)
+        }
+        .overlay(alignment: .trailing) {
+            StatusArrow(symbol: "chevron.right", help: "Semitone up (↑)", shown: active, palette: palette) { model.onTranspose(1) }
+                .disabled(model.shift >= Shift.range.upperBound)
+                .padding(.trailing, 2)
+        }
+        .overlay(alignment: .top) {
+            // The relative key, the same notes in the other mode, as the HUD shows it beside the key.
+            if let relative = shown?.relative, hovering, !picking {
+                Text(relative.name)
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(palette.muted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.thinMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(palette.ink.opacity(0.1), lineWidth: 0.5))
+                    .fixedSize()
+                    .offset(y: -21)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: active)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(model.key == nil ? "" : "Pick a key")
+        .popover(isPresented: $picking, arrowEdge: .top) {
+            if let key = model.key {
+                KeyPicker(original: key, shift: model.shift, relative: model.relative, palette: palette, stepKeys: ("↓", "↑")) { shift, relative in
+                    model.onPickKey(shift, relative)
+                }
+                .padding(12)
+            }
+        }
+    }
+}
+
+/// The tempo in the status bar, at the speed that the song plays, with the change of speed. While the HUD can change
+/// the speed, the pointer over it shows the arrows that make it a step slower or faster, and a scroll over it moves the
+/// speed by 1 % every 6 points, as over the HUD's tempo. Otherwise it is plain text.
+private struct NotesTempoControl: View {
+    @ObservedObject var model: NotesModel
+    let palette: Palette
+    @State private var hovering = notesHoverInRenders.contains("tempo")
+    /// The speed when the scroll began, and how far the fingers moved since, up being faster.
+    @State private var scroll: (start: Double, travel: CGFloat)?
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.renderingPreview) private var renderingPreview
+
+    /// The change of speed in whole percent, like the HUD's speed pill: −10% for a song slowed to 90 %.
+    private var speedChange: String? {
+        let percent = Int(((model.speed - 1) * 100).rounded())
+        return percent == 0 ? nil : "\(percent < 0 ? "−" : "+")\(abs(percent))%"
+    }
+
+    var body: some View {
+        let live = model.speedAdjustable
+        let active = live && hovering
+        HStack(spacing: 5) {
+            Text("\(Int((model.bpm * model.speed).rounded())) BPM")
+            if let change = speedChange {
+                Text(change).foregroundStyle(StripColors.text(model.speed < 1 ? StripColors.down : StripColors.up, colorScheme))
+            }
+        }
+        .padding(.horizontal, 15)
+        .frame(maxHeight: .infinity)
+        .background(RoundedRectangle(cornerRadius: 6).fill(palette.ink.opacity(active ? 0.07 : 0)).padding(.vertical, 4).padding(.horizontal, 1))
+        .overlay {
+            // A render draws an AppKit view as a placeholder, and the catcher draws nothing anyway.
+            if live, !renderingPreview { ScrollCatcher(onScroll: scrolled) }
+        }
+        .overlay(alignment: .leading) {
+            if live {
+                StatusArrow(symbol: "chevron.left", help: "Slower ([)", shown: active, palette: palette) { model.onSpeedStep(-1) }
+                    .disabled(model.speed <= 0.5)
+                    .padding(.leading, 2)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            if live {
+                StatusArrow(symbol: "chevron.right", help: "Faster (])", shown: active, palette: palette) { model.onSpeedStep(1) }
+                    .disabled(model.speed >= model.fastestSpeed)
+                    .padding(.trailing, 2)
+            }
+        }
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: active)
+        .help(live ? "Slower or faster (scroll, [ ])" : "")
+    }
+
+    /// A trackpad moves the speed with the travel of the fingers, and a mouse wheel a step at each notch. The momentum
+    /// after the fingers lift changes nothing.
+    private func scrolled(_ event: NSEvent) {
+        guard event.momentumPhase.isEmpty else { return }
+        let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
+        guard event.hasPreciseScrollingDeltas else {
+            if event.scrollingDeltaY != 0 { model.onSpeedStep(sign * event.scrollingDeltaY > 0 ? 1 : -1) }
+            return
+        }
+        if event.phase == .began || scroll == nil { scroll = (model.speed, 0) }
+        guard var current = scroll else { return }
+        current.travel += sign * event.scrollingDeltaY
+        scroll = current
+        let speed = min(max(((current.start + Double(current.travel) / 600) * 100).rounded() / 100, 0.5), model.fastestSpeed)
+        if speed != model.speed { model.onSpeed(speed) }
+        if event.phase == .ended || event.phase == .cancelled { scroll = nil }
+    }
+}
+
+/// Takes the scrolls over a view and lets every other event through to the views under it, so the arrows and the hover
+/// still work.
+private struct ScrollCatcher: NSViewRepresentable {
+    let onScroll: (NSEvent) -> Void
+
+    func makeNSView(context _: Context) -> CatcherView {
+        let view = CatcherView()
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ view: CatcherView, context _: Context) { view.onScroll = onScroll }
+
+    final class CatcherView: NSView {
+        var onScroll: (NSEvent) -> Void = { _ in }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            NSApp.currentEvent?.type == .scrollWheel ? super.hitTest(point) : nil
+        }
+
+        override func scrollWheel(with event: NSEvent) { onScroll(event) }
+    }
+}
+
 /// The bar along the bottom of the window: the keys on the left, and on the right the state of the song once the notes
-/// are done, as plain text between hairlines. The key carries the pitch change beside it and the tempo carries the
-/// change of speed, so neither takes a place of its own.
+/// are done, between hairlines. The key carries the pitch change beside it and the tempo carries the change of speed,
+/// so neither takes a place of its own. The key and the tempo are controls (`NotesKeyControl`, `NotesTempoControl`).
 private struct NotesStatusBar: View {
     @ObservedObject var model: NotesModel
     let palette: Palette
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1201,22 +1405,9 @@ private struct NotesStatusBar: View {
             if model.done {
                 HStack(spacing: 0) {
                     if model.key != nil || model.shift != 0 {
-                        item {
-                            HStack(spacing: 5) {
-                                if let shown = model.key?.transposed(by: model.shift) { Text(shown.name) }
-                                if model.shift != 0 { Text(Shift.short(model.shift)).foregroundStyle(NotesAccent.color(colorScheme)) }
-                            }
-                        }
+                        item(padded: false) { NotesKeyControl(model: model, palette: palette) }
                     }
-                    item {
-                        // The tempo at the speed that the song plays, as the HUD shows it, with the change of speed.
-                        HStack(spacing: 5) {
-                            Text("\(Int((model.bpm * model.speed).rounded())) BPM")
-                            if let change = speedChange {
-                                Text(change).foregroundStyle(StripColors.text(model.speed < 1 ? StripColors.down : StripColors.up, colorScheme))
-                            }
-                        }
-                    }
+                    item(padded: false) { NotesTempoControl(model: model, palette: palette) }
                     if model.view == .tab, model.hasTab { item { NotesCapo(model: model, palette: palette) } }
                 }
                 .fixedSize(horizontal: true, vertical: false)
@@ -1229,18 +1420,13 @@ private struct NotesStatusBar: View {
         .overlay(alignment: .top) { Rectangle().fill(palette.ink.opacity(0.08)).frame(height: 1) }
     }
 
-    /// The change of speed in whole percent, like the HUD's speed pill: −10% for a song slowed to 90 %.
-    private var speedChange: String? {
-        let percent = Int(((model.speed - 1) * 100).rounded())
-        return percent == 0 ? nil : "\(percent < 0 ? "−" : "+")\(abs(percent))%"
-    }
-
-    private func item(@ViewBuilder _ content: () -> some View) -> some View {
+    /// `padded` false for a control that keeps the room for its arrows in its own padding.
+    private func item(padded: Bool = true, @ViewBuilder _ content: () -> some View) -> some View {
         content()
             .font(.system(size: 11, weight: .heavy, design: .rounded))
             .monospacedDigit()
             .foregroundStyle(palette.ink.opacity(0.8))
-            .padding(.horizontal, 12)
+            .padding(.horizontal, padded ? 12 : 0)
             .frame(maxHeight: .infinity)
             .overlay(alignment: .leading) { Rectangle().fill(palette.ink.opacity(0.08)).frame(width: 1) }
     }
@@ -2253,6 +2439,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         case kVK_DownArrow where flags.contains(.option): if model.hasTab { model.onCapo(-1) }
         case kVK_UpArrow: model.onTranspose(1)
         case kVK_DownArrow: model.onTranspose(-1)
+        // The HUD's tempo keys: [ and ] a step slower or faster, = the song's own tempo.
+        case kVK_ANSI_LeftBracket where model.speedAdjustable: model.onSpeedStep(-1)
+        case kVK_ANSI_RightBracket where model.speedAdjustable: model.onSpeedStep(1)
+        case kVK_ANSI_Equal where model.speedAdjustable: model.onSpeedStep(0)
         default: return false
         }
         return true
@@ -2571,7 +2761,10 @@ extension NotesModel {
     notesFoldInRenders = TestFlags.value("--notes-fold").flatMap(Double.init)
     if let shift = TestFlags.value("--notes-shift").flatMap(Int.init) { model.shift = shift }
     if let capo = TestFlags.value("--notes-capo").flatMap(Int.init) { model.capo = capo }
-    if let speed = TestFlags.value("--notes-speed").flatMap(Double.init) { model.speed = speed }
+    if let speed = TestFlags.value("--notes-speed").flatMap(Double.init) {
+        model.speed = speed
+        model.speedAdjustable = true
+    }
     if let loop = TestFlags.value("--notes-loop")?.split(separator: "-").compactMap({ Double($0) }), loop.count == 2 {
         model.loop = LoopRegion(start: loop[0], end: loop[1], startPress: nil)
     }

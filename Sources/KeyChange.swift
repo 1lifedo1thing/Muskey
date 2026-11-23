@@ -326,6 +326,8 @@ struct KeyPicker: View {
     var accidentals = false
     let palette: Palette
     var colors = StripColors.current
+    /// The keys named in the arrows' tooltips: ← → over the HUD, ↓ ↑ in the notes window, where ← → turn pages.
+    var stepKeys = ("←", "→")
     /// The shift, and whether the key is in the other mode than the song.
     let select: (Int, Bool) -> Void
 
@@ -335,12 +337,12 @@ struct KeyPicker: View {
     var body: some View {
         VStack(spacing: 3) {
             HStack(spacing: 2) {
-                StepButton(symbol: "chevron.left", help: "Semitone down (←)", hue: StripColors.down, palette: palette) { select(shift - 1, relative) }
+                StepButton(symbol: "chevron.left", help: "Semitone down (\(stepKeys.0))", hue: StripColors.down, palette: palette) { select(shift - 1, relative) }
                     .disabled(shift <= Shift.range.lowerBound)
                 ForEach(-6 ... 5, id: \.self) { offset in
                     chip(offset, second: false)
                 }
-                StepButton(symbol: "chevron.right", help: "Semitone up (→)", hue: StripColors.up, palette: palette) { select(shift + 1, relative) }
+                StepButton(symbol: "chevron.right", help: "Semitone up (\(stepKeys.1))", hue: StripColors.up, palette: palette) { select(shift + 1, relative) }
                     .disabled(shift >= Shift.range.upperBound)
             }
             if showsRelatives {
