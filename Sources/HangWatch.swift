@@ -2,8 +2,8 @@ import AppKit
 import Foundation
 
 /// Watches the main thread from a background queue and logs every time it stops answering, the way the hang detection
-/// of Lowtech does in Clop and rcmd. A block is sent to the main thread four times a second, and the time it waited
-/// is the length of the hang. Past `sampleAfter` seconds, `sample(1)` reads the main thread's stack while the hang
+/// of Lowtech does in Clop and rcmd. A block is sent to the main thread twice a second, and the time it waited is
+/// the length of the hang. Past `sampleAfter` seconds, `sample(1)` reads the main thread's stack while the hang
 /// still lasts, so a hang that never ends is in the log too. Nothing restarts the app.
 final class HangWatch: @unchecked Sendable {
     init(log: @escaping @Sendable (String) -> Void) {
@@ -18,7 +18,7 @@ final class HangWatch: @unchecked Sendable {
     func start() {
         guard timer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 1, repeating: 0.25, leeway: .milliseconds(50))
+        timer.schedule(deadline: .now() + 1, repeating: 0.5, leeway: .milliseconds(100))
         timer.setEventHandler { [weak self] in self?.tick() }
         self.timer = timer
         timer.resume()
