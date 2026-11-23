@@ -71,6 +71,8 @@ final class FilePlayer {
     var onActivity: (OpenActivity?) -> Void = { _ in }
     /// The song plays.
     var onPlaying: () -> Void = {}
+    /// Muskey Player started a song: the file or the link that was opened, and the download of a link.
+    var onStarted: (URL, Song?) -> Void = { _, _ in }
     /// Pauses the song of another app before Muskey Player starts one, and calls its argument once that is done.
     var pauseOthers: (@escaping () -> Void) -> Void = { $0() }
     var log: (String) -> Void = { _ in }
@@ -488,6 +490,7 @@ final class FilePlayer {
             current = starting
             hasSong = true
             onPlaying()
+            if let opening { onStarted(opening, starting) }
             // A copy of the song at another path is the same song to Muskey, and keeps its loop unless it goes here.
             if replaced {
                 onMove(0)

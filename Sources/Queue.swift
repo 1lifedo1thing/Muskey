@@ -221,8 +221,22 @@ struct QueueView: View {
     }
 
     private func row(_ song: QueueItem) -> some View {
-        let playing = song.id == current
-        return HStack(spacing: 8) {
+        SongRow(song: song, playing: song.id == current, waiting: !song.analysed, compact: compact, palette: palette)
+    }
+}
+
+/// A song in the queue or in the recents: the cover, the title and artist, and the key and tempo on the right.
+struct SongRow: View {
+    let song: QueueItem
+    var playing = false
+    /// The key and the tempo are still looked for, which a small spinner shows.
+    var waiting = false
+    var compact = false
+    let palette: Palette
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        HStack(spacing: 8) {
             ZStack {
                 if let artwork = song.artwork {
                     Image(nsImage: artwork).resizable().aspectRatio(contentMode: .fill)
@@ -261,7 +275,7 @@ struct QueueView: View {
                         .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                         .foregroundStyle(palette.muted)
                         .monospacedDigit()
-                } else if !song.analysed {
+                } else if waiting {
                     ProgressView().controlSize(.mini).scaleEffect(0.6).frame(width: 12, height: 10)
                 }
             }
@@ -270,6 +284,75 @@ struct QueueView: View {
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .help([song.title, song.artist, song.album].compactMap { $0 }.joined(separator: " · "))
+    }
+}
+
+/// The songs that Muskey Player played last, on the back of the record while nothing plays. A click plays a song.
+struct RecentsView: View {
+    let songs: [QueueItem]
+    let palette: Palette
+    var compact = false
+    let play: (QueueItem) -> Void
+    let add: (QueueItem) -> Void
+    let remove: (QueueItem) -> Void
+    let close: () -> Void
+    /// Where the list is in the window, or nil once it is gone.
+    var frame: (CGRect?) -> Void = { _ in }
+    /// Room at the start of the title row, for the ✕ of the card in its corner.
+    var headerInset: CGFloat = 0
+
+    @Environment(\.renderingPreview) private var renderingPreview
+    @State private var hovered: UUID?
+    /// The row drawn as hovered in `--render`, which has no pointer.
+    @MainActor static var previewHover: UUID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Recents")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundStyle(palette.ink)
+                Spacer(minLength: 0)
+                Color.clear.frame(width: 20, height: 20)
+            }
+            .overlay(alignment: .trailing) {
+                RoundButton(symbol: "xmark", help: "Close the recents", label: "Close recents", palette: palette, action: close)
+            }
+            .padding(.horizontal, 4)
+            .padding(.leading, headerInset)
+            if renderingPreview {
+                // ImageRenderer draws no scroll view, so `--render` gets the rows stacked.
+                VStack(spacing: 0) { ForEach(songs.prefix(6)) { row($0) } }
+                    .frame(maxHeight: .infinity, alignment: .top)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) { ForEach(songs) { row($0) } }
+                }
+                .scrollIndicators(.automatic)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame($0) }
+                .onDisappear { frame(nil) }
+            }
+        }
+    }
+
+    private func lit(_ song: QueueItem) -> Bool {
+        hovered == song.id || (renderingPreview && Self.previewHover == song.id)
+    }
+
+    private func row(_ song: QueueItem) -> some View {
+        Button { play(song) } label: {
+            SongRow(song: song, compact: compact, palette: palette)
+                .padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(palette.ink.opacity(lit(song) ? 0.08 : 0)))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 ? song.id : (hovered == song.id ? nil : hovered) }
+        .contextMenu {
+            Button("Play") { play(song) }
+            Button("Add to Queue") { add(song) }
+            Divider()
+            Button("Remove from Recents") { remove(song) }
+        }
     }
 }
 

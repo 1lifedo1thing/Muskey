@@ -407,6 +407,16 @@ final class HUDModel: ObservableObject {
     /// there stay in the list, instead of skipping songs and moving the panel.
     var queueFrame: CGRect?
     var onQueuePlay: (UUID) -> Void = { _ in }
+    /// The songs that Muskey Player played last, on the back of the record while nothing plays.
+    @Published var recents: [QueueItem] = []
+    @Published var recentsShown = false
+    /// The record shows the recents: nothing plays and the queue doesn't show.
+    var recentsFlipped: Bool { recentsShown && phase == .idle && !queueShown }
+    /// The record shows the queue or the recents on its back.
+    var backShown: Bool { queueShown || recentsFlipped }
+    var onRecentPlay: (QueueItem) -> Void = { _ in }
+    var onRecentAdd: (QueueItem) -> Void = { _ in }
+    var onRecentRemove: (QueueItem) -> Void = { _ in }
     var onQueueRemove: (Set<UUID>) -> Void = { _ in }
     var onQueueMove: (Set<UUID>, Int) -> Void = { _, _ in }
     var onQueuePlayNext: (UUID) -> Void = { _ in }
@@ -614,11 +624,11 @@ struct HUDView: View {
                     .padding(.top, 44)
                     .padding(.bottom, 18)
             } else if model.card {
-                // Q turns the card over to the queue.
-                FlipCard(flipped: model.queueShown) {
+                // Q turns the card over to the queue, and Nothing playing turns it over to the recents.
+                FlipCard(flipped: model.backShown) {
                     HUDCard(model: model, palette: palette, showsKeys: showsStrip, track: deckTrack)
                 } back: {
-                    queue(palette)
+                    back(palette)
                         .padding(.top, 12)
                         .padding(.horizontal, 12)
                         .padding(.bottom, 14)
@@ -803,12 +813,12 @@ struct HUDView: View {
                         .padding(.leading, 30)
                         .transition(.opacity)
                     // Q turns this side over to the queue, which takes the margins around the record too.
-                    FlipCard(flipped: model.queueShown) {
+                    FlipCard(flipped: model.backShown) {
                         TurntableDeck(track: track, artwork: model.artwork, playing: model.playing, spinning: model.shown && model.playing,
                                       flash: model.playFlash, palette: palette)
-                            .onHover { model.overRecord = $0 && !model.queueShown }
+                            .onHover { model.overRecord = $0 && !model.backShown }
                     } back: {
-                        queue(palette)
+                        back(palette)
                             .padding(.horizontal, -20)
                             .padding(.top, -8)
                     }
@@ -843,6 +853,21 @@ struct HUDView: View {
                 .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 26, bottomTrailingRadius: 26))
                 .transition(.opacity)
             }
+        }
+    }
+
+    /// The back of the record: the recents while nothing plays, the queue otherwise.
+    @ViewBuilder private func back(_ palette: Palette) -> some View {
+        if model.recentsFlipped {
+            VStack(spacing: 12) {
+                RecentsView(songs: model.recents, palette: palette, compact: !model.card, play: model.onRecentPlay, add: model.onRecentAdd,
+                            remove: model.onRecentRemove, close: { model.recentsShown = false }, frame: { model.queueFrame = $0 },
+                            headerInset: model.card ? 22 : 0)
+                // The whole card turns over, so the buttons of Nothing playing come along under the recents.
+                if model.card { IdleActions(model: model, palette: palette) }
+            }
+        } else {
+            queue(palette)
         }
     }
 
@@ -1289,7 +1314,7 @@ final class HUDPanel: NSPanel {
     }
 
     private func onQueue(_ event: NSEvent) -> Bool {
-        guard model.queueShown, let queue = model.queueFrame, let view = contentView else { return false }
+        guard model.backShown, let queue = model.queueFrame, let view = contentView else { return false }
         let local = view.convert(event.locationInWindow, from: nil)
         return queue.contains(CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y))
     }
@@ -2709,6 +2734,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onQueueToggle = { [weak self] in self?.toggleQueue() }
         model.onMore = { [weak self] in self?.showMoreMenu() }
         filePlayer.onQueue = { [weak self] in self?.syncQueue() }
+        filePlayer.onStarted = { url, song in RecentSongs.add(url, song: song) }
+        model.onRecentPlay = { [weak self] song in
+            self?.log("recents: playing \(song.url.isFileURL ? "a file" : "a link")")
+            self?.open([song.url])
+        }
+        model.onRecentAdd = { [weak self] song in self?.add([song.url], next: false) }
+        model.onRecentRemove = { [weak self] song in self?.removeRecent(song) }
+        // A listen or a song that opens takes the HUD from the recents, which wait for the next time nothing plays.
+        model.$phase.removeDuplicates().sink { [weak self] phase in
+            if phase != .idle, self?.model.recentsShown == true { self?.model.recentsShown = false }
+        }.store(in: &prefChanges)
         model.onOpenFile = { [weak self] in self?.openFile() }
         model.onSeekFraction = { [weak self] in self?.seek(toFraction: $0) }
         model.onStemsClose = { [weak self] in self?.closeStems() }
@@ -2854,6 +2890,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !shown {
                 DispatchQueue.main.async {
                     self?.model.queueShown = false
+                    self?.model.recentsShown = false
                     self?.closeNotesPicker()
                 }
             }
@@ -5035,6 +5072,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.present()
         updateHoverKeys()
         log(String(format: "nothing plays after %.1f s", elapsed))
+        showRecents()
+    }
+
+    /// The recents as rows, kept from one time nothing plays to the next, so their covers are read once.
+    private var recentRows: [String: QueueItem] = [:]
+
+    /// Nothing plays: the empty record shows for a moment and turns over to the songs that Muskey Player played last.
+    private func showRecents() {
+        let entries = RecentSongs.load()
+        guard !entries.isEmpty else { return }
+        model.recents = entries.map { entry in
+            let id = entry.url.absoluteString
+            if var row = recentRows[id] {
+                // A listen since the last time may have found the song's key.
+                if row.read, prefs.rememberKeys {
+                    let song: [String?] = [row.title, row.artist, row.album]
+                    row.key = keyCache.key(for: song) ?? row.key
+                    row.bpm = keyCache.bpm(for: song) ?? row.bpm
+                    recentRows[id] = row
+                }
+                return row
+            }
+            let row = QueueItem(url: entry.url, cached: entry.song)
+            recentRows[id] = row
+            return row
+        }
+        readRecentDetails()
+        let current = session
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.recentsAfter) { [weak self] in
+            guard let self, session == current, model.phase == .idle, model.shown, model.opening == nil, !model.queueShown else { return }
+            model.recentsShown = true
+            log("recents shown: \(model.recents.count) song\(model.recents.count == 1 ? "" : "s")")
+        }
+    }
+
+    /// Long enough for the empty record to be seen before it turns over.
+    private static let recentsAfter = 0.7
+
+    /// The title, artist and cover of each recent song that wasn't read yet, and the key that Muskey remembers for it.
+    private func readRecentDetails() {
+        for item in model.recents where !item.read {
+            guard let file = item.file, FileManager.default.fileExists(atPath: file.path) else { continue }
+            Task { @MainActor [weak self] in
+                let details = await QueueItem.details(file, name: item.url.isFileURL ? nil : SongName.link(item.url))
+                guard let self else { return }
+                var row = recentRows[item.url.absoluteString] ?? item
+                row.apply(details)
+                let song: [String?] = [row.title, row.artist, row.album]
+                if prefs.rememberKeys {
+                    row.key = keyCache.key(for: song)
+                    row.bpm = keyCache.bpm(for: song)
+                }
+                row.analysed = true
+                recentRows[item.url.absoluteString] = row
+                if let at = model.recents.firstIndex(where: { $0.id == row.id }) { model.recents[at] = row }
+            }
+        }
+    }
+
+    private func removeRecent(_ song: QueueItem) {
+        RecentSongs.remove(song.url)
+        recentRows[song.url.absoluteString] = nil
+        model.recents.removeAll { $0.id == song.id }
+        if model.recents.isEmpty { model.recentsShown = false }
     }
 
     /// A song plays while the HUD offers to play one: the listen starts over on it.
@@ -6628,7 +6729,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The pointer of `event` is over the list of the queue, while it shows.
     private func overQueue(_ event: NSEvent) -> Bool {
-        guard model.queueShown, let frame = model.queueFrame, let view = panel.contentView else { return false }
+        guard model.backShown, let frame = model.queueFrame, let view = panel.contentView else { return false }
         let local = view.convert(event.locationInWindow, from: nil)
         return frame.contains(CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y))
     }
@@ -8654,6 +8755,32 @@ extension EnvironmentValues {
         }
         }
     }
+    // Nothing plays, and the record turned over to the recents, in both layouts, with the pointer over a row once.
+    for (name, hover) in [("idle-recents", false), ("idle-recents-hover", true), ("idle-recents-front", false)] {
+        for layout in ["", "-card"] {
+            if let only, !"\(name)\(layout)".contains(only.hasSuffix("$") ? String(only.dropLast()) : only) { continue }
+            for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
+                let model = HUDModel()
+                model.phase = .idle
+                model.card = layout == "-card"
+                model.recents = HUDSample.queue
+                model.recentsShown = name != "idle-recents-front"
+                RecentsView.previewHover = hover ? model.recents[1].id : nil
+                let view = HUDView(model: model)
+                    .frame(width: HUDPanel.size.width, height: HUDPanel.size.height)
+                    .background(backdrop)
+                    .environment(\.colorScheme, scheme == "dark" ? .dark : .light)
+                    .environment(\.renderingPreview, true)
+                let renderer = ImageRenderer(content: view)
+                renderer.scale = 2
+                if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+                   let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: dir).appending(path: "\(name)\(layout)-\(scheme).png"))
+                }
+            }
+        }
+    }
+    RecentsView.previewHover = nil
     for (name, activity) in pills {
         for (scheme, backdrop) in [("light", Color(white: 0.93)), ("dark", Color(white: 0.12))] {
             let model = ActivityPillModel()
