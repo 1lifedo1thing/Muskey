@@ -1317,8 +1317,8 @@ struct RecordSongLine: Equatable {
 
 /// The song's title, artist and album on the mini player's record (Settings > Mini player > Song > On the record): one
 /// line each, centred as a block on the record however many lines there are. Each line stays inside the record's
-/// circle: a line wider than the circle at its height is drawn smaller (`RecordLinesFit`), and only cut short at 8
-/// points. The record is dimmed under the lines, which are white with a shadow, like the play glyph over the cover. They
+/// circle: a line wider than the circle at its height is drawn smaller (`RecordLinesFit`), and only cut short at about
+/// half its size. The record is dimmed under the lines, which are white with a shadow, like the play glyph over the cover. They
 /// fade out while the pointer over the record shows its buttons.
 struct RecordSongLines: View {
     let lines: [RecordSongLine]
@@ -1370,7 +1370,7 @@ struct RecordSongLines: View {
 
 /// The size and place of each line of the song inside a circle. The lines are stacked and centred on the circle's
 /// middle. Each line gets the width of the circle at the edge of the line that is furthest from the middle, where the
-/// circle is narrowest along it, and its text gets as small as that width needs, down to `smallest` points. The title
+/// circle is narrowest along it, and its text gets as small as that width needs, down to `lowest`. The title
 /// stays the largest line, so a long title never sits under a larger artist. Smaller lines take less height, which
 /// moves every line and changes its width, so the sizes are found again a few times.
 struct RecordLinesFit {
@@ -1383,6 +1383,11 @@ struct RecordLinesFit {
     }
 
     static let smallest: CGFloat = 8
+
+    /// The smallest that a line of `full` points gets before it is cut short: just over half its size, and never under
+    /// 8 points. Smaller text would be hard to read, and a long title took every line down to 8 points on a large
+    /// record.
+    static func lowest(_ full: CGFloat) -> CGFloat { min(full, max(smallest, full * 0.55)) }
 
     static func fit(_ lines: [RecordSongLine], diameter: CGFloat, base: (RecordSongLine.Kind) -> CGFloat) -> [Line] {
         let radius = diameter / 2
@@ -1404,13 +1409,14 @@ struct RecordLinesFit {
             var next = lines.indices.map { index in
                 let full = base(lines[index].kind)
                 let fitting = natural[index] > 0 ? full * placed[index].width / natural[index] : full
-                return min(full, max(min(smallest, full), fitting))
+                return min(full, max(lowest(full), fitting))
             }
             // The artist and the album never get larger than the title, at the same ratio as their usual sizes.
             if let title = lines.firstIndex(where: { $0.kind == .title }) {
                 let ratio = next[title] / base(.title)
                 for index in lines.indices where index != title {
-                    next[index] = min(next[index], max(min(smallest, next[index]), base(lines[index].kind) * ratio))
+                    let full = base(lines[index].kind)
+                    next[index] = min(next[index], max(lowest(full), full * ratio))
                 }
             }
             if next == sizes { break }
