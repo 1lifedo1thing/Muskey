@@ -62,7 +62,7 @@ struct ShortcutsSheet: View {
         let playback = KeyGroup(name: "Playback", symbol: "playpause", hue: 45, rows: [
             Row(caps: [.key("space")], name: "play or pause"),
             Row(caps: [.key("N"), .key("P")], name: "next or previous song"),
-            Row(caps: [.key("←"), .key("→")], name: "5 seconds back/forward", condition: "when hovering the record"),
+            Row(caps: [.key("←"), .key("→")], name: "5 seconds back/forward", condition: "when hovering the record or the waveform"),
             Row(caps: [.key("0")], name: "from the beginning", condition: "when hovering the record"),
             Row(caps: [.key("1–9")], name: "seek to 10%-90%", condition: "when hovering the record"),
         ])

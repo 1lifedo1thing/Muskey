@@ -775,7 +775,7 @@ struct KeyHints: View {
     var focus = false
     /// V mutes the vocals or plays them again, with the separation model installed.
     var vocals = false
-    /// The arrows and, in karaoke, the number keys seek.
+    /// The arrows and, in karaoke, the number keys seek. Over the waveform, the arrows move the song 5 seconds.
     var seek = false
     /// The key 0 starts the song over in karaoke.
     var restart = false
@@ -808,10 +808,10 @@ struct KeyHints: View {
             [Hint(keys: ["←", "→"], name: loopEnd == .start ? "nudge A" : "nudge B"), Hint(keys: ["⌥", "←", "→"], name: "by a beat"),
              Hint(keys: ["R"], name: "region loop"), Hint(keys: ["⌘", "+", "−"], name: "zoom")]
         case _ where waveform:
-            [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: style == .footer ? "per instrument" : "one waveform per instrument")] : [])
-                // In a close-up, ⌘0 joins the zoom keys, which keeps the row within the card. The card's row names ⌥W
-                // by its last words, since the hints show over the waveform and the whole name made the row wider than the card.
-                + [Hint(keys: ["⌘", "+", "−"] + (zoomed ? ["0"] : []), name: "zoom"), Hint(keys: ["scroll"], name: "move song")]
+            [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: "one waveform per instrument")] : [])
+                // In a close-up, ⌘0 joins the zoom keys. The card splits these keys over two lines, which fit the whole
+                // name of ⌥W.
+                + [Hint(keys: ["⌘", "+", "−"] + (zoomed ? ["0"] : []), name: "zoom"), Hint(keys: (seek ? ["←", "→"] : []) + ["scroll"], name: "move song")]
         case .band where karaokeKeys, .footer where karaokeKeys:
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["esc"], name: "close")]
@@ -841,14 +841,30 @@ struct KeyHints: View {
     }
 
     var body: some View {
-        HStack(spacing: style == .stems ? 11 : style == .footer ? 10 : 13) {
-            ForEach(hints, id: \.name) { hint in
-                HStack(spacing: 5) { keycaps(hint); name(hint) }
+        Group {
+            // Over the waveform, the card's footer takes the two lines of the song's title and artist, since one line of
+            // its keys is wider than the card.
+            if style == .footer, waveform, hints.count > 2 {
+                let half = (hints.count + 1) / 2
+                VStack(spacing: 5) {
+                    row(Array(hints.prefix(half)))
+                    row(Array(hints.dropFirst(half)))
+                }
+            } else {
+                row(hints)
             }
         }
         .opacity(0.62)
         .fixedSize()
         .accessibilityElement(children: .combine)
+    }
+
+    private func row(_ hints: [Hint]) -> some View {
+        HStack(spacing: style == .stems ? 11 : style == .footer ? 10 : 13) {
+            ForEach(hints, id: \.name) { hint in
+                HStack(spacing: 5) { keycaps(hint); name(hint) }
+            }
+        }
     }
 
     private func keycaps(_ hint: Hint) -> some View {
@@ -872,6 +888,8 @@ struct WaveformKeysSwap<Content: View>: View {
     let alignment: Alignment
     /// The smaller keycaps of karaoke's footer, for the narrower card.
     var small = false
+    /// The song can move, and the arrows move it 5 seconds.
+    var seek = false
     let palette: Palette
     @ViewBuilder let content: Content
 
@@ -880,7 +898,7 @@ struct WaveformKeysSwap<Content: View>: View {
         ZStack(alignment: alignment) {
             content.opacity(on ? 0 : 1)
             if on {
-                KeyHints(style: small ? .footer : .band, waveform: true, lanes: (wave.waveform?.stems != nil || StemModel.installed) && Preferences.shared.waveformStyle == .ribbon,
+                KeyHints(style: small ? .footer : .band, seek: seek, waveform: true, lanes: (wave.waveform?.stems != nil || StemModel.installed) && Preferences.shared.waveformStyle == .ribbon,
                          loopEnd: wave.loopEnd, zoomed: wave.zoom > 1, otherMode: "", palette: palette)
                     .transition(.opacity)
             }

@@ -794,7 +794,7 @@ struct HUDView: View {
             if showsStrip, let key = model.key {
                 HStack(spacing: 16) {
                     // The stem picker of T has its own keys under it, and the keys of the key row don't work while it shows.
-                    WaveformKeysSwap(wave: model.wave, alignment: .leading, palette: palette) {
+                    WaveformKeysSwap(wave: model.wave, alignment: .leading, seek: model.seekable, palette: palette) {
                         KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, chords: !model.chords.isEmpty, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
                     }
                     .opacity(model.notesPicking == nil ? model.hintsOpacity : 0)
@@ -2285,6 +2285,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let keyLookup = KeyLookup()
     private var keyMonitor: Any?
     private var magnifyMonitor: Any?
+    /// Sees the pinches that go to the app in front while the HUD shows.
+    private var globalMagnifyMonitor: Any?
     /// Gets keyboard focus back when the key picker closes, if a click on the HUD made Muskey the active app.
     private var lastOtherApp = NSWorkspace.shared.frontmostApplication
     private var signalSources: [DispatchSourceSignal] = []
@@ -2692,12 +2694,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if scrollOverStillBar { return nil }
             return adjust(event) || swipe(event) ? nil : event
         }
+        // A pinch reaches this monitor only while Muskey is the active app, and without the HUD's window: trackpad
+        // gestures go to the key window of the active app, and the HUD never activates Muskey. The pinches that go to
+        // the app in front reach the global monitor of `watchPinch` instead.
         magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
-            guard let self, event.window === panel else { return event }
-            if event.phase == .began { log("pinch began, " + (overWaveform(event) ? "over the waveform" : "away from the waveform")) }
-            guard overWaveform(event) else { return event }
-            zoomWaveform(1 + Double(event.magnification))
-            return nil
+            guard let self else { return event }
+            return pinch(event, global: false) ? nil : event
         }
         nowPlaying.log = { [weak self] in self?.log($0) }
         nowPlaying.heard = { [weak self] report in self?.slow.heard(report) ?? report }
@@ -2751,6 +2753,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loopEndChange = model.wave.$loopEnd.map { $0 != nil }.removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateHoverKeys() }
         }
+        // Over the waveform, they move the song.
+        waveHoverChange = model.wave.$hovered.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateHoverKeys() }
+        }
         // A new song's listen starts with no key, and the keys that change the key come back with its first estimate.
         keyChange = model.$key.map { $0 != nil }.removeDuplicates().sink { [weak self] keyed in
             DispatchQueue.main.async {
@@ -2781,6 +2787,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.syncPauseStop() }
             self?.updateWatching(shown: shown)
             self?.watchOption(shown)
+            self?.watchPinch(shown)
             self?.updateLyricsClock(shown: shown)
             self?.updateStemMeters(shown: shown)
             self?.prepareStemModel(shown: shown)
@@ -4805,6 +4812,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             nudgeLoopEnd(end, by: code == kVK_RightArrow ? 1 : -1, beat: option)
             return true
         }
+        // Over the waveform and its lanes, ← and → move the song 5 seconds in every layout. A song that can't move
+        // leaves them doing nothing, so that they never change the key or the chords out of sight.
+        if model.wave.hovered, !shift, !option, code == kVK_LeftArrow || code == kVK_RightArrow {
+            if model.seekable { seek(by: code == kVK_RightArrow ? 5 : -5) } else { log("seek: the player ignores seeks or the lyrics delay runs") }
+            return true
+        }
         // With chords over the lyrics, ← and → move the song a semitone, and ⌥← and ⌥→ move the capo, which changes
         // only the chords shown.
         // Over the record, they still seek.
@@ -6125,10 +6138,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The pointer of `event` is over the waveform.
     private func overWaveform(_ event: NSEvent) -> Bool {
+        overWaveform(inWindow: event.locationInWindow)
+    }
+
+    /// A point on the screen is over the waveform of the HUD.
+    private func overWaveform(screen point: NSPoint) -> Bool {
+        guard panel.isVisible, panel.frame.contains(point) else { return false }
+        return overWaveform(inWindow: panel.convertPoint(fromScreen: point))
+    }
+
+    private func overWaveform(inWindow point: NSPoint) -> Bool {
         guard let view = panel.contentView else { return false }
-        let local = view.convert(event.locationInWindow, from: nil)
+        let local = view.convert(point, from: nil)
         let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
         return model.scroll.frames.values.contains { $0.region == .waveform && $0.frame.contains(point) }
+    }
+
+    /// While the HUD shows, a global monitor sees the pinches that go to the app in front, since the HUD never gets
+    /// them. It can't keep them from that app, which may zoom too.
+    private func watchPinch(_ shown: Bool) {
+        if shown, globalMagnifyMonitor == nil {
+            globalMagnifyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .magnify) { [weak self] event in
+                _ = self?.pinch(event, global: true)
+            }
+        } else if !shown, let monitor = globalMagnifyMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalMagnifyMonitor = nil
+        }
+    }
+
+    /// A pinch with the pointer over the waveform zooms it. The pointer comes from the screen, since a pinch that goes
+    /// to another app has no window of Muskey's. Returns true when the waveform zoomed.
+    private func pinch(_ event: NSEvent, global: Bool) -> Bool {
+        let point = NSEvent.mouseLocation
+        let over = model.shown && overWaveform(screen: point)
+        // Every pinch that begins over the HUD is logged, with the monitor that saw it.
+        if event.phase == .began, global ? panel.isVisible && panel.frame.contains(point) : true {
+            log("pinch began, seen \(global ? "in the app in front" : "by Muskey"), " + (over ? "over the waveform" : "away from the waveform"))
+        }
+        guard over else { return false }
+        zoomWaveform(1 + Double(event.magnification))
+        return true
     }
 
     /// The Separate instruments and vocals button: separates the song with every stem playing, and shows the stems in
@@ -6916,6 +6966,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForRestart = false
     private var hoverKeysForSave = false
     private var hoverKeysForRecord = false
+    private var hoverKeysForWaveform = false
     private var hoverKeysForQueue = false
     private var hoverKeysForChords = false
     private var hoverKeysForLoopEnd = false
@@ -6930,6 +6981,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum HoverKeysLock { case none, saving, opening, shortcuts }
     private var overRecordChange: AnyCancellable?
     private var loopEndChange: AnyCancellable?
+    private var waveHoverChange: AnyCancellable?
     private var lockChange: AnyCancellable?
     private var keyChange: AnyCancellable?
     private var heldGlassChange: AnyCancellable?
@@ -6959,7 +7011,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
-                || hoverKeysForRecord != model.overRecord || hoverKeysForQueue != model.queueShown || hoverKeysForLoopEnd != (model.wave.loopEnd != nil)
+                || hoverKeysForRecord != model.overRecord || hoverKeysForWaveform != model.wave.hovered
+                || hoverKeysForQueue != model.queueShown || hoverKeysForLoopEnd != (model.wave.loopEnd != nil)
                 || hoverKeysForChords != !model.chords.isEmpty || hoverKeysForNotes != (model.notesPicking != nil) || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
@@ -6975,6 +7028,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForRestart = model.restartable
         hoverKeysForSave = model.savable
         hoverKeysForRecord = model.overRecord
+        hoverKeysForWaveform = model.wave.hovered
         hoverKeysForQueue = model.queueShown
         hoverKeysForLoopEnd = model.wave.loopEnd != nil
         hoverKeysForChords = !model.chords.isEmpty
@@ -7047,6 +7101,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.overRecord, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
         if model.overRecord { keys += Self.digitKeys.dropFirst().map { ($0, 0) } }
         if model.overRecord, model.restartable { keys.append((kVK_ANSI_0, 0)) }
+        // Over the waveform, the arrows move the song too, and do nothing while it can't move.
+        if model.wave.hovered { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
         // A key that two lists add is registered once.
         keys = keys.reduce(into: []) { unique, key in if !unique.contains(where: { $0 == key }) { unique.append(key) } }
         hoverKeys = keys.compactMap { code, modifiers in
@@ -7831,7 +7887,8 @@ extension EnvironmentValues {
             default: [.vocals, .guitar]
             }
             // A song from Muskey Player, which can seek, so the lyrics list ← → for 5 s.
-            if variant.hasSuffix("-seek") { model.seekable = true }
+            // The waveform's keys show its arrows only for a song that can move.
+            if variant.hasSuffix("-seek") || variant.hasPrefix("-waveform-hover") { model.seekable = true }
             // The keys of the waveform, which show while the pointer is over it.
             model.wave.hovered = variant.hasPrefix("-waveform-hover")
             // The B end of the region loop under the pointer: its arrows, its time and the thicker line.
