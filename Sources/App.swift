@@ -2289,8 +2289,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let keyLookup = KeyLookup()
     private var keyMonitor: Any?
     private var magnifyMonitor: Any?
-    /// Sees the pinches that go to the app in front while the HUD shows.
-    private var globalMagnifyMonitor: Any?
+    /// Sees the pinches while the HUD shows, whichever app they go to.
+    private var pinchTap: CFMachPort?
+    private var pinchTapSource: CFRunLoopSource?
     /// Gets keyboard focus back when the key picker closes, if a click on the HUD made Muskey the active app.
     private var lastOtherApp = NSWorkspace.shared.frontmostApplication
     private var signalSources: [DispatchSourceSignal] = []
@@ -2699,10 +2700,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return adjust(event) || swipe(event) ? nil : event
         }
         // A pinch reaches this monitor only while Muskey is the active app, and without the HUD's window: trackpad
-        // gestures go to the key window of the active app, and the HUD never activates Muskey. The pinches that go to
-        // the app in front reach the global monitor of `watchPinch` instead.
+        // gestures go to the key window of the active app, and the HUD never activates Muskey. The event tap of
+        // `watchPinch` sees every pinch, so this monitor only zooms when the tap couldn't be created.
         magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
-            guard let self else { return event }
+            guard let self, pinchTap == nil else { return event }
             return pinch(event, global: false) ? nil : event
         }
         nowPlaying.log = { [weak self] in self?.log($0) }
@@ -6239,16 +6240,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return model.scroll.frames.values.contains { $0.region == .waveform && $0.frame.contains(point) }
     }
 
-    /// While the HUD shows, a global monitor sees the pinches that go to the app in front, since the HUD never gets
-    /// them. It can't keep them from that app, which may zoom too.
+    /// While the HUD shows, a listen-only event tap sees the pinches, which go to the key window of the active app and
+    /// reach neither the HUD nor a global monitor (none logged on a real trackpad). It can't keep a pinch from the app in
+    /// front, which may zoom too. Gesture events are type 29, and the pinches among them convert to `.magnify`.
     private func watchPinch(_ shown: Bool) {
-        if shown, globalMagnifyMonitor == nil {
-            globalMagnifyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .magnify) { [weak self] event in
-                _ = self?.pinch(event, global: true)
+        if shown, pinchTap == nil {
+            let mask: CGEventMask = (1 << 29) | (1 << 30)
+            let callback: CGEventTapCallBack = { _, type, event, info in
+                guard let info else { return Unmanaged.passUnretained(event) }
+                let app = Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue()
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    if let tap = app.pinchTap { CGEvent.tapEnable(tap: tap, enable: true) }
+                } else if let pinch = NSEvent(cgEvent: event), pinch.type == .magnify {
+                    _ = app.pinch(pinch, global: true)
+                }
+                return Unmanaged.passUnretained(event)
             }
-        } else if !shown, let monitor = globalMagnifyMonitor {
-            NSEvent.removeMonitor(monitor)
-            globalMagnifyMonitor = nil
+            guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap, options: .listenOnly, eventsOfInterest: mask,
+                                              callback: callback, userInfo: Unmanaged.passUnretained(self).toOpaque())
+            else { return log("pinch: the event tap couldn't be created, so only a pinch while Muskey is active zooms") }
+            let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+            pinchTap = tap
+            pinchTapSource = source
+        } else if !shown, let tap = pinchTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let source = pinchTapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+            CFMachPortInvalidate(tap)
+            pinchTap = nil
+            pinchTapSource = nil
         }
     }
 
@@ -6259,7 +6279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let over = model.shown && overWaveform(screen: point)
         // Every pinch that begins over the HUD is logged, with the monitor that saw it.
         if event.phase == .began, global ? panel.isVisible && panel.frame.contains(point) : true {
-            log("pinch began, seen \(global ? "in the app in front" : "by Muskey"), " + (over ? "over the waveform" : "away from the waveform"))
+            log("pinch began, seen \(global ? "by the event tap" : "by Muskey"), " + (over ? "over the waveform" : "away from the waveform"))
         }
         guard over else { return false }
         zoomWaveform(1 + Double(event.magnification))
@@ -7835,7 +7855,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-loop-zoom", "-waveform-hover-loop", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-lanes-separating", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-picker-region", "-notes-picker-whole", "-notes-outside-region", "-notes-outside-region-whole", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-loop-zoom", "-lanes-hover-loop-zoom", "-waveform-hover-loop", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-lanes-separating", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-picker-region", "-notes-picker-whole", "-notes-outside-region", "-notes-outside-region-whole", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -7975,15 +7995,15 @@ extension EnvironmentValues {
             }
             // A song from Muskey Player, which can seek, so the lyrics list ← → for 5 s.
             // The waveform's keys show its arrows only for a song that can move.
-            if variant.hasSuffix("-seek") || variant.hasPrefix("-waveform-hover") { model.seekable = true }
+            if variant.hasSuffix("-seek") || variant.hasPrefix("-waveform-hover") || variant.hasPrefix("-lanes-hover") { model.seekable = true }
             // The keys of the waveform, which show while the pointer is over it.
-            model.wave.hovered = variant.hasPrefix("-waveform-hover")
+            model.wave.hovered = variant.hasPrefix("-waveform-hover") || variant.hasPrefix("-lanes-hover")
             // The B end of the region loop under the pointer: its arrows, its time and the thicker line.
             LoopFlags.hoveredInRenders = variant.hasSuffix("-loop-hover") ? .end : nil
             model.wave.loopEnd = LoopFlags.hoveredInRenders
             // A region loop with the dashed lines of the presses, one still waiting for its end, and one over lyric lines.
             if variant.hasSuffix("loop") || variant.hasPrefix("-loop") || variant.hasSuffix("-loop-hover") || variant.hasPrefix("-lanes-loop")
-                || variant.hasPrefix("-waveform-hover-loop") {
+                || variant.hasPrefix("-waveform-hover-loop") || variant.hasPrefix("-lanes-hover-loop") {
                 model.loop = variant.contains("lyrics") ? LoopRegion(start: 16.5, end: 30)
                     : LoopRegion(start: 86.2, end: variant == "-loop-armed" ? nil : 110.4, startPress: 86.6, endPress: variant == "-loop-armed" ? nil : 110.1)
                 if variant == "-loop-zoom" { model.wave.zoom = 6 }

@@ -433,8 +433,10 @@ struct WaveformView: View {
         .background(palette.ink.opacity(shownLanes.isEmpty ? 0.035 : 0), in: RoundedRectangle(cornerRadius: 6))
     }
 
-    /// The number key of each bar, in a keycap at the top of its line, while the pointer is over the waveform.
+    /// The number key of each bar, in a keycap at the top of its line, while the pointer is over the waveform. Bars
+    /// closer together than a keycap get none, since the keycaps would cover each other.
     private func drawBarKeys(_ context: inout GraphicsContext, bars: [Double], from: Double, size: CGSize) {
+        guard bars.count < 2 || (bars[1] - bars[0]) / span * size.width >= 14 else { return }
         for (index, start) in bars.enumerated() where start >= from && start < from + span {
             let x = (start - from) / span * size.width
             let cap = CGRect(x: x + 2, y: 2, width: 11, height: 11)
