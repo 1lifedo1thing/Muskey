@@ -2480,6 +2480,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NSApp.mainMenu = mainMenu()
+        hangWatch.start()
+        if let seconds = Self.stringOption("--test-hang").flatMap(Double.init) {
+            // Blocks the main thread on purpose, 3 s after the launch, so the log shows how a hang is written.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                self?.log(String(format: "test hang: blocking the main thread for %.1f s", seconds))
+                Thread.sleep(forTimeInterval: seconds)
+            }
+        }
         Updates.shared.start()
         prefs.$cacheCleanup.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.sweepCaches() } }.store(in: &prefChanges)
         cacheSweeper = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.sweepCaches() }
@@ -7992,6 +8000,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
 
     nonisolated private static func flushLog() { logQueue.sync {} }
+
+    /// Logs every time the main thread stops answering for half a second or more.
+    private let hangWatch = HangWatch { line in AppDelegate.logFromAnyQueue(line) }
+
+    /// A log line written from a queue other than the main one.
+    nonisolated static func logFromAnyQueue(_ line: String) {
+        let stamped = "\(ISO8601DateFormatter().string(from: Date()))  \(line)\n"
+        print(stamped, terminator: "")
+        logQueue.async { append(stamped) }
+    }
 
     private func log(_ line: String) {
         // With `--log-keys`, each line also gets the host time in seconds, to line up a recording with the keys.
