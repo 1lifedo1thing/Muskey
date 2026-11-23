@@ -383,10 +383,9 @@ struct WaveformView: View {
             : shownLanes.map { ($0, waveform.bars(count, from: from, to: from + span, stem: $0, range: ranges[$0])) }
         return Canvas { context, size in
             let bars = WaveformBars.starts(loop: loop, bpm: bpm, closeUp: from ... from + span)
-            if let bpm, bpm > 0 {
+            if let beat = WaveformBars.beat(loop: loop, bpm: bpm) {
                 // Faint lines a beat apart, counted from the start of the region loop, or from the song's start, as the
                 // bars are.
-                let beat = 60 / bpm
                 let anchor = WaveformBars.anchor(loop)
                 var t = anchor + ((from - anchor) / beat).rounded(.up) * beat
                 while t < from + span {
@@ -437,7 +436,7 @@ struct WaveformView: View {
     /// closer together than a keycap get none, since the keycaps would cover each other.
     private func drawBarKeys(_ context: inout GraphicsContext, bars: [Double], from: Double, size: CGSize) {
         guard bars.count < 2 || (bars[1] - bars[0]) / span * size.width >= 14 else { return }
-        for (index, start) in bars.enumerated() where start >= from && start < from + span {
+        for (index, start) in bars.prefix(9).enumerated() where start >= from && start < from + span {
             let x = (start - from) / span * size.width
             let cap = CGRect(x: x + 2, y: 2, width: 11, height: 11)
             let shape = Path(roundedRect: cap, cornerRadius: 3)
@@ -542,20 +541,30 @@ struct WaveformHost: View {
     }
 }
 
-/// The bars that the number keys over the waveform go to, four beats of the song's tempo each, at most 9 for the keys 1
-/// to 9. While a region loop is set, they are the bars from its start to its end. Otherwise they are the bars that
-/// start in the close-up, counted from the song's start like its beat lines, and there are none while the whole song
-/// shows.
+/// The bars of the waveform, four beats each, whose first 9 the keys 1 to 9 go to. While a region loop is set, the
+/// whole loop is split into equal bars: as many as the song's tempo fits in it, rounded, so the last bar ends on the
+/// loop's end. Otherwise they are the bars that start in the close-up, counted from the song's
+/// start like its beat lines, and there are none while the whole song shows.
 enum WaveformBars {
     static func starts(loop: LoopRegion?, bpm: Double?, closeUp: ClosedRange<Double>?) -> [Double] {
-        guard let bpm, bpm > 0 else { return [] }
-        let bar = Double(Score.beatsPerBar) * 60 / bpm
+        guard let beat = beat(loop: loop, bpm: bpm) else { return [] }
+        let bar = Double(Score.beatsPerBar) * beat
         if let loop, let end = loop.end {
-            return Array(stride(from: loop.start, to: end - 0.05, by: bar).prefix(9))
+            return Array(stride(from: loop.start, to: end - beat / 2, by: bar).prefix(64))
         }
         guard let closeUp else { return [] }
         let first = (max(0, closeUp.lowerBound) / bar).rounded(.up) * bar
-        return Array(stride(from: first, to: closeUp.upperBound, by: bar).prefix(9))
+        return Array(stride(from: first, to: closeUp.upperBound, by: bar).prefix(64))
+    }
+
+    /// The beat of the beat lines: the song's, or the one that fills the region loop with a whole number of bars.
+    static func beat(loop: LoopRegion?, bpm: Double?) -> Double? {
+        guard let bpm, bpm > 0 else { return nil }
+        let beat = 60 / bpm
+        guard let loop, let end = loop.end, end > loop.start else { return beat }
+        let bar = Double(Score.beatsPerBar) * beat
+        let bars = max(1, ((end - loop.start) / bar).rounded())
+        return (end - loop.start) / (bars * Double(Score.beatsPerBar))
     }
 
     /// Where the beat lines of the close-up are counted from: the start of the region loop, or the song's start.

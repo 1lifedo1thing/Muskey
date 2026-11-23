@@ -2768,10 +2768,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loopEndChange = model.wave.$loopEnd.map { $0 != nil }.removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateHoverKeys() }
         }
-        // Over the waveform, they move the song.
+        // Over the waveform, they move the song, and the numbers go to its bars once it numbers them.
         waveHoverChange = model.wave.$hovered.removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateHoverKeys() }
         }
+        barsChange = model.wave.$zoom.map { $0 > 1.05 }.removeDuplicates()
+            .combineLatest(model.$loop.map { $0?.end != nil }.removeDuplicates(), model.$tempo.map { $0 != nil }.removeDuplicates())
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.updateHoverKeys() } }
         // A new song's listen starts with no key, and the keys that change the key come back with its first estimate.
         keyChange = model.$key.map { $0 != nil }.removeDuplicates().sink { [weak self] keyed in
             DispatchQueue.main.async {
@@ -3163,7 +3166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func toggleNotesPicker() {
         if model.notesPicking != nil { return closeNotesPicker() }
         let stems = notesStems
-        let selected = lastNotesStem.flatMap { stems.contains($0) ? $0 : nil } ?? (stems.contains(.bass) ? .bass : stems[0])
+        let selected = shownNotesStem(stems) ?? lastNotesStem.flatMap { stems.contains($0) ? $0 : nil } ?? (stems.contains(.bass) ? .bass : stems[0])
         model.queueShown = false
         // A song from another app is transcribed from what Muskey heard of it, which its waveform's recorder keeps.
         let live = !playsInFilePlayer
@@ -3205,6 +3208,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notesDownloads = []
         updateHoverKeys()
         keepHover()
+    }
+
+    /// The stem that the HUD shows on its own, which T picks first: the only stem with a waveform of its own, or else
+    /// the only stem that plays.
+    private func shownNotesStem(_ stems: [Stem]) -> Stem? {
+        let lanes = model.wave.lanes && model.wave.waveform?.stems != nil ? stems.filter { model.wave.laneStems.contains($0) } : []
+        if lanes.count == 1 { return lanes[0] }
+        let playing = model.stemsEngaged ? Stem.shown.filter { !model.stemsMuted.contains($0) } : []
+        return playing.count == 1 && stems.contains(playing[0]) ? playing[0] : nil
     }
 
     /// The region loop that T offers to transcribe in place of the whole song, and picks first: both of its ends are
@@ -4883,8 +4895,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if model.seekable { seek(by: code == kVK_RightArrow ? 5 : -5) } else { log("seek: the player ignores seeks or the lyrics delay runs") }
             return true
         }
-        // And 0 goes to the start of the region loop, or of the song, and 1 to 9 to the bars that it numbers.
-        if model.wave.hovered, !shift, !option, let digit = Self.digitKeys.firstIndex(of: code) {
+        // And 0 goes to the start of the region loop, or of the song, and 1 to 9 to the bars that it numbers. With no
+        // numbered bars, 1 to 9 keep their usual meaning, which mutes the stems.
+        if model.wave.hovered, !shift, !option, let digit = Self.digitKeys.firstIndex(of: code), digit == 0 || waveformNumbersBars {
             waveformDigit(digit)
             return true
         }
@@ -5003,8 +5016,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The keys 0 to 9 over the waveform. 0 goes to the start of the region loop, or to the song's start without one,
-    /// and 1 to 9 to the bars that the waveform numbers. While no bars are numbered (the whole song shows and no region
-    /// loop is set), 1 to 9 go to a tenth of the song, as over the record.
+    /// and 1 to 9 to the bars that the waveform numbers.
     private func waveformDigit(_ digit: Int) {
         guard model.seekable else { return log("seek: the player ignores seeks or the lyrics delay runs") }
         if digit == 0 {
@@ -5012,10 +5024,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return model.restartable ? startOver() : seek(to: 0, flash: "0%")
         }
         let bars = waveformBars()
-        if bars.isEmpty { return seek(toFraction: Double(digit) / 10) }
-        guard digit <= bars.count else { return log("seek: the waveform numbers \(bars.count) bars") }
+        guard digit <= min(9, bars.count) else { return log("seek: the waveform numbers \(bars.count) bars") }
         log("seek: bar \(digit) of the waveform")
         seek(to: bars[digit - 1], flash: "\(digit).circle")
+    }
+
+    /// The waveform numbers bars, which 1 to 9 go to: a region loop is set or the waveform shows a close-up, and the
+    /// song's tempo is known.
+    private var waveformNumbersBars: Bool {
+        model.shownTempo != nil && (model.loop?.end != nil || model.wave.zoom > 1.05 && (model.card || model.waveformStyle == .ribbon))
     }
 
     /// The bars that the waveform numbers, as `WaveformView` finds them for the close-up around the playhead.
@@ -7081,6 +7098,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForSave = false
     private var hoverKeysForRecord = false
     private var hoverKeysForWaveform = false
+    private var hoverKeysForBars = false
     private var hoverKeysForQueue = false
     private var hoverKeysForChords = false
     private var hoverKeysForLoopEnd = false
@@ -7096,6 +7114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overRecordChange: AnyCancellable?
     private var loopEndChange: AnyCancellable?
     private var waveHoverChange: AnyCancellable?
+    private var barsChange: AnyCancellable?
     private var lockChange: AnyCancellable?
     private var keyChange: AnyCancellable?
     private var heldGlassChange: AnyCancellable?
@@ -7125,7 +7144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForLyrics != model.lyricsShown || hoverKeysForStems != model.stemsAvailable || hoverKeysForKaraoke != model.lyricsFocus
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
-                || hoverKeysForRecord != model.overRecord || hoverKeysForWaveform != model.wave.hovered
+                || hoverKeysForRecord != model.overRecord || hoverKeysForWaveform != model.wave.hovered || hoverKeysForBars != waveformNumbersBars
                 || hoverKeysForQueue != model.queueShown || hoverKeysForLoopEnd != (model.wave.loopEnd != nil)
                 || hoverKeysForChords != !model.chords.isEmpty || hoverKeysForNotes != (model.notesPicking != nil) || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
@@ -7143,6 +7162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForSave = model.savable
         hoverKeysForRecord = model.overRecord
         hoverKeysForWaveform = model.wave.hovered
+        hoverKeysForBars = waveformNumbersBars
         hoverKeysForQueue = model.queueShown
         hoverKeysForLoopEnd = model.wave.loopEnd != nil
         hoverKeysForChords = !model.chords.isEmpty
@@ -7217,8 +7237,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.overRecord, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
         if model.overRecord { keys += Self.digitKeys.dropFirst().map { ($0, 0) } }
         if model.overRecord, model.restartable { keys.append((kVK_ANSI_0, 0)) }
-        // Over the waveform, the arrows and the numbers move the song too, and do nothing while it can't move.
-        if model.wave.hovered { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } + Self.digitKeys.map { ($0, 0) } }
+        // Over the waveform, the arrows, 0 and the numbers of its bars move the song too, and do nothing while it can't move.
+        if model.wave.hovered { keys += [kVK_LeftArrow, kVK_RightArrow, kVK_ANSI_0].map { ($0, 0) } }
+        if model.wave.hovered, waveformNumbersBars { keys += Self.digitKeys.dropFirst().map { ($0, 0) } }
         // A key that two lists add is registered once.
         keys = keys.reduce(into: []) { unique, key in if !unique.contains(where: { $0 == key }) { unique.append(key) } }
         hoverKeys = keys.compactMap { code, modifiers in
