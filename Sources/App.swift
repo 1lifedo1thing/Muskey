@@ -454,10 +454,35 @@ final class WaveState: ObservableObject {
     @Published var laneStems = Preferences.shared.waveformLanes
     /// The pointer is over the waveform, and its keys take the place of the hints row, or of the song's lines on the card.
     @Published var hovered = false
-    /// The end of the region loop whose tab is under the pointer, which ← and → nudge.
+    /// The end of the region loop whose tab is under the pointer, which ← and → nudge. An end that a nudge moved out
+    /// from under a pointer that stayed still stays the one that they nudge until the pointer moves, so that the
+    /// arrows don't start moving the song instead.
     @Published var loopEnd: LoopEnd?
+    /// The end whose tab is under the pointer, as the tab's hover says.
+    private var pointerEnd: LoopEnd?
+    /// Where the pointer was when an end of the loop last moved.
+    var endMovedUnder: NSPoint?
 
     static let zoomLimit = 40.0
+
+    /// The tab of an end got the pointer or lost it. A tab that moved away from a pointer that stayed where it was when
+    /// the end moved keeps its end.
+    func hoverEnd(_ end: LoopEnd?) {
+        pointerEnd = end
+        if end == nil, loopEnd != nil, endMovedUnder == NSEvent.mouseLocation { return }
+        if loopEnd != end { loopEnd = end }
+    }
+
+    /// The pointer moved, so an end kept after a nudge gives way to the one under the pointer.
+    func pointerMoved() {
+        if loopEnd != pointerEnd { loopEnd = pointerEnd }
+    }
+
+    func clearEnd() {
+        pointerEnd = nil
+        endMovedUnder = nil
+        if loopEnd != nil { loopEnd = nil }
+    }
 
     func toggleLane(_ stem: Stem) {
         if laneStems.contains(stem) { laneStems.remove(stem) } else { laneStems.insert(stem) }
@@ -1523,6 +1548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.pointerMoved = { [weak self] in
             self?.checkClipboard()
             self?.followPointer()
+            self?.model.wave.pointerMoved()
             self?.hoverFocus(moved: true)
         }
         return panel
@@ -2731,7 +2757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return adjust(event) || swipe(event) ? nil : event
         }
         // A pinch reaches this monitor only while Muskey is the active app, since macOS sends trackpad gestures to the
-        // active app alone. Muskey becomes the active app while the pointer is over the HUD (`hoverFocus`).
+        // active app alone. Muskey becomes the active app while the pointer is over the waveform (`hoverFocus`).
         magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
             guard let self else { return event }
             return pinch(event) ? nil : event
@@ -3212,29 +3238,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.hovering = on
     }
 
-    // MARK: Focus over the HUD
+    // MARK: Focus over the waveform
 
-    /// The app that was in front when the pointer came over the HUD and made Muskey the active app. macOS sends
+    /// The app that was in front when the pointer came over the waveform and made Muskey the active app. macOS sends
     /// trackpad gestures like a pinch only to the active app, so the waveform zooms with a pinch only while Muskey is
-    /// active. That app gets the front back when the pointer leaves the HUD.
+    /// active. Only that app gets the front back, when the pointer leaves the waveform: a Muskey that was made active
+    /// any other way stays active.
     private var focusReturn: NSRunningApplication?
     private var focusWork: DispatchWorkItem?
-    /// The pointer came over the glass with a move, and nothing covers the glass under it, as `hoverFocus` saw last.
-    private var pointerOverHUD = false
+    /// The pointer came over a waveform that zooms with a pinch with a move, and nothing covers it, as `hoverFocus`
+    /// saw last.
+    private var pointerOverWaveform = false
     /// The key picker takes the keyboard back from the app that got the front back, until then.
     private var pickerKeyboardUntil: Date?
     /// The last window logged above the glass, so a pointer that moves over it logs it once.
     private var coverLogged = 0
     private var tookFrontAt = Date.distantPast
 
-    /// Makes Muskey the active app a moment after the pointer comes over the HUD, and gives the front back to the app
-    /// that had it a moment after the pointer leaves. A pointer that crosses the HUD on its way elsewhere, or a hover
-    /// that ends for an instant while the layout changes, leaves the front where it is.
+    /// Makes Muskey the active app a moment after the pointer comes over the waveform, where a pinch zooms, and gives
+    /// the front back to the app that had it a moment after the pointer leaves. The rest of the HUD takes clicks and
+    /// keys without Muskey being active. A pointer that crosses the waveform on its way elsewhere, or a hover that ends
+    /// for an instant while the layout changes, leaves the front where it is.
     private func hoverFocus(moved: Bool) {
         let over: Bool
-        if !model.shown || !panel.pointerOnGlass {
+        if !model.shown || !panel.pointerOnGlass || !waveformPinchable || !overWaveform(screen: NSEvent.mouseLocation, above: 16) {
             over = false
-        } else if pointerOverHUD {
+        } else if pointerOverWaveform {
             over = true
         } else {
             // A menu or another window above the glass gets the pointer, and a glass that appears or grows under a
@@ -3255,8 +3284,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 log("focus: a window of \(cover.owner) at level \(cover.layer) is above the glass under the pointer")
             }
         }
-        guard over != pointerOverHUD else {
-            // Something took the front while the pointer stayed over the HUD, like a song that opened from a link: the
+        guard over != pointerOverWaveform else {
+            // Something took the front while the pointer stayed over the waveform, like a song that opened from a link: the
             // next move of the pointer takes it again, at most once a second.
             if over, moved, focusWork == nil, Date().timeIntervalSince(tookFrontAt) > 1,
                let front = NSWorkspace.shared.frontmostApplication, front != .current {
@@ -3266,7 +3295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-        pointerOverHUD = over
+        pointerOverWaveform = over
         focusWork?.cancel()
         focusWork = nil
         if over {
@@ -3286,7 +3315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A drag that comes over the HUD, like a file on its way to be dropped, keeps going in the app it started in.
         // Muskey counts as active while the key picker holds the keyboard with another app in front, so the app in
         // front decides.
-        guard pointerOverHUD, !dialogOpen, NSApp.modalWindow == nil, NSEvent.pressedMouseButtons == 0,
+        guard pointerOverWaveform, !dialogOpen, NSApp.modalWindow == nil, NSEvent.pressedMouseButtons == 0,
               let front = NSWorkspace.shared.frontmostApplication, front != .current
         else { return }
         focusReturn = front
@@ -3297,11 +3326,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.makeMain()
         }
         NSApp.takeFocus()
-        log("focus: Muskey is the active app while the pointer is over the HUD, in place of \(Self.appName(front))")
+        log("focus: Muskey is the active app while the pointer is over the waveform, in place of \(Self.appName(front))")
         logFront()
         // macOS can leave the other app in front, as right after it got the front back: Muskey asks once more.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self, pointerOverHUD, focusReturn != nil, let now = NSWorkspace.shared.frontmostApplication, now != .current else { return }
+            guard let self, pointerOverWaveform, focusReturn != nil, let now = NSWorkspace.shared.frontmostApplication, now != .current else { return }
             log("focus: \(Self.appName(now)) stayed in front, Muskey asks for the front again")
             focusReturn = now
             NSApp.takeFocus()
@@ -3309,10 +3338,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// A window of Muskey that closes while the pointer is over the HUD leaves Muskey in front, and the app that was in
-    /// front before gets the front back once the pointer leaves the HUD.
+    /// A window of Muskey that closes while the pointer is over the waveform leaves Muskey in front, as a pointer that
+    /// came over it would, and the app that was in front before gets the front back once the pointer leaves it.
     private func frontAfterClose(_ app: NSRunningApplication) {
-        guard pointerOverHUD, model.shown else { app.activate(); return }
+        guard pointerOverWaveform, model.shown else { app.activate(); return }
         focusReturn = app
         tookFrontAt = Date()
     }
@@ -3325,16 +3354,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         focusReturn = nil
         panel.holdsFront = false
         guard NSWorkspace.shared.frontmostApplication == .current else {
-            return log("focus: another app became active while the pointer was over the HUD")
+            return log("focus: another app became active while the pointer was over the waveform")
         }
-        // A window of Muskey that took the keyboard while the pointer was over the HUD keeps the front: Settings, the
+        // A window of Muskey that took the keyboard while the pointer was over the waveform keeps the front: Settings, the
         // notes window, Open URL, a dialog.
         if let key = NSApp.keyWindow, key !== panel { return log("focus: \(key.title.isEmpty ? "another window" : key.title) keeps Muskey in front") }
         guard NSApp.modalWindow == nil, !dialogOpen, !app.isTerminated else { return }
         pickerKeyboardUntil = model.picking ? Date().addingTimeInterval(1) : nil
         NSApp.yieldActivation(to: app)
         app.activate()
-        log("focus: \(Self.appName(app)) is the active app again, the pointer left the HUD")
+        log("focus: \(Self.appName(app)) is the active app again, the pointer left the waveform")
         logFront()
     }
 
@@ -4342,9 +4371,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let volume = min(max(((current.start + Double(current.travel) / 300) * 100).rounded() / 100, 0), 1.5)
             if volume != model.stemVolumes[stem] ?? 1 { setStemVolume(stem, volume) }
         case .timeBar, .waveform:
-            // 400 points of travel cross the whole song. The bar shows the place, and the song moves there once the
-            // fingers lift, so a player gets one seek per scroll.
-            let fraction = min(max(current.start + Double(current.travel) / 400, 0), 1)
+            // 400 points of travel cross the whole song, or the part that the close-up shows on a zoomed waveform, so
+            // the song moves more finely the more it is zoomed. The bar shows the place, and the song moves there once
+            // the fingers lift, so a player gets one seek per scroll.
+            let across = current.region == .waveform ? closeUpShare : 1
+            let fraction = min(max(current.start + Double(current.travel) / 400 * across, 0), 1)
             if model.scrub != fraction { model.scrub = fraction }
         }
         return true
@@ -5249,6 +5280,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// song's tempo is known.
     private var waveformNumbersBars: Bool {
         model.shownTempo != nil && (model.loop?.end != nil || model.wave.zoom > 1.05 && (model.card || model.waveformStyle == .ribbon))
+    }
+
+    /// The share of the song that the close-up of the waveform shows, as `WaveformView` spans it, or 1 for the whole
+    /// song.
+    private var closeUpShare: Double {
+        guard model.wave.zoom > 1.05, model.card || model.waveformStyle == .ribbon,
+              let duration = nowPlaying.track?.duration, duration > 0 else { return 1 }
+        return min(1, max(4, duration / model.wave.zoom) / duration)
     }
 
     /// The bars that the waveform numbers, as `WaveformView` finds them for the close-up around the playhead.
@@ -6228,6 +6267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .end: loop.end = seconds
         }
         model.loop = loop
+        model.wave.endMovedUnder = NSEvent.mouseLocation
         log(String(format: "region loop %@ set to %.2f s", end == .start ? "start" : "end", seconds))
         applyLoop()
     }
@@ -6275,7 +6315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard model.loop != nil else { return }
         loopSnap?.cancel()
         withAnimation(.easeOut(duration: 0.15)) { model.loop = nil }
-        model.wave.loopEnd = nil
+        model.wave.clearEnd()
         loopSong = nil
         applyLoop()
         log("region loop cleared")
@@ -6296,7 +6336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.setInteraction(clickable: true, keyboard: true)
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKey()
-        } else if !pointerOverHUD, focusReturn != nil {
+        } else if !pointerOverWaveform, focusReturn != nil {
             giveFrontBack()
         }
         updateHoverKeys()
@@ -6485,10 +6525,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.wave.waveform?.stems != nil || (liveRecorder != nil && model.stemsEngaged && !cachedStems)
     }
 
+    /// The waveform of the HUD can zoom: it shows as a ribbon, with the song's waveform read.
+    private var waveformPinchable: Bool { model.waveformShown && model.waveformStyle == .ribbon && model.wave.waveform != nil }
+
     /// Zooms the waveform by `factor`, from the whole song to a close-up of a few seconds. A factor of 0 shows the
     /// whole song.
     private func zoomWaveform(_ factor: Double) {
-        guard model.waveformShown, model.waveformStyle == .ribbon, model.wave.waveform != nil else { return }
+        guard waveformPinchable else { return }
         let before = model.wave.zoom
         withAnimation(.snappy(duration: 0.2)) { model.wave.zoom(by: factor) }
         if Self.logKeys, before != model.wave.zoom { log(String(format: "waveform zoom %.1f", model.wave.zoom)) }
@@ -6506,17 +6549,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overWaveform(inWindow: event.locationInWindow)
     }
 
-    /// A point on the screen is over the waveform of the HUD.
-    private func overWaveform(screen point: NSPoint) -> Bool {
+    /// A point on the screen is over the waveform of the HUD, or `above` points above it, where the tabs of the region
+    /// loop stand.
+    private func overWaveform(screen point: NSPoint, above: CGFloat = 0) -> Bool {
         guard panel.isVisible, panel.frame.contains(point) else { return false }
-        return overWaveform(inWindow: panel.convertPoint(fromScreen: point))
+        return overWaveform(inWindow: panel.convertPoint(fromScreen: point), above: above)
     }
 
-    private func overWaveform(inWindow point: NSPoint) -> Bool {
+    private func overWaveform(inWindow point: NSPoint, above: CGFloat = 0) -> Bool {
         guard let view = panel.contentView else { return false }
         let local = view.convert(point, from: nil)
         let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
-        return model.scroll.frames.values.contains { $0.region == .waveform && $0.frame.contains(point) }
+        return model.scroll.frames.values.contains {
+            $0.region == .waveform && CGRect(x: $0.frame.minX, y: $0.frame.minY - above, width: $0.frame.width, height: $0.frame.height + above).contains(point)
+        }
     }
 
     /// A pinch with the pointer over the waveform zooms it. Returns true when the waveform zoomed.
@@ -7839,7 +7885,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         raisedForOpening = false
         let current = session
         panel.fadeOut { [self] in
-            if session == current { panel.orderOut(nil); model.shown = false; model.overRecord = false; model.wave.loopEnd = nil }
+            if session == current { panel.orderOut(nil); model.shown = false; model.overRecord = false; model.wave.clearEnd() }
         }
         autoListenIfNeeded()
     }

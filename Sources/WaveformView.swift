@@ -49,6 +49,9 @@ struct WaveformView: View {
     var hovered: (Bool) -> Void = { _ in }
     /// The pointer moves onto the tab of an end of the region loop or off it, which turns ← and → into its nudge keys.
     var hoveredEnd: (LoopEnd?) -> Void = { _ in }
+    /// The end that ← and → nudge: the one under the pointer, or one that a nudge moved out from under it. The
+    /// close-up holds still while there is one, so that the end stays where the pointer is.
+    var heldEnd: LoopEnd?
     /// The pointer is over the waveform, where the number keys go to the bars that the close-up numbers.
     var showsBarKeys = false
     let palette: Palette
@@ -62,6 +65,10 @@ struct WaveformView: View {
     @State private var dragged: Double?
     /// The song's place when a drag on the close-up began, which the drag moves like a tape under the playhead.
     @State private var tapeStart: Double?
+    /// Where the close-up starts while an end of the region loop is held, instead of following the playhead.
+    @State private var frozenFrom: Double?
+    /// Where a close-up held still was, and when it let go: it slides back to the playhead from there.
+    @State private var released: (from: Double, at: Date)?
     @State private var token = UUID()
 
     static let barStep: CGFloat = 3.4
@@ -161,6 +168,13 @@ struct WaveformView: View {
         .background(Color.clear.contentShape(Rectangle()))
         .onHover { hovered($0) }
         .onDisappear { hovered(false) }
+        .onChange(of: heldEnd != nil && zoomed) { _, held in hold(held) }
+        .onChange(of: loop?.start) { keepHeldEndShown() }
+        .onChange(of: loop?.end) { keepHeldEndShown() }
+        // A scroll or a drag that moves the song while the close-up holds still moves the close-up with it.
+        .onChange(of: actions.scrub) { _, scrub in
+            if frozenFrom != nil, let scrub { frozenFrom = scrub * duration - span / 2 }
+        }
         .animation(.snappy(duration: 0.25), value: zoomed)
         .animation(.snappy(duration: 0.25), value: shownLanes)
         .animation(.snappy(duration: 0.25), value: lanesOn)
@@ -343,7 +357,7 @@ struct WaveformView: View {
                 let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: context.date) ?? 0
                 LoopFlags(loop: loop, from: zoomed ? closeUpStart(seconds, at: context.date) : 0, span: zoomed ? span : duration, width: width,
                           height: mainHeight, now: seconds, duration: duration, beat: bpm.map { 60 / $0 },
-                          color: played, palette: palette, set: setLoop, typing: typing, hoveredEnd: hoveredEnd)
+                          color: played, palette: palette, set: setLoop, typing: typing, hoveredEnd: hoveredEnd, held: heldEnd)
             }
         }
     }
@@ -371,9 +385,38 @@ struct WaveformView: View {
         return (loop.start, end)
     }
 
-    /// Where the close-up starts: the playhead in the middle, or the region loop in the middle while it is held.
+    /// Where the close-up starts: the playhead in the middle, or the region loop in the middle while it is held. An
+    /// end of the region loop under the pointer holds it still, moved only to keep that end in it, and it slides back
+    /// to the playhead once the end is let go.
     private func closeUpStart(_ seconds: Double, at date: Date) -> Double {
-        heldLoop(at: date).map { ($0.start + $0.end) / 2 - span / 2 } ?? seconds - span / 2
+        let following = heldLoop(at: date).map { ($0.start + $0.end) / 2 - span / 2 } ?? seconds - span / 2
+        if let frozenFrom { return frozenFrom }
+        if let released {
+            let t = date.timeIntervalSince(released.at) / 0.35
+            if t < 1 { return released.from + (following - released.from) * (1 - pow(1 - t, 3)) }
+        }
+        return following
+    }
+
+    /// Holds the close-up still where it is, or lets it go back to following the playhead.
+    private func hold(_ held: Bool) {
+        let now = Date()
+        if held {
+            guard frozenFrom == nil else { return }
+            let seconds = dragged.map { $0 * duration } ?? actions.scrub.map { $0 * duration } ?? track.position(at: now) ?? 0
+            frozenFrom = closeUpStart(seconds, at: now)
+            released = nil
+        } else if let from = frozenFrom {
+            frozenFrom = nil
+            released = reduceMotion ? nil : (from, now)
+        }
+    }
+
+    /// A nudge that takes the held end out of the close-up moves the close-up just enough to keep it in.
+    private func keepHeldEndShown() {
+        guard let from = frozenFrom, let end = heldEnd, let time = loop?.time(of: end) else { return }
+        let kept = min(max(from, time - span * 0.95), time - span * 0.05)
+        if kept != from { frozenFrom = kept }
     }
 
     /// The moments around the playhead, which scroll past it while it stays in the middle: the whole song as bars, or
@@ -538,7 +581,7 @@ struct WaveformHost: View {
                          toggleLane: { [wave] in wave.toggleLane($0) },
                          muted: muted, loop: loop, setLoop: setLoop, typing: typing,
                          hovered: { [wave] inside in if wave.hovered != inside { wave.hovered = inside } },
-                         hoveredEnd: { [wave] end in if wave.loopEnd != end { wave.loopEnd = end } }, showsBarKeys: wave.hovered, palette: palette)
+                         hoveredEnd: { [wave] end in wave.hoverEnd(end) }, heldEnd: wave.loopEnd, showsBarKeys: wave.hovered, palette: palette)
         } else {
             // The place stays while the waveform is read, so the key row doesn't move when it arrives.
             Color.clear.frame(width: width, height: height)
@@ -597,6 +640,8 @@ struct LoopFlags: View {
     let set: (LoopEnd, Double) -> Void
     let typing: (Bool) -> Void
     var hoveredEnd: (LoopEnd?) -> Void = { _ in }
+    /// The end that ← and → nudge, which shows open like one under the pointer even after a nudge moved it away.
+    var held: LoopEnd?
 
     @Environment(\.recordActions) private var actions
     @Environment(\.colorScheme) private var scheme
@@ -608,6 +653,8 @@ struct LoopFlags: View {
     private var hovered: LoopEnd? {
         hoveredParts.contains { $0.hasPrefix("\(LoopEnd.start)") } ? .start : hoveredParts.isEmpty ? nil : .end
     }
+    /// The end drawn open: the one under the pointer, or the one that ← and → still nudge.
+    private var open: LoopEnd? { hovered ?? held }
     @State private var dragged: (end: LoopEnd, start: Double, time: Double)?
     @State private var lingering: LoopEnd?
     @State private var nudged: (end: LoopEnd, at: Date)?
@@ -639,7 +686,7 @@ struct LoopFlags: View {
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
-            let active = hovered == end || dragged?.end == end
+            let active = open == end || dragged?.end == end
             Rectangle().fill(color)
                 .frame(width: active ? 2.5 : 1.5, height: height + 4)
                 .offset(x: x - (active ? 1.25 : 0.75), y: -2)
@@ -656,7 +703,7 @@ struct LoopFlags: View {
                 .pointerStyle(.columnResize)
             // The A tab ends at its line and the B tab starts at its line; the arrows sit on both sides of the line.
             handle(end, time: time)
-                .offset(x: x - (hovered == end || dragged?.end == end ? 17 : end == .start ? 13 : 21), y: -14)
+                .offset(x: x - (open == end || dragged?.end == end ? 17 : end == .start ? 13 : 21), y: -14)
             // The time sits inside the bottom of the waveform, under the line, so it covers no other part of the HUD.
             // Outside the band: left of A's line and right of B's, so it covers neither the loop nor the playhead in it.
             if showsTime(end) {
@@ -668,15 +715,15 @@ struct LoopFlags: View {
     }
 
     private func showsTime(_ end: LoopEnd) -> Bool {
-        hovered == end || lingering == end || dragged?.end == end || editing == end || (nudged.map { $0.end == end && Date().timeIntervalSince($0.at) < 1.5 } ?? false)
+        open == end || lingering == end || dragged?.end == end || editing == end || (nudged.map { $0.end == end && Date().timeIntervalSince($0.at) < 1.5 } ?? false)
     }
 
     /// The A or B tab, or the arrows that take its place while the pointer is over it. The tab sits outside the
     /// region, beside its line; the arrows sit on both sides of the line.
     private func handle(_ end: LoopEnd, time: Double) -> some View {
-        let open = hovered == end || dragged?.end == end
+        let isOpen = open == end || dragged?.end == end
         return HStack(spacing: 0) {
-            if open {
+            if isOpen {
                 arrow(end, -1, time: time)
                 Color.clear.frame(width: 6)
                 arrow(end, 1, time: time)
@@ -694,7 +741,7 @@ struct LoopFlags: View {
         .frame(width: 34, height: 12)
         .contentShape(Rectangle())
         .onHover { hover(end, "tab", $0) }
-        .animation(.easeOut(duration: 0.12), value: open)
+        .animation(.easeOut(duration: 0.12), value: isOpen)
     }
 
     /// The time stays a moment after the pointer leaves the end, so that it can be reached from the tab to type a time.
