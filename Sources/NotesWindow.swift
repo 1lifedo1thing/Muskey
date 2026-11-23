@@ -1244,6 +1244,8 @@ private struct NotesKeyControl: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(palette.ink.opacity(active ? 0.07 : 0)).padding(.vertical, 4).padding(.horizontal, 1))
         .contentShape(Rectangle())
         .onTapGesture { if model.key != nil { picking = true } }
+        // Before the arrows, which have tooltips of their own: a tooltip around them would cover theirs.
+        .help(model.key == nil ? "" : "Pick a key")
         .overlay(alignment: .leading) {
             StatusArrow(symbol: "chevron.left", help: "Semitone down (↓)", shown: active, palette: palette) { model.onTranspose(-1) }
                 .disabled(model.shift <= Shift.range.lowerBound)
@@ -1273,7 +1275,6 @@ private struct NotesKeyControl: View {
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: active)
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .help(model.key == nil ? "" : "Pick a key")
         .popover(isPresented: $picking, arrowEdge: .top) {
             if let key = model.key {
                 KeyPicker(original: key, shift: model.shift, relative: model.relative, palette: palette, stepKeys: ("↓", "↑")) { shift, relative in
@@ -1319,6 +1320,8 @@ private struct NotesTempoControl: View {
             // A render draws an AppKit view as a placeholder, and the catcher draws nothing anyway.
             if live, !renderingPreview { ScrollCatcher(onScroll: scrolled) }
         }
+        // Before the arrows, which have tooltips of their own: a tooltip around them would cover theirs.
+        .help(live ? "Slower or faster (scroll, [ ])" : "")
         .overlay(alignment: .leading) {
             if live {
                 StatusArrow(symbol: "chevron.left", help: "Slower ([)", shown: active, palette: palette) { model.onSpeedStep(-1) }
@@ -1335,7 +1338,6 @@ private struct NotesTempoControl: View {
         }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: active)
-        .help(live ? "Slower or faster (scroll, [ ])" : "")
     }
 
     /// A trackpad moves the speed with the travel of the fingers, and a mouse wheel a step at each notch. The momentum
