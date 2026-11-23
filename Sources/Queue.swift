@@ -287,9 +287,12 @@ struct SongRow: View {
     }
 }
 
-/// The songs that Muskey Player played last, on the back of the record while nothing plays. A click plays a song.
+/// The songs that Muskey Player played last, on the back of the record while nothing plays. A click plays a song, and
+/// so does Return, on the song that ↑ and ↓ highlight.
 struct RecentsView: View {
     let songs: [QueueItem]
+    /// The song that Return plays.
+    var selection: UUID?
     let palette: Palette
     var compact = false
     let play: (QueueItem) -> Void
@@ -313,6 +316,12 @@ struct RecentsView: View {
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                     .foregroundStyle(palette.ink)
                 Spacer(minLength: 0)
+                // The card has room for the keys of the list where the queue shows its count.
+                if !compact {
+                    keys
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                        .padding(.trailing, 6)
+                }
                 Color.clear.frame(width: 20, height: 20)
             }
             .overlay(alignment: .trailing) {
@@ -322,17 +331,41 @@ struct RecentsView: View {
             .padding(.leading, headerInset)
             if renderingPreview {
                 // ImageRenderer draws no scroll view, so `--render` gets the rows stacked.
-                VStack(spacing: 0) { ForEach(songs.prefix(6)) { row($0) } }
+                VStack(spacing: 0) { ForEach(songs.prefix(compact ? 5 : 6)) { row($0) } }
                     .frame(maxHeight: .infinity, alignment: .top)
             } else {
-                ScrollView {
-                    VStack(spacing: 0) { ForEach(songs) { row($0) } }
+                ScrollViewReader { reader in
+                    ScrollView {
+                        VStack(spacing: 0) { ForEach(songs) { row($0).id($0.id) } }
+                    }
+                    .scrollIndicators(.automatic)
+                    // ↑ and ↓ keep the highlighted song in sight.
+                    .onChange(of: selection) { _, id in
+                        guard let id else { return }
+                        withAnimation(.easeOut(duration: 0.15)) { reader.scrollTo(id) }
+                    }
                 }
-                .scrollIndicators(.automatic)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame($0) }
                 .onDisappear { frame(nil) }
             }
+            // Beside the record, the column is too narrow for them next to the title.
+            if compact {
+                keys.padding(.horizontal, 4)
+            }
         }
+    }
+
+    private var keys: some View {
+        HStack(spacing: 4) {
+            Keycap(text: "↑", palette: palette, small: true)
+            Keycap(text: "↓", palette: palette, small: true)
+            Text("select").padding(.trailing, 4)
+            Keycap(text: "↩", palette: palette, small: true)
+            Text("play")
+        }
+        .font(.system(size: 10.5, weight: .medium, design: .rounded))
+        .foregroundStyle(palette.muted)
+        .fixedSize()
     }
 
     private func lit(_ song: QueueItem) -> Bool {
@@ -343,7 +376,8 @@ struct RecentsView: View {
         Button { play(song) } label: {
             SongRow(song: song, compact: compact, palette: palette)
                 .padding(.vertical, 1)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(palette.ink.opacity(lit(song) ? 0.08 : 0)))
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(palette.ink.opacity(song.id == selection ? (lit(song) ? 0.16 : 0.12) : lit(song) ? 0.07 : 0)))
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 ? song.id : (hovered == song.id ? nil : hovered) }

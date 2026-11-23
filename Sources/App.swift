@@ -410,6 +410,8 @@ final class HUDModel: ObservableObject {
     /// The songs that Muskey Player played last, on the back of the record while nothing plays.
     @Published var recents: [QueueItem] = []
     @Published var recentsShown = false
+    /// The recent song that Return plays, which ↑ and ↓ move.
+    @Published var recentsSelection: UUID?
     /// The record shows the recents: nothing plays and the queue doesn't show.
     var recentsFlipped: Bool { recentsShown && phase == .idle && !queueShown }
     /// The record shows the queue or the recents on its back.
@@ -860,7 +862,7 @@ struct HUDView: View {
     @ViewBuilder private func back(_ palette: Palette) -> some View {
         if model.recentsFlipped {
             VStack(spacing: 12) {
-                RecentsView(songs: model.recents, palette: palette, compact: !model.card, play: model.onRecentPlay, add: model.onRecentAdd,
+                RecentsView(songs: model.recents, selection: model.recentsSelection, palette: palette, compact: !model.card, play: model.onRecentPlay, add: model.onRecentAdd,
                             remove: model.onRecentRemove, close: { model.recentsShown = false }, frame: { model.queueFrame = $0 },
                             headerInset: model.card ? 22 : 0)
                 // The whole card turns over, so the buttons of Nothing playing come along under the recents.
@@ -2745,6 +2747,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.$phase.removeDuplicates().sink { [weak self] phase in
             if phase != .idle, self?.model.recentsShown == true { self?.model.recentsShown = false }
         }.store(in: &prefChanges)
+        // Published before the change, so the keys over the HUD are read again on the next turn.
+        model.$recentsShown.dropFirst().removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateHoverKeys() }
+        }.store(in: &prefChanges)
+        // Right after the hotkey, the HUD is the key window without the pointer over it, and the hover keys aren't
+        // registered: ↑, ↓ and Return reach the recents from the panel's own key events.
+        recentsKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === panel, model.recentsFlipped, model.opening == nil,
+                  event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                  [kVK_UpArrow, kVK_DownArrow, kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode))
+            else { return event }
+            return handleKey(Int(event.keyCode), shift: false, option: false) ? nil : event
+        }
         model.onOpenFile = { [weak self] in self?.openFile() }
         model.onSeekFraction = { [weak self] in self?.seek(toFraction: $0) }
         model.onStemsClose = { [weak self] in self?.closeStems() }
@@ -5102,6 +5117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let current = session
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.recentsAfter) { [weak self] in
             guard let self, session == current, model.phase == .idle, model.shown, model.opening == nil, !model.queueShown else { return }
+            // Return plays the song that played last, until ↑ and ↓ highlight another.
+            model.recentsSelection = model.recents.first?.id
             model.recentsShown = true
             log("recents shown: \(model.recents.count) song\(model.recents.count == 1 ? "" : "s")")
         }
@@ -5134,8 +5151,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func removeRecent(_ song: QueueItem) {
         RecentSongs.remove(song.url)
         recentRows[song.url.absoluteString] = nil
+        let at = model.recents.firstIndex { $0.id == song.id }
         model.recents.removeAll { $0.id == song.id }
+        if model.recentsSelection == song.id {
+            model.recentsSelection = at.flatMap { model.recents.isEmpty ? nil : model.recents[min($0, model.recents.count - 1)].id }
+        }
         if model.recents.isEmpty { model.recentsShown = false }
+    }
+
+    private var recentsKeyMonitor: Any?
+
+    /// ↑ and ↓ highlight the song before or after, and Return plays the highlighted song. Returns false for the other
+    /// keys, which go on to the usual handling.
+    private func handleRecentsKey(_ code: Int) -> Bool {
+        let songs = model.recents
+        guard !songs.isEmpty else { return false }
+        switch code {
+        case kVK_UpArrow, kVK_DownArrow:
+            let at = model.recentsSelection.flatMap { id in songs.firstIndex { $0.id == id } }
+            let next = at.map { max(0, min(songs.count - 1, $0 + (code == kVK_DownArrow ? 1 : -1))) } ?? 0
+            model.recentsSelection = songs[next].id
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            let song = songs.first { $0.id == model.recentsSelection } ?? songs[0]
+            log("recents: Return plays song \(songs.firstIndex { $0.id == song.id }.map { $0 + 1 } ?? 1) of \(songs.count)")
+            model.onRecentPlay(song)
+        default:
+            return false
+        }
+        return true
     }
 
     /// A song plays while the HUD offers to play one: the listen starts over on it.
@@ -5301,6 +5344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
         if model.queueShown, !model.lyricsFocus, handleQueueKey(code, shift: shift) { return true }
+        if model.recentsFlipped, !shift, !option, handleRecentsKey(code) { return true }
         // Over the tab of an end of the region loop, ← and → nudge that end, and by a beat with ⌥.
         if let end = model.wave.loopEnd, model.loop != nil, !shift, code == kVK_LeftArrow || code == kVK_RightArrow {
             nudgeLoopEnd(end, by: code == kVK_RightArrow ? 1 : -1, beat: option)
@@ -7565,6 +7609,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverKeysForWaveform = false
     private var hoverKeysForBars = false
     private var hoverKeysForQueue = false
+    private var hoverKeysForRecents = false
     private var hoverKeysForChords = false
     private var hoverKeysForLoopEnd = false
     private var hoverKeysForNotes = false
@@ -7610,7 +7655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForSpeed != model.speedAdjustable || hoverKeysForSeek != model.seekable
                 || hoverKeysForRestart != model.restartable || hoverKeysForSave != model.savable
                 || hoverKeysForRecord != model.overRecord || hoverKeysForWaveform != model.wave.hovered || hoverKeysForBars != waveformNumbersBars
-                || hoverKeysForQueue != model.queueShown || hoverKeysForLoopEnd != (model.wave.loopEnd != nil)
+                || hoverKeysForQueue != model.queueShown || hoverKeysForRecents != model.recentsFlipped || hoverKeysForLoopEnd != (model.wave.loopEnd != nil)
                 || hoverKeysForChords != !model.chords.isEmpty || hoverKeysForNotes != (model.notesPicking != nil) || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
@@ -7629,6 +7674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hoverKeysForWaveform = model.wave.hovered
         hoverKeysForBars = waveformNumbersBars
         hoverKeysForQueue = model.queueShown
+        hoverKeysForRecents = model.recentsFlipped
         hoverKeysForLoopEnd = model.wave.loopEnd != nil
         hoverKeysForChords = !model.chords.isEmpty
         hoverKeysForNotes = model.notesPicking != nil
@@ -7675,6 +7721,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Q shows the queue, which takes the arrows, Return and Delete while it shows, and M the mini player.
         if !model.lyricsFocus { keys += (model.otherPlayer ? [] : [(kVK_ANSI_Q, 0)]) + [(kVK_ANSI_T, 0)] }
         keys.append((kVK_ANSI_M, 0))
+        if model.recentsFlipped { keys += [kVK_UpArrow, kVK_DownArrow, kVK_Return, kVK_ANSI_KeypadEnter].map { ($0, 0) } }
         if model.queueShown {
             keys += [kVK_UpArrow, kVK_DownArrow].flatMap { [($0, 0), ($0, shiftKey)] }
             keys += [kVK_Return, kVK_ANSI_KeypadEnter, kVK_Delete, kVK_ForwardDelete].map { ($0, 0) }
@@ -8765,6 +8812,7 @@ extension EnvironmentValues {
                 model.card = layout == "-card"
                 model.recents = HUDSample.queue
                 model.recentsShown = name != "idle-recents-front"
+                model.recentsSelection = model.recents[0].id
                 RecentsView.previewHover = hover ? model.recents[1].id : nil
                 let view = HUDView(model: model)
                     .frame(width: HUDPanel.size.width, height: HUDPanel.size.height)
