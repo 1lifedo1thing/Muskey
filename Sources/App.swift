@@ -3554,6 +3554,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .store(in: &notesSinks)
         model.$fastestSpeed.sink { [weak notes] in notes?.fastestSpeed = $0 }.store(in: &notesSinks)
         model.$relative.sink { [weak notes] in notes?.relative = $0 }.store(in: &notesSinks)
+        model.$relativeKeys.sink { [weak notes] in notes?.relativeKeys = $0 }.store(in: &notesSinks)
         notes.onCapo = { [weak self] step in
             guard let self else { return }
             setCapo(model.capo + step)

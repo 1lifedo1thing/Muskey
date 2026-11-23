@@ -122,6 +122,8 @@ final class NotesModel: ObservableObject {
     @Published var fastestSpeed = 1.5
     /// The HUD names the key in the other mode than the song's, as the key row's second row does.
     @Published var relative = false
+    /// The key picker shows the second row with the other mode, as the HUD's does with "Both modes" in Settings.
+    @Published var relativeKeys = false
     /// The page that the song is on, counted from 0, and how many pages the notes take in this view and window size.
     @Published var page = 0
     @Published var pageCount = 1
@@ -1277,7 +1279,9 @@ private struct NotesKeyControl: View {
         .animation(.easeOut(duration: 0.12), value: hovering)
         .popover(isPresented: $picking, arrowEdge: .top) {
             if let key = model.key {
-                KeyPicker(original: key, shift: model.shift, relative: model.relative, palette: palette, stepKeys: ("↓", "↑")) { shift, relative in
+                // The chips show the mode of the key that the song is in now, as over the HUD without Option.
+                KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.relative,
+                          palette: palette, stepKeys: ("↓", "↑")) { shift, relative in
                     model.onPickKey(shift, relative)
                 }
                 .padding(12)
