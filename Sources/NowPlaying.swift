@@ -31,7 +31,21 @@ final class NowPlaying {
         static func decode(_ data: Data) -> Track? {
             guard var track = try? JSONDecoder().decode(Track.self, from: data) else { return nil }
             track.title = track.title.map(SongName.title)
+            // Spotify names the song "Title • Artist", with no artist and no album, for a moment now and then: after a
+            // seek, a pause, or as it starts. Read as it is, it was another song, which cleared the region loop.
+            if track.bundleID == "com.spotify.client", (track.artist ?? "").isEmpty, let title = track.title,
+               let dot = title.range(of: " • ", options: .backwards), !title[dot.upperBound...].isEmpty {
+                track.artist = String(title[dot.upperBound...])
+                track.title = String(title[..<dot.lowerBound])
+            }
             return track
+        }
+
+        /// The same title and artist, and the same album or one left out, as in a report of Spotify that names no
+        /// album.
+        static func sameSong(_ a: [String?], _ b: [String?]) -> Bool {
+            guard a.count == 3, b.count == 3, a[0] == b[0], a[1] == b[1] else { return false }
+            return a[2] == b[2] || (a[2] ?? "").isEmpty || (b[2] ?? "").isEmpty
         }
 
         /// Seconds into the song at `date`, moving on at the playback rate since the player last reported it.
@@ -312,6 +326,11 @@ final class NowPlaying {
             track.timestamp = clock.at
             if let rate = clock.rate { track.rate = rate }
         }
+        // A report that leaves the album out names the album of the song a moment ago.
+        if let last = player, last.bundleID == track.bundleID, (track.album ?? "").isEmpty, last.album?.isEmpty == false,
+           last.title == track.title, last.artist == track.artist {
+            track.album = last.album
+        }
         if let cover {
             playerArtwork = cover
         } else if track.artworkBytes == 0, track.song != player?.song {
@@ -337,6 +356,8 @@ final class NowPlaying {
         self.track = track
         onTrack()
         guard let reported else { return self.reported = track.song }
+        // The album that the first report left out isn't another song.
+        if track.song != reported, Track.sameSong(track.song, reported) { return self.reported = track.song }
         // A paused song that changed counts once it plays, so a listen never starts on silence.
         guard track.title != nil, track.song != reported, track.playing else { return }
         // Some players send the title before the artist and album, so the song has to hold for a moment.

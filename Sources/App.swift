@@ -6262,6 +6262,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Another song clears the loop of the last one.
     private func checkLoopSong() {
         guard model.loop != nil, let song = nowPlaying.track?.song, nowPlaying.track?.title?.isEmpty == false, song != loopSong else { return }
+        if let loopSong, NowPlaying.Track.sameSong(song, loopSong) { return self.loopSong = song }
+        log("region loop: the song changed from \(loopSong.map { $0.map { $0 ?? "–" }.joined(separator: " | ") } ?? "none") to \(song.map { $0 ?? "–" }.joined(separator: " | "))")
         clearLoop()
     }
 
