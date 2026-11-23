@@ -13,8 +13,69 @@ struct SongChanges: Equatable {
     /// The level of each stem by `Stem.rawValue`: 0 for a muted one, the scroll's volume otherwise. Nil while every
     /// stem plays as it is, which needs no separation.
     var stemGains: [Float]?
+    /// The region loop that the save keeps, in seconds of the original song. Nil keeps the whole song. A region alone
+    /// changes nothing, so it doesn't make a song worth saving.
+    var range: ClosedRange<Double>?
 
     var isEmpty: Bool { semitones == 0 && abs(speed - 1) < 0.001 && stemGains == nil }
+}
+
+/// The title, artist, album and cover that a saved M4A or MP3 carries. WAV keeps only the audio.
+struct SongTags: Equatable {
+    var title: String?
+    var artist: String?
+    var album: String?
+    /// The cover as JPEG, at most 1000 pixels on its longer side.
+    var cover: Data?
+
+    var isEmpty: Bool { [title, artist, album].allSatisfy { $0?.isEmpty ?? true } && cover == nil }
+
+    static func jpeg(_ image: NSImage?) -> Data? {
+        guard let image, let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let scale = min(1, 1000 / CGFloat(max(cg.width, cg.height)))
+        let width = max(1, Int(CGFloat(cg.width) * scale)), height = max(1, Int(CGFloat(cg.height) * scale))
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { return nil }
+        context.interpolationQuality = .high
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let scaled = context.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: scaled).representation(using: .jpeg, properties: [.compressionFactor: 0.9])
+    }
+
+    /// The tags as an ID3v2.3 tag for the start of an MP3: text in UTF-16, the cover as the front cover. LAME writes
+    /// ID3v2.4 with the cover frame's size in the wrong encoding, which ffmpeg and the players built on it skip.
+    var id3: [UInt8] {
+        func size(_ n: Int) -> [UInt8] { [UInt8(n >> 24 & 0xFF), UInt8(n >> 16 & 0xFF), UInt8(n >> 8 & 0xFF), UInt8(n & 0xFF)] }
+        func frame(_ id: String, _ body: [UInt8]) -> [UInt8] { Array(id.utf8) + size(body.count) + [0, 0] + body }
+        func text(_ id: String, _ value: String?) -> [UInt8] {
+            guard let value, !value.isEmpty else { return [] }
+            return frame(id, [1, 0xFF, 0xFE] + value.utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
+        }
+        var frames = text("TIT2", title) + text("TPE1", artist) + text("TALB", album)
+        if let cover { frames += frame("APIC", [0] + Array("image/jpeg".utf8) + [0, 3, 0] + [UInt8](cover)) }
+        // The tag's own size is syncsafe: seven bits in each byte.
+        let n = frames.count
+        return Array("ID3".utf8) + [3, 0, 0] + [UInt8(n >> 21 & 0x7F), UInt8(n >> 14 & 0x7F), UInt8(n >> 7 & 0x7F), UInt8(n & 0x7F)] + frames
+    }
+
+    /// The tags as AVFoundation writes them into an M4A.
+    var metadata: [AVMetadataItem] {
+        func item(_ identifier: AVMetadataIdentifier, _ value: (any NSCopying & NSObjectProtocol)?) -> AVMetadataItem? {
+            guard let value else { return nil }
+            let item = AVMutableMetadataItem()
+            item.identifier = identifier
+            item.value = value
+            if identifier == .commonIdentifierArtwork { item.dataType = kCMMetadataBaseDataType_JPEG as String }
+            return item
+        }
+        return [
+            item(.commonIdentifierTitle, title.flatMap { $0.isEmpty ? nil : $0 as NSString }),
+            item(.commonIdentifierArtist, artist.flatMap { $0.isEmpty ? nil : $0 as NSString }),
+            item(.commonIdentifierAlbumName, album.flatMap { $0.isEmpty ? nil : $0 as NSString }),
+            item(.commonIdentifierArtwork, cover as NSData?),
+        ].compactMap { $0 }
+    }
 }
 
 /// The formats a song is saved in.
@@ -86,6 +147,12 @@ struct StereoAudio {
     var frames: Int { left.count }
     var seconds: Double { Double(frames) / rate }
 
+    /// The part from `start` to `end` seconds, kept inside the audio.
+    func cut(_ start: Double, _ end: Double) -> StereoAudio {
+        let from = min(frames, max(0, Int((start * rate).rounded()))), to = min(frames, max(from, Int((end * rate).rounded())))
+        return StereoAudio(left: Array(left[from ..< to]), right: Array(right[from ..< to]), rate: rate)
+    }
+
     /// Without the silence at its end, which a recording has after the song was paused or stopped.
     func trimmingSilentEnd(below threshold: Float = 0.0001) -> StereoAudio {
         let end = left.indices.last { abs(left[$0]) >= threshold || abs(right[$0]) >= threshold }.map { $0 + 1 } ?? 0
@@ -122,14 +189,28 @@ enum SongRender {
     static func render(_ audio: StereoAudio, changes: SongChanges, path: String? = nil, live: @escaping () -> Bool = { false },
                        progress: @escaping (Double) -> Bool) throws -> StereoAudio {
         var audio = audio
+        var path = path
+        // Where the audio starts in the song, once a region is cut out of it.
+        var offset = 0.0
         // The stems take most of the time, when there are any to mix.
         let stemsPart = changes.stemGains == nil ? 0.0 : 0.8
         if let gains = changes.stemGains {
+            // The cache keeps the stems of the whole song, which are mixed whole and cut after. Without them, only the
+            // region is separated, from a little before it, so that the model hears what leads into it.
+            if let range = changes.range, path.flatMap(StemsCache.open(for:)) == nil {
+                offset = max(0, range.lowerBound - regionContext)
+                audio = audio.cut(offset, range.upperBound + regionContext)
+                path = nil
+            }
             audio = try mixStems(audio, gains: gains, path: path, live: live) { progress($0 * stemsPart) }
         }
+        if let range = changes.range { audio = audio.cut(range.lowerBound - offset, range.upperBound - offset) }
         let pitchScale = pow(2, Double(changes.semitones) / 12)
         return try stretch(audio, timeRatio: 1 / changes.speed, pitchScale: pitchScale) { progress(stemsPart + $0 * (1 - stemsPart)) }
     }
+
+    /// The seconds of song separated before and after a region, which the save then cuts off.
+    static let regionContext = 2.0
 
     /// Changes the tempo by `timeRatio` (1.25 is a quarter longer) and the pitch by `pitchScale`, and limits the peaks.
     static func stretch(_ audio: StereoAudio, timeRatio: Double, pitchScale: Double, progress: @escaping (Double) -> Bool) throws -> StereoAudio {
@@ -229,8 +310,10 @@ enum SongRender {
         }
     }
 
-    /// Writes the song in `format`. WAV is 16-bit, M4A is AAC at 256 kbit/s, and MP3 is 320 kbit/s.
-    static func write(_ audio: StereoAudio, as format: SaveFormat, to url: URL, progress: @escaping (Double) -> Bool = { _ in true }) throws {
+    /// Writes the song in `format`. WAV is 16-bit, M4A is AAC at 256 kbit/s, and MP3 is 320 kbit/s. M4A and MP3 carry
+    /// the tags and the cover.
+    static func write(_ audio: StereoAudio, as format: SaveFormat, to url: URL, tags: SongTags = SongTags(),
+                      progress: @escaping (Double) -> Bool = { _ in true }) throws {
         try? FileManager.default.removeItem(at: url)
         switch format {
         case .wav:
@@ -239,17 +322,36 @@ enum SongRender {
                 AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
             ], progress: progress)
         case .m4a:
-            try writeAV(audio, to: url, settings: [
+            // AVAudioFile writes no tags, so the tagged file is a copy of its audio that a passthrough export makes.
+            let plain = tags.isEmpty ? url : url.deletingLastPathComponent().appending(path: "untagged \(UUID().uuidString).m4a")
+            defer { if plain != url { try? FileManager.default.removeItem(at: plain) } }
+            try writeAV(audio, to: plain, settings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: audio.rate, AVNumberOfChannelsKey: 2, AVEncoderBitRateKey: 256_000,
             ], progress: progress)
+            if plain != url { try tagM4A(plain, to: url, tags: tags) }
         case .mp3:
-            try writeMP3(audio, to: url, progress: progress)
+            try writeMP3(audio, to: url, tags: tags, progress: progress)
         }
+    }
+
+    private static func tagM4A(_ source: URL, to url: URL, tags: SongTags) throws {
+        guard let export = AVAssetExportSession(asset: AVURLAsset(url: source), presetName: AVAssetExportPresetPassthrough) else {
+            throw SaveError(message: "The tags can't be written")
+        }
+        export.metadata = tags.metadata
+        final class Outcome: @unchecked Sendable { var error: Error? }
+        let outcome = Outcome(), done = DispatchSemaphore(value: 0)
+        Task {
+            do { try await export.export(to: url, as: .m4a) } catch { outcome.error = error }
+            done.signal()
+        }
+        done.wait()
+        if let error = outcome.error { throw SaveError(message: "The tags can't be written: \(error.localizedDescription)") }
     }
 
     /// MP3 through LAME, at a constant 320 kbit/s, with the LAME tag that tells players how much padding the encoder
     /// added at the ends.
-    private static func writeMP3(_ audio: StereoAudio, to url: URL, progress: (Double) -> Bool) throws {
+    private static func writeMP3(_ audio: StereoAudio, to url: URL, tags: SongTags, progress: (Double) -> Bool) throws {
         guard let lame = lame_init() else { throw SaveError(message: "The MP3 encoder didn't start") }
         defer { lame_close(lame) }
         lame_set_in_samplerate(lame, Int32(audio.rate))
@@ -264,6 +366,10 @@ enum SongRender {
         guard FileManager.default.createFile(atPath: url.path, contents: nil) else { throw SaveError(message: "The file can't be written") }
         let handle = try FileHandle(forWritingTo: url)
         defer { try? handle.close() }
+        // The ID3 tag goes first, and the LAME tag right after it.
+        let id3 = tags.isEmpty ? [] : tags.id3
+        if !id3.isEmpty { try handle.write(contentsOf: id3) }
+        let tagEnd = id3.count
         let block = 8192
         // LAME asks for 1.25 times the samples plus 7200 bytes, the most that one call can write.
         var buffer = [UInt8](repeating: 0, count: block * 5 / 4 + 7200)
@@ -283,7 +389,7 @@ enum SongRender {
         // The first frame was left empty for the LAME tag, which is known only now.
         let tag = lame_get_lametag_frame(lame, &buffer, buffer.count)
         if tag > 0, tag <= buffer.count {
-            try handle.seek(toOffset: 0)
+            try handle.seek(toOffset: UInt64(tagEnd))
             try handle.write(contentsOf: buffer[0 ..< tag])
         }
     }
@@ -309,11 +415,12 @@ enum SongRender {
 /// `--render-mute vocals,drums`, writes it to `--render-out` (M4A, WAV or MP3 by its extension), prints how long each
 /// part took, and quits.
 enum SaveTest {
-    static func run(_ path: String, to out: String, semitones: Int, speed: Double, mute: [String]) {
+    static func run(_ path: String, to out: String, semitones: Int, speed: Double, mute: [String], range: ClosedRange<Double>? = nil,
+                    tags: SongTags = SongTags()) {
         DispatchQueue.global().async {
             do {
                 let format = SaveFormat(rawValue: (out as NSString).pathExtension.lowercased()) ?? .m4a
-                var changes = SongChanges(semitones: semitones, speed: speed)
+                var changes = SongChanges(semitones: semitones, speed: speed, range: range)
                 if !mute.isEmpty {
                     changes.stemGains = Stem.allCases.map { mute.contains($0.name.lowercased()) ? 0 : 1 }
                 }
@@ -322,7 +429,7 @@ enum SaveTest {
                 print(String(format: "read %.1f s of song in %.1f s", audio.seconds, Date().timeIntervalSince(started)))
                 started = Date()
                 var last = -1
-                let rendered = try SongRender.render(audio, changes: changes) { part in
+                let rendered = try SongRender.render(audio, changes: changes, path: path) { part in
                     let tenth = Int(part * 10)
                     if tenth != last {
                         last = tenth
@@ -332,7 +439,7 @@ enum SaveTest {
                 }
                 print(String(format: "rendered %.1f s at %.0f Hz in %.1f s", rendered.seconds, rendered.rate, Date().timeIntervalSince(started)))
                 started = Date()
-                try SongRender.write(rendered, as: format, to: URL(fileURLWithPath: out))
+                try SongRender.write(rendered, as: format, to: URL(fileURLWithPath: out), tags: tags)
                 print(String(format: "wrote %@ in %.1f s", out, Date().timeIntervalSince(started)))
                 exit(0)
             } catch {

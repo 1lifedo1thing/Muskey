@@ -2443,7 +2443,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let path = Self.stringOption("--render-song") {
             return SaveTest.run(path, to: Self.stringOption("--render-out") ?? "/tmp/muskey-render.m4a", semitones: Int(Self.option("--render-semitones", 0)),
                                 speed: Self.option("--render-speed", 1),
-                                mute: (Self.stringOption("--render-mute") ?? "").split(separator: ",").map { $0.lowercased() })
+                                mute: (Self.stringOption("--render-mute") ?? "").split(separator: ",").map { $0.lowercased() },
+                                range: Self.stringOption("--render-range").flatMap { text -> ClosedRange<Double>? in
+                                    let ends = text.split(separator: "-").compactMap { Double($0) }
+                                    return ends.count == 2 && ends[0] < ends[1] ? ends[0] ... ends[1] : nil
+                                },
+                                tags: SongTags(title: Self.stringOption("--render-title"), artist: Self.stringOption("--render-artist"),
+                                               cover: Self.stringOption("--render-cover").flatMap { SongTags.jpeg(NSImage(contentsOfFile: $0)) }))
         }
 
         NSApp.mainMenu = mainMenu()
@@ -5285,6 +5291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let changes: SongChanges
         let url: URL
         let format: SaveFormat
+        var tags = SongTags()
     }
 
     /// The song being saved, and the last save that failed, for Retry.
@@ -5319,6 +5326,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.stemsEngaged, model.stemsAdjusted {
             changes.stemGains = Stem.allCases.map { model.stemsMuted.contains($0) ? 0 : Float(model.stemVolumes[$0] ?? 1) }
         }
+        // A region loop with both ends saves only the region.
+        if let loop = model.loop, let end = loop.end, end > loop.start { changes.range = loop.start ... end }
         return changes.isEmpty ? nil : changes
     }
 
@@ -5353,15 +5362,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if case let .player(id, _, _) = source {
             caveat = SongRecorder.hearsPlayerOnly(bundleID: id, pid: nowPlaying.track?.pid) ? SaveCaveat.recorded : SaveCaveat.recordedWithOthers
         }
+        // The tags and the cover are taken at the press too, from the song that plays.
+        let track = nowPlaying.track
+        let tags = SongTags(title: track?.title ?? filePlayer.current?.title, artist: track?.artist, album: track?.album,
+                            cover: SongTags.jpeg(nowPlaying.artwork))
         guard let (url, format) = askWhereToSave(fileName(name, changes), caveat: caveat) else { return log("save: cancelled") }
-        startSave(SaveJob(name: name, source: source, changes: changes, url: url, format: format))
+        startSave(SaveJob(name: name, source: source, changes: changes, url: url, format: format, tags: tags))
     }
 
-    /// The title, and what changed in parentheses: `Bine (C minor, 0.9x, no vocals)`.
+    /// `1:02` for a moment of a song, in the name of a saved region.
+    private static func minutes(_ seconds: Double) -> String {
+        let whole = max(0, Int(seconds.rounded()))
+        return String(format: "%d.%02d", whole / 60, whole % 60)
+    }
+
+    /// The title, and what changed in parentheses: `Bine (C minor, 0.9x, 1.02–1.34, no vocals)`.
     private func fileName(_ name: String, _ changes: SongChanges) -> String {
         var parts: [String] = []
         if changes.semitones != 0, let base = shiftBase { parts.append(model.shown(base.transposed(by: changes.semitones)).name) }
         if abs(changes.speed - 1) > 0.001 { parts.append(MiniPlayerView.speed(changes.speed) + "x") }
+        if let range = changes.range { parts.append("\(Self.minutes(range.lowerBound))–\(Self.minutes(range.upperBound))") }
         if let gains = changes.stemGains {
             let muted = Stem.shown.filter { gains[$0.rawValue] == 0 }, playing = Stem.shown.filter { gains[$0.rawValue] > 0 }
             if muted.isEmpty {
@@ -5422,8 +5442,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if case .player = job.source, recorded == nil { return startRecording(job) }
         saveActivity = .saving(name: job.name, progress: 0)
         let changes = job.changes
-        log(String(format: "save: %@ as %@, %+d semitones, %.0f%% tempo%@", job.name, job.format.name, changes.semitones, changes.speed * 100,
-                   changes.stemGains == nil ? "" : ", stems \(changes.stemGains!.map { String(format: "%.2f", $0) }.joined(separator: " "))"))
+        log(String(format: "save: %@ as %@, %+d semitones, %.0f%% tempo%@%@%@", job.name, job.format.name, changes.semitones, changes.speed * 100,
+                   changes.stemGains == nil ? "" : ", stems \(changes.stemGains!.map { String(format: "%.2f", $0) }.joined(separator: " "))",
+                   changes.range.map { String(format: ", from %.2f s to %.2f s", $0.lowerBound, $0.upperBound) } ?? "",
+                   job.tags.cover == nil ? ", no cover" : ", with the cover"))
         // With the stems separated for the output too, the separation of the whole song leaves them half of the time.
         let live = model.stemsEngaged
         let started = Date()
@@ -5445,8 +5467,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let audio: StereoAudio
                 var path: String?
+                var changes = changes
                 if let recorded {
                     audio = recorded
+                    // A recording holds the region alone already.
+                    changes.range = nil
                 } else if case let .file(file) = job.source {
                     audio = try SongRender.read(URL(fileURLWithPath: file))
                     path = file
@@ -5454,7 +5479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     throw SaveError(message: "The song has no file")
                 }
                 let rendered = try SongRender.render(audio, changes: changes, path: path, live: { live }) { report($0 * 0.95) }
-                try SongRender.write(rendered, as: job.format, to: temporary) { report(0.95 + $0 * 0.05) }
+                try SongRender.write(rendered, as: job.format, to: temporary, tags: job.tags) { report(0.95 + $0 * 0.05) }
                 // Cancel in the last moment of the write leaves no file either.
                 if cancelled.withLock({ $0 }) { throw CancellationError() }
                 if FileManager.default.fileExists(atPath: job.url.path) { try FileManager.default.removeItem(at: job.url) }
@@ -5483,6 +5508,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.job = job
             self.recorder = recorder
         }
+
+        /// Where the recording starts in the song, and how long it runs: the region loop, or the whole song.
+        var start: Double { job.changes.range?.lowerBound ?? 0 }
+        var length: Double {
+            guard case let .player(_, _, seconds) = job.source else { return 0 }
+            return job.changes.range.map { $0.upperBound - $0.lowerBound } ?? seconds
+        }
     }
 
     private var songRecording: SongRecording?
@@ -5494,14 +5526,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             speedBeforeRecording = slow.speed
             slow.stop("the song is recorded for a save")
         }
-        guard case let .player(id, _, seconds) = job.source, let track = nowPlaying.track, track.bundleID == id else {
+        guard case let .player(id, _, _) = job.source, let track = nowPlaying.track, track.bundleID == id else {
             return saveFinished(job, error: SaveError(message: "The song isn't playing anymore"), seconds: 0, length: 0)
         }
         let recorder = SongRecorder(bundleID: id, pid: track.pid)
         let recording = SongRecording(job: job, recorder: recorder)
         songRecording = recording
         updateWatching(shown: model.shown)
-        saveActivity = .recording(name: job.name, left: Self.clock(seconds))
+        saveActivity = .recording(name: job.name, left: Self.clock(recording.length))
         log("save: recording \(job.name) from \(recorder.playerOnly ? id + " alone" : "every app but Muskey")")
         recording.timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.checkRecording() }
         guard Self.forcedSeekPath == nil, seekPaths[id] == nil else {
@@ -5512,7 +5544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // while the song plays, from its start.
         recording.phase = .learning
         if !track.playing { nowPlaying.play(true) }
-        movePlayer(track, to: 0) { [weak self] moved in
+        movePlayer(track, to: recording.start) { [weak self] moved in
             guard let self, songRecording === recording else { return }
             guard moved else { return endRecording(error: SaveError(message: "The player didn't move the song to its start")) }
             recording.phase = .pausing
@@ -5535,7 +5567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Steps the recording on, from the reports of the player and a timer.
     private func checkRecording() {
-        guard let recording = songRecording, case let .player(_, song, seconds) = recording.job.source else { return }
+        guard let recording = songRecording, case let .player(_, song, _) = recording.job.source else { return }
         let track = nowPlaying.track
         let waited = Date().timeIntervalSince(recording.since)
         switch recording.phase {
@@ -5551,7 +5583,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             recording.phase = .moving
             recording.since = Date()
-            sendMove(track, to: 0)
+            sendMove(track, to: recording.start)
         case .moving:
             // The player had a moment to take the move. A song that stayed where it was ends the recording below, once
             // it plays.
@@ -5560,7 +5592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             recording.since = Date()
             nowPlaying.play(true)
         case .playing:
-            let rate = recording.recorder.rate, frames = recording.recorder.frames, target = Int(seconds * rate)
+            let rate = recording.recorder.rate, frames = recording.recorder.frames, target = Int(recording.length * rate)
             if frames >= target { return endRecording(error: nil) }
             // Another song: a recording that is all but done keeps what it has.
             if let track, track.song != song {
@@ -5574,7 +5606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return endRecording(error: nil, partial: true)
             }
             // A seek moves the player away from the recording, which counts the song from its first sound.
-            if recording.recorder.heard, let position = track?.position(at: Date()), abs(position - Double(frames) / rate) > 4 {
+            if recording.recorder.heard, let position = track?.position(at: Date()), abs(position - recording.start - Double(frames) / rate) > 4 {
                 return endRecording(error: SaveError(message: String(format: "The song moved to %.0f s", position)))
             }
             saveActivity = .recording(name: recording.job.name, left: Self.clock(Double(target - frames) / rate), progress: Double(frames) / Double(max(1, target)))
@@ -5584,7 +5616,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Ends the recording of a song from another player. `partial` saves the part recorded so far, without the silence
     /// after it, and `cancelled` saves nothing.
     private func endRecording(error: Error?, partial: Bool = false, cancelled: Bool = false) {
-        guard let recording = songRecording, case let .player(_, _, seconds) = recording.job.source else { return }
+        guard let recording = songRecording, case .player = recording.job.source else { return }
         recording.timer?.invalidate()
         songRecording = nil
         updateWatching(shown: model.shown)
@@ -5595,7 +5627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.playSpeed(speed)
             }
         }
-        var audio = recording.recorder.stop(frames: Int(seconds * recording.recorder.rate))
+        var audio = recording.recorder.stop(frames: Int(recording.length * recording.recorder.rate))
         if cancelled { return }
         if let error { return saveFinished(recording.job, error: error, seconds: 0, length: 0) }
         if partial {
@@ -6207,7 +6239,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func checkLoopEnd() {
-        guard let loop = model.loop, let end = loop.end, let track = nowPlaying.track, track.playing, model.seekable,
+        // A region that is recorded for a save plays through to its end, where the recording stops, and goes back after.
+        guard songRecording == nil, let loop = model.loop, let end = loop.end, let track = nowPlaying.track, track.playing, model.seekable,
               let now = track.position(at: Date()) else { return }
         // A seek that the player hasn't reported yet.
         if let target = seekTarget, Date().timeIntervalSince(target.at) < 1 { return }
