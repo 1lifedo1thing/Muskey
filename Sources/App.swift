@@ -5194,6 +5194,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor [weak self] in
             let songs = await Task.detached(priority: .utility) { FilePlayer.songs(in: folder) }.value
             let details = if let first = songs.first { await QueueItem.details(first) } else { QueueItem.Details?.none }
+            // A playlist mixes artists: the artist shows only when the last song has the same one as the first.
+            let lastArtist = if songs.count > 1, let last = songs.last { await QueueItem.details(last)?.artist } else { details?.artist }
             let cover = await Task.detached(priority: .utility) { () -> NSImage? in
                 for name in ["cover", "folder", "front", "Cover", "Folder", "Front"] {
                     for ext in ["jpg", "jpeg", "png"] {
@@ -5207,7 +5209,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             row.analysed = true
             row.artwork = cover ?? details?.artwork
             let count = songs.count >= FilePlayer.folderLimit ? "\(FilePlayer.folderLimit)+ songs" : "\(songs.count) song\(songs.count == 1 ? "" : "s")"
-            row.detail = [details?.artist, count].compactMap { $0 }.joined(separator: " · ")
+            let artist = details?.artist.flatMap { $0 == lastArtist ? $0 : nil }
+            row.detail = [artist, count].compactMap { $0 }.joined(separator: " · ")
             recentRows[folder.absoluteString] = row
             if let at = model.recents.firstIndex(where: { $0.id == row.id }) { model.recents[at] = row }
         }
