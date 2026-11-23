@@ -798,7 +798,7 @@ struct HUDView: View {
             if showsStrip, let key = model.key {
                 HStack(spacing: 16) {
                     // The stem picker of T has its own keys under it, and the keys of the key row don't work while it shows.
-                    WaveformKeysSwap(wave: model.wave, alignment: .leading, seek: model.seekable, palette: palette) {
+                    WaveformKeysSwap(wave: model.wave, alignment: .leading, seek: model.seekable, loop: model.loop != nil, palette: palette) {
                         KeyHints(lyrics: model.lyricsShown, vocals: model.stemsAvailable, seek: model.seekable, restart: model.restartable, chords: !model.chords.isEmpty, otherMode: key.minor != model.relative ? "major" : "minor", palette: palette)
                     }
                     .opacity(model.notesPicking == nil ? model.hintsOpacity : 0)
@@ -4873,6 +4873,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if model.seekable { seek(by: code == kVK_RightArrow ? 5 : -5) } else { log("seek: the player ignores seeks or the lyrics delay runs") }
             return true
         }
+        // And 0 goes to the start of the region loop, or of the song, and 1 to 9 to the bars that it numbers.
+        if model.wave.hovered, !shift, !option, let digit = Self.digitKeys.firstIndex(of: code) {
+            waveformDigit(digit)
+            return true
+        }
         // With chords over the lyrics, ← and → move the song a semitone, and ⌥← and ⌥→ move the capo, which changes
         // only the chords shown.
         // Over the record, they still seek.
@@ -4985,6 +4990,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seek(toFraction: Double(digit) / 10)
         }
         return true
+    }
+
+    /// The keys 0 to 9 over the waveform. 0 goes to the start of the region loop, or to the song's start without one,
+    /// and 1 to 9 to the bars that the waveform numbers. While no bars are numbered (the whole song shows and no region
+    /// loop is set), 1 to 9 go to a tenth of the song, as over the record.
+    private func waveformDigit(_ digit: Int) {
+        guard model.seekable else { return log("seek: the player ignores seeks or the lyrics delay runs") }
+        if digit == 0 {
+            if let loop = model.loop { return seek(to: loop.start, flash: "repeat") }
+            return model.restartable ? startOver() : seek(to: 0, flash: "0%")
+        }
+        let bars = waveformBars()
+        if bars.isEmpty { return seek(toFraction: Double(digit) / 10) }
+        guard digit <= bars.count else { return log("seek: the waveform numbers \(bars.count) bars") }
+        log("seek: bar \(digit) of the waveform")
+        seek(to: bars[digit - 1], flash: "\(digit).circle")
+    }
+
+    /// The bars that the waveform numbers, as `WaveformView` finds them for the close-up around the playhead.
+    private func waveformBars() -> [Double] {
+        guard let track = nowPlaying.track, let duration = track.duration, duration > 0 else { return [] }
+        let zoomed = model.wave.zoom > 1.05 && (model.card || model.waveformStyle == .ribbon)
+        let span = max(4, duration / model.wave.zoom)
+        let now = track.position(at: Date()) ?? 0
+        return WaveformBars.starts(loop: model.loop, bpm: model.shownTempo?.bpm, closeUp: zoomed ? now - span / 2 ... now + span / 2 : nil)
     }
 
     /// The position that the last seek asked for, until the player reports it, so that quick presses add up.
@@ -7158,8 +7188,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.overRecord, model.seekable { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
         if model.overRecord { keys += Self.digitKeys.dropFirst().map { ($0, 0) } }
         if model.overRecord, model.restartable { keys.append((kVK_ANSI_0, 0)) }
-        // Over the waveform, the arrows move the song too, and do nothing while it can't move.
-        if model.wave.hovered { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } }
+        // Over the waveform, the arrows and the numbers move the song too, and do nothing while it can't move.
+        if model.wave.hovered { keys += [kVK_LeftArrow, kVK_RightArrow].map { ($0, 0) } + Self.digitKeys.map { ($0, 0) } }
         // A key that two lists add is registered once.
         keys = keys.reduce(into: []) { unique, key in if !unique.contains(where: { $0 == key }) { unique.append(key) } }
         hoverKeys = keys.compactMap { code, modifiers in
@@ -7805,7 +7835,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-lanes-separating", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-picker-region", "-notes-picker-whole", "-notes-outside-region", "-notes-outside-region-whole", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-loop-zoom", "-waveform-hover-loop", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-lanes-separating", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-picker-region", "-notes-picker-whole", "-notes-outside-region", "-notes-outside-region-whole", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -7952,10 +7982,13 @@ extension EnvironmentValues {
             LoopFlags.hoveredInRenders = variant.hasSuffix("-loop-hover") ? .end : nil
             model.wave.loopEnd = LoopFlags.hoveredInRenders
             // A region loop with the dashed lines of the presses, one still waiting for its end, and one over lyric lines.
-            if variant.hasSuffix("loop") || variant.hasPrefix("-loop") || variant.hasSuffix("-loop-hover") || variant.hasPrefix("-lanes-loop") {
+            if variant.hasSuffix("loop") || variant.hasPrefix("-loop") || variant.hasSuffix("-loop-hover") || variant.hasPrefix("-lanes-loop")
+                || variant.hasPrefix("-waveform-hover-loop") {
                 model.loop = variant.contains("lyrics") ? LoopRegion(start: 16.5, end: 30)
                     : LoopRegion(start: 86.2, end: variant == "-loop-armed" ? nil : 110.4, startPress: 86.6, endPress: variant == "-loop-armed" ? nil : 110.1)
                 if variant == "-loop-zoom" { model.wave.zoom = 6 }
+                // A close-up that holds the loop still, with its bars numbered for the keys 1 to 9.
+                if variant == "-waveform-hover-loop-zoom" { model.wave.zoom = 8 }
             }
             // Chords over the lyrics, two semitones down with a capo on the second fret.
             if variant.hasSuffix("-chords") {

@@ -49,6 +49,8 @@ struct WaveformView: View {
     var hovered: (Bool) -> Void = { _ in }
     /// The pointer moves onto the tab of an end of the region loop or off it, which turns ← and → into its nudge keys.
     var hoveredEnd: (LoopEnd?) -> Void = { _ in }
+    /// The pointer is over the waveform, where the number keys go to the bars that the close-up numbers.
+    var showsBarKeys = false
     let palette: Palette
 
     @Environment(\.recordActions) private var actions
@@ -380,14 +382,22 @@ struct WaveformView: View {
         let rows: [(Stem?, [Float])] = shownLanes.isEmpty ? [(nil, waveform.bars(count, from: from, to: from + span))]
             : shownLanes.map { ($0, waveform.bars(count, from: from, to: from + span, stem: $0, range: ranges[$0])) }
         return Canvas { context, size in
+            let bars = WaveformBars.starts(loop: loop, bpm: bpm, closeUp: from ... from + span)
             if let bpm, bpm > 0 {
-                // Faint lines a beat apart, counted from the song's start, which the loop's snapping lines up later.
+                // Faint lines a beat apart, counted from the start of the region loop, or from the song's start, as the
+                // bars are.
                 let beat = 60 / bpm
-                var t = (from / beat).rounded(.up) * beat
+                let anchor = WaveformBars.anchor(loop)
+                var t = anchor + ((from - anchor) / beat).rounded(.up) * beat
                 while t < from + span {
                     let x = (t - from) / span * size.width
                     context.fill(Path(CGRect(x: x, y: 0, width: 0.5, height: size.height)), with: .color(palette.ink.opacity(0.1)))
                     t += beat
+                }
+                // The bars that the number keys go to start on a stronger line.
+                for start in bars where start >= from && start < from + span {
+                    let x = (start - from) / span * size.width
+                    context.fill(Path(CGRect(x: x - 0.5, y: 0, width: 1, height: size.height)), with: .color(palette.ink.opacity(0.22)))
                 }
             }
             let time = { (i: Int, n: Int) in from + span * (Double(i) + 0.5) / Double(n) }
@@ -416,10 +426,24 @@ struct WaveformView: View {
                 }
             }
             drawLoop(&context, size: size, from: from, span: span, now: seconds)
+            if showsBarKeys { drawBarKeys(&context, bars: bars, from: from, size: size) }
             drawHead(&context, x: (seconds - from) / span * size.width, height: size.height, seconds: seconds, pulse: pulse)
         }
         .frame(height: mainHeight)
         .background(palette.ink.opacity(shownLanes.isEmpty ? 0.035 : 0), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// The number key of each bar, in a keycap at the top of its line, while the pointer is over the waveform.
+    private func drawBarKeys(_ context: inout GraphicsContext, bars: [Double], from: Double, size: CGSize) {
+        for (index, start) in bars.enumerated() where start >= from && start < from + span {
+            let x = (start - from) / span * size.width
+            let cap = CGRect(x: x + 2, y: 2, width: 11, height: 11)
+            let shape = Path(roundedRect: cap, cornerRadius: 3)
+            context.fill(shape, with: .color(scheme == .dark ? Color(white: 0.16) : Color(white: 0.97)))
+            context.stroke(shape, with: .color(palette.ink.opacity(0.3)), lineWidth: 0.5)
+            context.draw(Text("\(index + 1)").font(.system(size: 8, weight: .bold, design: .rounded)).foregroundColor(palette.ink.opacity(0.8)),
+                         at: CGPoint(x: cap.midX, y: cap.midY))
+        }
     }
 
     /// The whole song as a thin strip, under the close-up.
@@ -508,12 +532,32 @@ struct WaveformHost: View {
                          toggleLane: { [wave] in wave.toggleLane($0) },
                          muted: muted, loop: loop, setLoop: setLoop, typing: typing,
                          hovered: { [wave] inside in if wave.hovered != inside { wave.hovered = inside } },
-                         hoveredEnd: { [wave] end in if wave.loopEnd != end { wave.loopEnd = end } }, palette: palette)
+                         hoveredEnd: { [wave] end in if wave.loopEnd != end { wave.loopEnd = end } }, showsBarKeys: wave.hovered, palette: palette)
         } else {
             // The place stays while the waveform is read, so the key row doesn't move when it arrives.
             Color.clear.frame(width: width, height: height)
         }
     }
+}
+
+/// The bars that the number keys over the waveform go to, four beats of the song's tempo each, at most 9 for the keys 1
+/// to 9. While a region loop is set, they are the bars from its start to its end. Otherwise they are the bars that
+/// start in the close-up, counted from the song's start like its beat lines, and there are none while the whole song
+/// shows.
+enum WaveformBars {
+    static func starts(loop: LoopRegion?, bpm: Double?, closeUp: ClosedRange<Double>?) -> [Double] {
+        guard let bpm, bpm > 0 else { return [] }
+        let bar = Double(Score.beatsPerBar) * 60 / bpm
+        if let loop, let end = loop.end {
+            return Array(stride(from: loop.start, to: end - 0.05, by: bar).prefix(9))
+        }
+        guard let closeUp else { return [] }
+        let first = (max(0, closeUp.lowerBound) / bar).rounded(.up) * bar
+        return Array(stride(from: first, to: closeUp.upperBound, by: bar).prefix(9))
+    }
+
+    /// Where the beat lines of the close-up are counted from: the start of the region loop, or the song's start.
+    static func anchor(_ loop: LoopRegion?) -> Double { loop?.end == nil ? 0 : loop?.start ?? 0 }
 }
 
 /// The ends of the region loop on the waveform: a line at each end, with an A tab on the left of the start's line and

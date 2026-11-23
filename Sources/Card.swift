@@ -478,7 +478,7 @@ struct HUDCard: View {
             if let track {
                 VStack(spacing: 2) {
                     // The keys of the waveform take the place of the song's lines while the pointer is over it.
-                    WaveformKeysSwap(wave: model.wave, alignment: .center, small: true, seek: model.seekable, palette: palette) {
+                    WaveformKeysSwap(wave: model.wave, alignment: .center, small: true, seek: model.seekable, loop: model.loop != nil, palette: palette) {
                         VStack(spacing: 2) {
                             Text(track.title ?? "")
                                 .font(.system(size: 13, weight: .bold, design: .rounded))

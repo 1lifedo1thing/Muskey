@@ -790,6 +790,8 @@ struct KeyHints: View {
     var loopEnd: LoopEnd?
     /// The waveform shows a close-up, which ⌘0 takes back to the whole song.
     var zoomed = false
+    /// A region loop is set, whose start 0 goes to over the waveform.
+    var loop = false
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -808,10 +810,12 @@ struct KeyHints: View {
             [Hint(keys: ["←", "→"], name: loopEnd == .start ? "nudge A" : "nudge B"), Hint(keys: ["⌥", "←", "→"], name: "by a beat"),
              Hint(keys: ["R"], name: "region loop"), Hint(keys: ["⌘", "+", "−"], name: "zoom")]
         case _ where waveform:
-            [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: "one waveform per instrument")] : [])
+            [Hint(keys: ["R"], name: "region loop")] + (lanes ? [Hint(keys: ["⌥", "W"], name: style == .footer ? "one waveform per instrument" : "per instrument")] : [])
                 // In a close-up, ⌘0 joins the zoom keys. The card splits these keys over two lines, which fit the whole
-                // name of ⌥W.
+                // name of ⌥W, while the band names it by its last words to keep the row left of Lock Key.
                 + [Hint(keys: ["⌘", "+", "−"] + (zoomed ? ["0"] : []), name: "zoom"), Hint(keys: (seek ? ["←", "→"] : []) + ["scroll"], name: "move song")]
+                // The keys 1 to 9 show on the bars of the waveform, in keycaps of their own.
+                + (seek ? [Hint(keys: ["0"], name: loop ? "loop start" : "song start")] : [])
         case .band where karaokeKeys, .footer where karaokeKeys:
             [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["esc"], name: "close")]
@@ -845,7 +849,7 @@ struct KeyHints: View {
             // Over the waveform, the card's footer takes the two lines of the song's title and artist, since one line of
             // its keys is wider than the card.
             if style == .footer, waveform, hints.count > 2 {
-                let half = (hints.count + 1) / 2
+                let half = hints.count / 2
                 VStack(spacing: 5) {
                     row(Array(hints.prefix(half)))
                     row(Array(hints.dropFirst(half)))
@@ -890,6 +894,8 @@ struct WaveformKeysSwap<Content: View>: View {
     var small = false
     /// The song can move, and the arrows move it 5 seconds.
     var seek = false
+    /// A region loop is set, whose start 0 goes to.
+    var loop = false
     let palette: Palette
     @ViewBuilder let content: Content
 
@@ -899,7 +905,7 @@ struct WaveformKeysSwap<Content: View>: View {
             content.opacity(on ? 0 : 1)
             if on {
                 KeyHints(style: small ? .footer : .band, seek: seek, waveform: true, lanes: (wave.waveform?.stems != nil || StemModel.installed) && Preferences.shared.waveformStyle == .ribbon,
-                         loopEnd: wave.loopEnd, zoomed: wave.zoom > 1, otherMode: "", palette: palette)
+                         loopEnd: wave.loopEnd, zoomed: wave.zoom > 1, loop: loop, otherMode: "", palette: palette)
                     .transition(.opacity)
             }
         }
