@@ -516,11 +516,11 @@ struct MiniPlayerView: View {
                 // The panel has room for the song as far as its reach, so the background stops there too and never
                 // meets the edge of the panel. The editor has no such edge.
                 let reach = Self.textReach(side, box: record.width).offsetBy(dx: center.x, dy: center.y)
-                let clamp = { (frame: CGRect) in editing ? frame : frame.intersection(reach) }
-                // A hanging pill ends inside the rim around the record, which the background already covers.
+                // A hanging pill sits higher than the song's place, so it never reaches the edge of the panel.
                 let hanging = hangs
-                let text = hanging ? nil : frames["text"].map { clamp(proxy[$0]) }
-                let lines = hanging ? [] : frames.filter { $0.key.hasPrefix("line ") }.map { clamp(proxy[$0.value]) }
+                let clamp = { (frame: CGRect) in editing || hanging ? frame : frame.intersection(reach) }
+                let text = frames["text"].map { clamp(proxy[$0]) }
+                let lines = frames.filter { $0.key.hasPrefix("line ") }.map { clamp(proxy[$0.value]) }
                 let shape = MiniBackdropShape(record: record, text: text, lines: lines, side: side, roundness: mini.background.roundness)
                 MiniBackdrop(background: mini.background, radius: shape.radius)
                     .frame(width: shape.rect.width, height: shape.rect.height)

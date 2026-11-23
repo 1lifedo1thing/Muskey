@@ -7774,6 +7774,9 @@ extension EnvironmentValues {
         ("record-two-small", MiniLayout(line: [.key, .tempo]), MiniPlayerView.scales.lowerBound, false, darkCover),
         ("record-two-large", MiniLayout(line: [.key, .tempo]), MiniPlayerView.scales.upperBound, false, darkCover),
         ("record-rim-line", MiniLayout(bottom: .tempo, line: [.key]), 1, false, darkCover),
+        ("record-hang-round", MiniLayout(line: [.key]), MiniPlayerView.scales.lowerBound, false, darkCover),
+        ("record-hang-next", MiniLayout(line: [.next]), MiniPlayerView.scales.lowerBound, false, darkCover),
+        ("record-hang-next-round", MiniLayout(line: [.next]), MiniPlayerView.scales.lowerBound, false, darkCover),
         // The pointer over the record: the lines make way for the buttons.
         ("record-hover", full, 1, false, darkCover),
     ]
@@ -7793,6 +7796,7 @@ extension EnvironmentValues {
             mini.layout = layout
             mini.songOnRecord = true
             if name.hasSuffix("-bg") { mini.background = makeBackground(.glass, roundness: 0.6, tint: ember) }
+            if name.hasSuffix("-round") { mini.background = makeBackground(.colour, roundness: 1, tint: teal) }
             let view = MiniPlayerView(model: model, mini: mini)
                 .background(wallpaper)
                 .environment(\.renderingPreview, true)
