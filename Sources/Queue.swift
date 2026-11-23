@@ -19,9 +19,14 @@ struct QueueItem: Identifiable, Equatable {
     var read = false
     /// The key and the tempo were looked for.
     var analysed = false
+    /// The folder that the song was opened from. In Recents, a row for a whole folder has its own URL here.
+    var folder: URL?
+    /// Recents shows a folder's song count and artist under its name, in place of the artist.
+    var detail: String?
 
-    init(url: URL, cached: FilePlayer.Song?) {
+    init(url: URL, cached: FilePlayer.Song?, folder: URL? = nil) {
         self.url = url
+        self.folder = folder
         // A link to a file is named by the file, and a page by its site until it is downloaded.
         title = url.isFileURL ? url.deletingPathExtension().lastPathComponent
             : SongName.link(url) ?? (url.host() ?? url.absoluteString).replacingOccurrences(of: "www.", with: "")
@@ -97,6 +102,7 @@ struct QueueItem: Identifiable, Equatable {
     static func == (a: QueueItem, b: QueueItem) -> Bool {
         a.id == b.id && a.title == b.title && a.artist == b.artist && a.album == b.album && a.duration == b.duration
             && a.artwork === b.artwork && a.key == b.key && a.bpm == b.bpm && a.read == b.read && a.analysed == b.analysed
+            && a.detail == b.detail
     }
 
     /// The key and the tempo of a file, from 30 seconds of it a third of the way in, the part where most songs settle
@@ -242,7 +248,17 @@ struct SongRow: View {
                     Image(nsImage: artwork).resizable().aspectRatio(contentMode: .fill)
                 } else {
                     palette.ink.opacity(0.1)
-                    Image(systemName: "music.note").font(.system(size: 11, weight: .semibold)).foregroundStyle(palette.muted)
+                    Image(systemName: isFolder ? "folder.fill" : "music.note").font(.system(size: 11, weight: .semibold)).foregroundStyle(palette.muted)
+                }
+                if isFolder, song.artwork != nil {
+                    // A folder's row shows the cover of its first song, marked as a folder in its corner.
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(2.5)
+                        .background(Circle().fill(.black.opacity(0.55)))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .padding(1.5)
                 }
                 if playing {
                     Color.black.opacity(0.35)
@@ -255,7 +271,7 @@ struct SongRow: View {
                 Text(song.title)
                     .font(.system(size: 12, weight: playing ? .heavy : .bold, design: .rounded))
                     .foregroundStyle(playing ? StripColors.text(.honey, scheme) : palette.ink)
-                if let artist = song.artist {
+                if let artist = song.detail ?? song.artist {
                     Text(artist)
                         .font(.system(size: 10.5, weight: .medium, design: .rounded))
                         .foregroundStyle(palette.muted)
@@ -283,8 +299,11 @@ struct SongRow: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .help([song.title, song.artist, song.album].compactMap { $0 }.joined(separator: " · "))
+        .help(isFolder ? song.url.path : [song.title, song.artist, song.album].compactMap { $0 }.joined(separator: " · "))
     }
+
+    /// A row of Recents for a whole folder, whose URL is the folder itself.
+    private var isFolder: Bool { song.folder == song.url }
 }
 
 /// The songs that Muskey Player played last, on the back of the record while nothing plays. A click plays a song, and

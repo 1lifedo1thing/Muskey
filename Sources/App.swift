@@ -2738,7 +2738,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         filePlayer.onQueue = { [weak self] in self?.syncQueue() }
         filePlayer.onStarted = { url, song in RecentSongs.add(url, song: song) }
         model.onRecentPlay = { [weak self] song in
-            self?.log("recents: playing \(song.url.isFileURL ? "a file" : "a link")")
+            self?.log("recents: playing \(song.folder == song.url ? "a folder" : song.url.isFileURL ? "a file" : "a link")")
             self?.open([song.url])
         }
         model.onRecentAdd = { [weak self] song in self?.add([song.url], next: false) }
@@ -3095,12 +3095,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Plays files or links: dropped on the HUD, pasted, or picked with Open File… and Open URL….
     private func open(_ urls: [URL]) {
-        log("opening \(urls.count == 1 ? (urls[0].isFileURL ? "a file" : "a link") : "\(urls.count) items")")
-        // A song that a person opens shows, also over one that keeps opening in the background.
-        openingInBackground = false
-        raisesHUD = true
-        filePlayer.open(urls)
-        raisesHUD = false
+        withFolders(urls) { [self] urls, folders in
+            log("opening \(urls.count == 1 ? (urls[0].isFileURL ? "a file" : "a link") : "\(urls.count) items")\(folders.isEmpty ? "" : " from \(Set(folders.values).count == 1 ? "a folder" : "\(Set(folders.values).count) folders")")")
+            // A song that a person opens shows, also over one that keeps opening in the background.
+            openingInBackground = false
+            raisesHUD = true
+            filePlayer.open(urls, folders: folders)
+            raisesHUD = false
+        }
+    }
+
+    /// A folder opens as its songs and the songs of its subfolders, read off the main thread, with the folder that each
+    /// song came from. Files and links pass through at once.
+    private func withFolders(_ urls: [URL], then open: @escaping ([URL], [URL: URL]) -> Void) {
+        guard urls.contains(where: FilePlayer.isFolder) else { return open(urls, [:]) }
+        Task { @MainActor [weak self] in
+            let expanded = await Task.detached(priority: .userInitiated) {
+                urls.map { url in FilePlayer.isFolder(url) ? (url, FilePlayer.songs(in: url)) : (url, [url]) }
+            }.value
+            guard let self else { return }
+            var songs: [URL] = []
+            var folders: [URL: URL] = [:]
+            for (opened, found) in expanded {
+                if found.isEmpty { filePlayer.noSongs(in: opened) }
+                for song in found where song != opened { folders[song] = opened }
+                songs += found
+            }
+            if !songs.isEmpty { open(songs, folders) }
+        }
     }
 
     // MARK: A song that opens
@@ -4102,9 +4124,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and Add URL to Queue…. With `next`, they play right after the song that plays.
     private func add(_ urls: [URL], next: Bool) {
         guard !model.otherPlayer else { return open(urls) }
-        raisesHUD = true
-        filePlayer.add(urls, next: next)
-        raisesHUD = false
+        withFolders(urls) { [self] urls, folders in
+            raisesHUD = true
+            filePlayer.add(urls, next: next, folders: folders)
+            raisesHUD = false
+        }
     }
 
     /// The queue changed in Muskey Player, so the HUD shows it, and the songs that have no key yet get one.
@@ -4222,7 +4246,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .movie]
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
+        // A folder of an album, an artist or a playlist opens as all of its songs.
+        panel.canChooseDirectories = true
         panel.prompt = "Add to Queue"
         showInFront(panel) { [weak self] chosen in
             if chosen { self?.add(panel.urls, next: false) }
@@ -4558,7 +4583,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .movie]
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
+        // A folder of an album, an artist or a playlist opens as all of its songs.
+        panel.canChooseDirectories = true
         showInFront(panel) { [weak self] chosen in
             if chosen { self?.open(panel.urls) }
         }
@@ -5104,7 +5130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let id = entry.url.absoluteString
             if var row = recentRows[id] {
                 // A listen since the last time may have found the song's key.
-                if row.read, prefs.rememberKeys {
+                if row.read, row.folder != row.url, prefs.rememberKeys {
                     let song: [String?] = [row.title, row.artist, row.album]
                     row.key = keyCache.key(for: song) ?? row.key
                     row.bpm = keyCache.bpm(for: song) ?? row.bpm
@@ -5112,7 +5138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return row
             }
-            let row = QueueItem(url: entry.url, cached: entry.song)
+            var row = QueueItem(url: entry.url, cached: entry.song)
+            if FilePlayer.isFolder(entry.url) {
+                row.folder = entry.url
+                row.title = entry.url.lastPathComponent
+            }
             recentRows[id] = row
             return row
         }
@@ -5135,7 +5165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The title, artist and cover of each recent song that wasn't read yet, and the key that Muskey remembers for it.
     private func readRecentDetails() {
-        for item in model.recents where !item.read {
+        for item in model.recents where !item.read && item.folder == item.url {
+            readFolderDetails(item)
+        }
+        for item in model.recents where !item.read && item.folder != item.url {
             guard let file = item.file, FileManager.default.fileExists(atPath: file.path) else { continue }
             Task { @MainActor [weak self] in
                 let details = await QueueItem.details(file, name: item.url.isFileURL ? nil : SongName.link(item.url))
@@ -5151,6 +5184,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 recentRows[item.url.absoluteString] = row
                 if let at = model.recents.firstIndex(where: { $0.id == row.id }) { model.recents[at] = row }
             }
+        }
+    }
+
+    /// A folder in Recents shows the cover of its first song, or a cover image in the folder, and its song count with
+    /// the first song's artist under its name.
+    private func readFolderDetails(_ item: QueueItem) {
+        let folder = item.url
+        Task { @MainActor [weak self] in
+            let songs = await Task.detached(priority: .utility) { FilePlayer.songs(in: folder) }.value
+            let details = if let first = songs.first { await QueueItem.details(first) } else { QueueItem.Details?.none }
+            let cover = await Task.detached(priority: .utility) { () -> NSImage? in
+                for name in ["cover", "folder", "front", "Cover", "Folder", "Front"] {
+                    for ext in ["jpg", "jpeg", "png"] {
+                        if let image = NSImage(contentsOf: folder.appending(path: "\(name).\(ext)")) { return image }
+                    }
+                }
+                return nil
+            }.value
+            guard let self, var row = recentRows[folder.absoluteString] else { return }
+            row.read = true
+            row.analysed = true
+            row.artwork = cover ?? details?.artwork
+            let count = songs.count >= FilePlayer.folderLimit ? "\(FilePlayer.folderLimit)+ songs" : "\(songs.count) song\(songs.count == 1 ? "" : "s")"
+            row.detail = [details?.artist, count].compactMap { $0 }.joined(separator: " · ")
+            recentRows[folder.absoluteString] = row
+            if let at = model.recents.firstIndex(where: { $0.id == row.id }) { model.recents[at] = row }
         }
     }
 
@@ -8817,6 +8876,15 @@ extension EnvironmentValues {
                 model.phase = .idle
                 model.card = layout == "-card"
                 model.recents = HUDSample.queue
+                // An album opened as a folder, kept in Recents as the folder.
+                model.recents[2].folder = model.recents[2].url
+                model.recents[2].title = "Low Tide Radio"
+                model.recents[2].detail = "Mira Vale · 11 songs"
+                model.recents[3].folder = model.recents[3].url
+                model.recents[3].title = "Sunday Playlist"
+                model.recents[3].artwork = nil
+                model.recents[3].detail = "Saffron June · 42 songs"
+                for at in [2, 3] { model.recents[at].key = nil; model.recents[at].bpm = nil }
                 model.recentsShown = name != "idle-recents-front"
                 model.recentsSelection = model.recents[0].id
                 RecentsView.previewHover = hover ? model.recents[1].id : nil

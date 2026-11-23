@@ -142,19 +142,20 @@ final class FilePlayer {
         urls.filter { $0.isFileURL || ["http", "https"].contains($0.scheme?.lowercased() ?? "") }
     }
 
-    /// Files and links of the web, the first one played now and the rest after it. They replace the queue.
-    func open(_ urls: [URL]) {
+    /// Files and links of the web, the first one played now and the rest after it. They replace the queue. `folders`
+    /// names the folder that a song was opened from, which Recents keeps in place of the song.
+    func open(_ urls: [URL], folders: [URL: URL] = [:]) {
         let urls = Self.playable(urls)
         guard !urls.isEmpty else { return }
-        queue = urls.map { QueueItem(url: $0, cached: cache.song(for: $0)) }
+        queue = urls.map { QueueItem(url: $0, cached: cache.song(for: $0), folder: folders[$0]) }
         play(queue[0].id)
         readDetails()
     }
 
     /// Adds songs to the end of the queue, or after the song that plays with `next`. A queue with nothing playing
     /// starts with them.
-    func add(_ urls: [URL], next: Bool) {
-        let items = Self.playable(urls).map { QueueItem(url: $0, cached: cache.song(for: $0)) }
+    func add(_ urls: [URL], next: Bool, folders: [URL: URL] = [:]) {
+        let items = Self.playable(urls).map { QueueItem(url: $0, cached: cache.song(for: $0), folder: folders[$0]) }
         guard !items.isEmpty else { return }
         log("adding \(items.count) song\(items.count == 1 ? "" : "s") to the queue\(next ? " after the song that plays" : "")")
         let at = next ? min(queue.count, (currentID == nil ? resume : index + 1)) : queue.count
@@ -270,6 +271,41 @@ final class FilePlayer {
     }
 
     /// A link or a path that was pasted or typed, with or without `https://`.
+    /// A folder that was opened holds no song that Muskey Player plays.
+    func noSongs(in folder: URL) {
+        log("no songs in the folder \(folder.lastPathComponent)")
+        show(.unplayable(name: folder.lastPathComponent))
+    }
+
+    /// The most songs that a folder opens, so a drop of a whole music library doesn't read for minutes.
+    static let folderLimit = 2000
+
+    /// The audio and video files in a folder and its subfolders, in the order that Finder lists them. Reads the disk,
+    /// so it runs off the main thread.
+    static func songs(in folder: URL) -> [URL] {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .contentTypeKey]
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys,
+                                                          options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        else { return [] }
+        var songs: [URL] = []
+        for case let url as URL in walker {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true,
+                  let type = values.contentType, type.conforms(to: .audio) || type.conforms(to: .movie)
+            else { continue }
+            songs.append(url)
+            if songs.count >= folderLimit { break }
+        }
+        return songs.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    static func isFolder(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        var folder: ObjCBool = false
+        // A package, like a Logic project, opens as a file.
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &folder) && folder.boolValue
+            && !NSWorkspace.shared.isFilePackage(atPath: url.path)
+    }
+
     static func url(from text: String) -> URL? {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !text.contains("\n") else { return nil }
@@ -490,7 +526,8 @@ final class FilePlayer {
             current = starting
             hasSong = true
             onPlaying()
-            if let opening { onStarted(opening, starting) }
+            // A song of a folder that was opened is kept in Recents as its folder.
+            if let opening { onStarted(queue.first { $0.id == currentID }?.folder ?? opening, starting) }
             // A copy of the song at another path is the same song to Muskey, and keeps its loop unless it goes here.
             if replaced {
                 onMove(0)
