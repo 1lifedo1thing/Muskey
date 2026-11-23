@@ -285,8 +285,18 @@ final class NowPlaying {
         update(player, cover: nil)
     }
 
+    /// `--log-playhead` logs every report of a player with its elapsed time and timestamp, and whether a move overrides
+    /// it, for finding the report that sets the song's place back.
+    private static let logReports = TestFlags.has("--log-playhead")
+
     private func update(_ track: Track, cover: NSImage??) {
         var track = track
+        if Self.logReports {
+            let now = Date().timeIntervalSince1970
+            log(String(format: "report: elapsed %.3f, stamped %.3f s ago, rate %.2f, gives %.3f%@", track.elapsed ?? -1, now - (track.timestamp ?? now),
+                       track.rate ?? 0, track.position(at: Date()) ?? -1,
+                       move.map { String(format: ", move to %.3f %.3f s ago", $0.elapsed, now - $0.at) } ?? ""))
+        }
         if let move {
             if track.bundleID == move.bundleID, (track.timestamp ?? 0) < move.at {
                 track.elapsed = move.elapsed
