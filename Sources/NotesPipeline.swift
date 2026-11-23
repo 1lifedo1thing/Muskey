@@ -35,9 +35,10 @@ struct StemActivity: Sendable {
 enum NotesPipeline {
     /// How much of the music each stem plays in, from 0 to 1: of the half seconds where the stems together are louder
     /// than −50 dB, the share where the stem is at most 20 dB below them. The parts of a capture that weren't heard
-    /// are silent, so they count neither way.
-    static func activity(_ cache: StemsCache) -> StemActivity {
+    /// are silent, so they count neither way. With `range`, only the music in those seconds of the song counts.
+    static func activity(_ cache: StemsCache, range: ClosedRange<Double>? = nil) -> StemActivity {
         let window = Int(StemsCache.rate / 2)
+        let frames = frames(of: range, in: cache)
         let stems = Stem.allCases.count
         var buffer = [Float](repeating: 0, count: StemsCache.planes * window)
         var mix = [Float](repeating: 0, count: window * 2)
@@ -45,7 +46,7 @@ enum NotesPipeline {
         var playing = [Int](repeating: 0, count: stems)
         var power = [Float](repeating: 0, count: stems)
         let floor = Float(window * 2) * 0.003 * 0.003
-        for start in stride(from: 0, to: cache.frames, by: window) {
+        for start in stride(from: frames.lowerBound, to: frames.upperBound, by: window) {
             buffer.withUnsafeMutableBufferPointer { cache.copy(Array(0 ..< StemsCache.planes), from: start, count: window, into: $0.baseAddress!) }
             var mixPower: Float = 0
             buffer.withUnsafeBufferPointer { planes in
@@ -84,14 +85,35 @@ enum NotesPipeline {
             + String(format: "  (%.0f s of music)", activity.seconds))
     }
 
-    /// The left and right channels of one stem of a song whose stems are in the cache, mixed to mono.
-    static func stemSamples(_ cache: StemsCache, stem: Stem) -> [Float] {
-        let frames = cache.frames
+    /// The left and right channels of one stem of a song whose stems are in the cache, mixed to mono. With `range`,
+    /// only those seconds of the song.
+    static func stemSamples(_ cache: StemsCache, stem: Stem, range: ClosedRange<Double>? = nil) -> [Float] {
+        let span = frames(of: range, in: cache)
+        let frames = span.count
         var planes = [Float](repeating: 0, count: frames * 2)
         planes.withUnsafeMutableBufferPointer { buffer in
-            cache.copy([stem.rawValue * 2, stem.rawValue * 2 + 1], from: 0, count: frames, into: buffer.baseAddress!)
+            cache.copy([stem.rawValue * 2, stem.rawValue * 2 + 1], from: span.lowerBound, count: frames, into: buffer.baseAddress!)
         }
         return (0 ..< frames).map { (planes[$0] + planes[frames + $0]) * 0.5 }
+    }
+
+    /// The frames of the cache in a range of seconds of the song, or all of them.
+    private static func frames(of range: ClosedRange<Double>?, in cache: StemsCache) -> Range<Int> {
+        guard let range else { return 0 ..< cache.frames }
+        let start = min(cache.frames, max(0, Int(range.lowerBound * StemsCache.rate)))
+        return start ..< min(cache.frames, max(start, Int((range.upperBound * StemsCache.rate).rounded(.up))))
+    }
+
+    /// The seconds of the song on each side of a region loop that Dettato hears with it, so that the notes at its
+    /// edges are found as they are in the whole song.
+    static let regionContext = 2.0
+
+    /// The notes that start in a region loop, with their ends cut at its end. A note that starts a moment before the
+    /// region is kept, since a loop set by hand can start just after the attack of its first note.
+    static func notes(_ notes: [TranscribedNote], in region: ClosedRange<Double>) -> [TranscribedNote] {
+        notes.filter { $0.start >= region.lowerBound - 0.05 && $0.start < region.upperBound }.map {
+            TranscribedNote(start: $0.start, end: min($0.end, region.upperBound), pitch: $0.pitch, program: $0.program, drum: $0.drum)
+        }
     }
 
     /// The stems of the whole song from the cache, separating them first when the cache doesn't have them yet.

@@ -193,7 +193,7 @@ final class NotesModel: ObservableObject {
 
     /// The seconds that a step takes, when this Mac timed it. The capture takes as long as the song has left to play.
     private func seconds(_ step: NotesStep) -> Double? {
-        step == .capture ? captureSeconds : NotesTiming.rate(step).map { $0 * max(duration, 1) }
+        step == .capture ? captureSeconds : NotesTiming.rate(step).map { $0 * max(step == .notes ? transcribing : duration, 1) }
     }
 
     /// Every step was timed on this Mac.
@@ -280,10 +280,28 @@ final class NotesModel: ObservableObject {
     /// Where a transcription that Stop Here ended stopped, in seconds of the song. The bars after it stay faint.
     var transcribedUntil: Double?
 
+    /// The region loop that T transcribed in place of the whole song.
+    var region: ClosedRange<Double>?
+
+    /// The part of the song that was transcribed, when it isn't the whole song: the region loop, up to the place where
+    /// Stop Here ended the transcription. The bars outside it stay faint.
+    var transcribed: ClosedRange<Double>? {
+        guard region != nil || transcribedUntil != nil else { return nil }
+        let start = region?.lowerBound ?? 0
+        return start ... max(start, min(region?.upperBound ?? .infinity, transcribedUntil ?? .infinity))
+    }
+
+    /// The seconds of the song that the notes step transcribes: the region loop with the context around it, or the
+    /// whole song.
+    var transcribing: Double {
+        region.map { min(duration > 0 ? duration : .infinity, $0.upperBound + NotesPipeline.regionContext) - max(0, $0.lowerBound - NotesPipeline.regionContext) }
+            ?? duration
+    }
+
     /// The fewest notes that are worth showing. With fewer, the window says that there are no notes to transcribe. After
     /// Transcribe Anyway, any note shows: runs of bars without notes are one bar of rest each, so a few notes never fill
-    /// pages of empty bars.
-    var fewest: Int { forced ? 1 : 4 }
+    /// pages of empty bars. A region loop can be a few notes long.
+    var fewest: Int { forced || region != nil ? 1 : 4 }
 
     func finish(_ notes: [TranscribedNote]) {
         self.notes = notes
@@ -520,6 +538,8 @@ struct NotesPainter {
     let accent: Color
     /// The bars that start after this time aren't transcribed yet.
     let until: Double
+    /// The bars that end before this time weren't transcribed, since only a region loop was.
+    var from = 0.0
 
     private var staff: NotesStaff { layout.staff }
 
@@ -546,7 +566,7 @@ struct NotesPainter {
         barX(bar, first) + pad + CGFloat(beat / Double(Score.beatsPerBar)) * (layout.barWidth - pad * 1.6)
     }
 
-    private func faint(_ bar: Int) -> Bool { score.bars[bar].start > until }
+    private func faint(_ bar: Int) -> Bool { score.bars[bar].start > until || score.bars[bar].end <= from }
 
     /// A bar that stands for a run of bars without notes: the thick bar of a multi-bar rest across the middle of the
     /// lines, with short ends, and the number of bars over it.
@@ -1431,7 +1451,8 @@ private struct NotesPageView: View {
             let pages = !model.done ? layout.pagesShown(at: nil, in: model.score)
                 : renderingPreview ? layout.pagesShown(at: model.now(), in: model.score) : shown
             let painter = NotesPainter(score: model.score, layout: layout, byBar: model.score.notesByBar, ink: palette.ink, paper: paper,
-                                       accent: NotesAccent.color(colorScheme), until: model.done ? model.transcribedUntil ?? .infinity : -1)
+                                       accent: NotesAccent.color(colorScheme), until: model.done ? model.transcribed?.upperBound ?? .infinity : -1,
+                                       from: model.done ? model.transcribed?.lowerBound ?? 0 : 0)
             ZStack(alignment: .topLeading) {
                 Group {
                     half(painter, top: true, page: pages.top)
@@ -1507,13 +1528,30 @@ private struct NotesPageView: View {
         .offset(y: top ? 0 : layout.middle)
     }
 
-    /// The lines after the place where Stop Here ended the transcription, dimmed under a wash of the paper, with
-    /// "Not transcribed" at the start of the first of them in each half.
+    /// The lines before a region loop that was transcribed, and after it or after the place where Stop Here ended the
+    /// transcription, dimmed under a wash of the paper, with "Not transcribed" at the start of the first of them in each
+    /// half.
     @ViewBuilder private func untranscribed(_ painter: NotesPainter, page: Int, top: Bool) -> some View {
-        if model.done, let until = model.transcribedUntil {
+        if model.done, let part = model.transcribed {
             let layout = painter.layout
-            let start = Score.position(of: until, in: model.score.beats)
-            let rects = painter.region(from: start, to: Double(layout.bars * Score.beatsPerBar), page: page, rows: layout.rows(top: top))
+            let beats = model.score.beats
+            ZStack(alignment: .topLeading) {
+                if part.lowerBound > 0 {
+                    wash(painter, page: page, top: top, from: 0, to: Score.position(of: part.lowerBound, in: beats))
+                }
+                if part.upperBound < model.duration || model.transcribedUntil != nil {
+                    wash(painter, page: page, top: top, from: Score.position(of: part.upperBound, in: beats), to: Double(layout.bars * Score.beatsPerBar))
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// The wash over the lines from one place to another, in beats of the score shown.
+    @ViewBuilder private func wash(_ painter: NotesPainter, page: Int, top: Bool, from start: Double, to end: Double) -> some View {
+        if end > start {
+            let layout = painter.layout
+            let rects = painter.region(from: start, to: end, page: page, rows: layout.rows(top: top))
             let dy = top ? 0 : layout.middle
             ZStack(alignment: .topLeading) {
                 ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
@@ -2294,6 +2332,11 @@ struct NotesPicking: Equatable {
     var missing: Int?
     var downloading: Double?
     var failed = false
+    /// The region loop, which is transcribed in place of the whole song until Tab or a click picks the whole song.
+    var region: ClosedRange<Double>?
+    var wholeSong = false
+
+    var transcribesRegion: Bool { region != nil && !wholeSong }
 }
 
 struct NotesStemPicker: View {
@@ -2303,6 +2346,8 @@ struct NotesStemPicker: View {
     let start: () -> Void
     /// A song from another app plays to its end first, and is transcribed once it ends.
     var startFull: () -> Void = {}
+    /// Picks the whole song (true) or the region loop (false).
+    var pickPart: (Bool) -> Void = { _ in }
     @Environment(\.colorScheme) private var colorScheme
 
     private let columns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
@@ -2319,9 +2364,18 @@ struct NotesStemPicker: View {
             }
             .opacity(picking.available ? 1 : 0.4)
             .allowsHitTesting(picking.available)
+            if picking.available, let region = picking.region {
+                HStack(spacing: 6) {
+                    part("Region loop", seconds: region.upperBound - region.lowerBound, on: picking.transcribesRegion) { pickPart(false) }
+                    part("Whole song", seconds: picking.duration, on: !picking.transcribesRegion) { pickPart(true) }
+                }
+            }
             HStack {
                 if picking.available, picking.missing != nil || picking.downloading != nil || picking.failed {
                     // The download button needs the whole row.
+                    button.frame(maxWidth: .infinity)
+                } else if picking.available, picking.transcribesRegion {
+                    // The row above names the region and its length.
                     button.frame(maxWidth: .infinity)
                 } else if picking.available, partlyHeard {
                     // Part of a song from another app: the time heard is in the button, and Full Song is beside it. With
@@ -2333,6 +2387,9 @@ struct NotesStemPicker: View {
                     }
                     Spacer(minLength: 8)
                     fullButton
+                } else if picking.available, picking.region != nil {
+                    // The row above names the whole song and its length.
+                    button.frame(maxWidth: .infinity)
                 } else if picking.available {
                     Text(picking.duration.map { "Whole song · \(NotesTime.time($0))" } ?? "Whole song")
                         .foregroundStyle(palette.muted)
@@ -2347,21 +2404,45 @@ struct NotesStemPicker: View {
             }
             .font(.system(size: 12, weight: .semibold, design: .rounded))
             KeyHintsRow(hints: picking.available
-                ? [(["1–\(picking.stems.count)"], "stem")] + (heardEnough ? [(["↩"], "transcribe")] : []) + (partlyHeard ? [(["⌥", "↩"], "full song")] : []) + [(["esc"], "close")]
+                ? [(["1–\(picking.stems.count)"], "stem")] + (picking.region == nil ? [] : [(["⇥"], picking.transcribesRegion ? "whole song" : "region loop")])
+                    // With the region loop's Tab, ⌥↩ stays only on the Full Song button, which keeps the row within the picker.
+                    + (heardEnough ? [(["↩"], "transcribe")] : []) + (partlyHeard && picking.region == nil ? [(["⌥", "↩"], "full song")] : []) + [(["esc"], "close")]
                 : [(["esc"], "close")],
                 palette: palette)
         }
         .frame(width: 330)
     }
 
-    /// A song from another app that Muskey heard only part of, so it can be heard to its end first.
+    /// A song from another app that Muskey heard only part of, so it can be heard to its end first. A region loop was
+    /// heard whole, or the picker wouldn't offer it.
     private var partlyHeard: Bool {
-        guard picking.available, picking.missing == nil, picking.downloading == nil, !picking.failed, let heard = picking.heard else { return false }
+        guard picking.available, !picking.transcribesRegion, picking.missing == nil, picking.downloading == nil, !picking.failed, let heard = picking.heard else { return false }
         return heard < (picking.duration ?? 0) * 0.97
     }
 
-    /// Enough of the song was heard to transcribe it now: a file, or a few seconds of a song from another app.
-    private var heardEnough: Bool { (picking.heard ?? .infinity) >= 5 }
+    /// Enough of the song was heard to transcribe it now: a file, a few seconds of a song from another app, or a region
+    /// loop.
+    private var heardEnough: Bool { picking.transcribesRegion || (picking.heard ?? .infinity) >= 5 }
+
+    /// One of the two parts of the song that can be transcribed while a region loop is set, with its length.
+    private func part(_ name: String, seconds: Double?, on: Bool, action: @escaping () -> Void) -> some View {
+        let honey = StripColors.text(.honey, colorScheme)
+        return Button(action: action) {
+            HStack(spacing: 0) {
+                Text(name).foregroundStyle(palette.ink)
+                if let seconds { Text(" · \(NotesTime.time(seconds))").foregroundStyle(palette.muted).monospacedDigit() }
+            }
+            .font(.system(size: 12, weight: .bold, design: .rounded))
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(on ? honey.opacity(0.2) : palette.ink.opacity(0.07)))
+            .overlay(Capsule().strokeBorder(on ? honey : palette.ink.opacity(0.12), lineWidth: on ? 1.5 : 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+    }
 
     /// Plays the rest of a song from another app, and transcribes it once it ends.
     private var fullButton: some View {
@@ -2512,6 +2593,11 @@ extension NotesModel {
     if TestFlags.has("--notes-failed") {
         model.begin([.beats, .stems, .notes])
         model.phase = .failed
+    }
+    // `--notes-region A-B` shows the notes of a region loop from A to B seconds, transcribed in place of the whole song.
+    if let spec = TestFlags.value("--notes-region"), case let ends = spec.split(separator: "-").compactMap({ Double($0) }), ends.count == 2 {
+        model.region = ends[0] ... ends[1]
+        model.finish(NotesPipeline.notes(model.notes, in: ends[0] ... ends[1]))
     }
     // `--notes-until S` shows the notes of a transcription that Stop Here ended at S seconds.
     if let until = TestFlags.value("--notes-until").flatMap(Double.init) {

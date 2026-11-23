@@ -322,6 +322,21 @@ final class WaveformRecorder: @unchecked Sendable {
         }
     }
 
+    /// The capture holds a part of the song, but for a few slots missed between two buffers, as `firstGap` counts them.
+    func holds(_ range: ClosedRange<Double>) -> Bool {
+        lock.withLock {
+            let first = max(0, Int(range.lowerBound * SongWaveform.rate))
+            let last = min(captured.count, Int((range.upperBound * SongWaveform.rate).rounded(.up)))
+            guard first < last else { return false }
+            var run = 0
+            for slot in first ..< last {
+                run = captured[slot] ? 0 : run + 1
+                if run == 10 { return false }
+            }
+            return true
+        }
+    }
+
     /// Writes the capture to a 16-bit mono WAV file.
     func writeCapture(to url: URL) throws {
         let (samples, rate) = lock.withLock { (capture, captureRate) }
