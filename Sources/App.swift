@@ -2460,9 +2460,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.mini.background = background
             DispatchQueue.main.async { self?.miniPanel.chooseSide() }
         }.store(in: &prefChanges)
-        prefs.$miniDirection.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.miniPanel.chooseSide() } }.store(in: &prefChanges)
-        prefs.$miniSongOnRecord.dropFirst().sink { [weak self] onRecord in
-            self?.mini.songOnRecord = onRecord
+        prefs.$miniDirection.dropFirst().sink { [weak self] direction in
+            self?.mini.songOnRecord = direction == .onRecord
             DispatchQueue.main.async { self?.miniPanel.chooseSide() }
         }.store(in: &prefChanges)
         // Published before the change, so the panel takes its new size on the next turn, once the setting reads it.
@@ -7768,6 +7767,13 @@ extension EnvironmentValues {
         ("record-large", full, MiniPlayerView.scales.upperBound, false, darkCover), ("record-large-long", full, MiniPlayerView.scales.upperBound, true, darkCover),
         ("record-light-cover", full, 1, false, lightCover), ("record-light-cover-long", full, 1, true, lightCover),
         ("record-pills", MiniLayout(line: [.key, .tempo, .timeLeft]), 1, false, darkCover),
+        // A single pill hangs from the record's edge; two pills, or one in the line and one on the rim, stay under it.
+        ("record-hang", MiniLayout(line: [.key]), 1, false, darkCover), ("record-hang-bg", MiniLayout(line: [.key]), 1, false, darkCover),
+        ("record-hang-small", MiniLayout(line: [.key]), MiniPlayerView.scales.lowerBound, false, darkCover),
+        ("record-hang-large", MiniLayout(line: [.key]), MiniPlayerView.scales.upperBound, false, darkCover),
+        ("record-two-small", MiniLayout(line: [.key, .tempo]), MiniPlayerView.scales.lowerBound, false, darkCover),
+        ("record-two-large", MiniLayout(line: [.key, .tempo]), MiniPlayerView.scales.upperBound, false, darkCover),
+        ("record-rim-line", MiniLayout(bottom: .tempo, line: [.key]), 1, false, darkCover),
         // The pointer over the record: the lines make way for the buttons.
         ("record-hover", full, 1, false, darkCover),
     ]
@@ -7786,6 +7792,7 @@ extension EnvironmentValues {
             mini.side = .below
             mini.layout = layout
             mini.songOnRecord = true
+            if name.hasSuffix("-bg") { mini.background = makeBackground(.glass, roundness: 0.6, tint: ember) }
             let view = MiniPlayerView(model: model, mini: mini)
                 .background(wallpaper)
                 .environment(\.renderingPreview, true)
@@ -7849,15 +7856,15 @@ extension EnvironmentValues {
         renderOffscreen(form, size: CGSize(width: 520, height: 200), scheme: scheme,
                         to: URL(fileURLWithPath: dir).appending(path: "menubar-icon-\(scheme == .dark ? "dark" : "light").png"))
     }
-    // Settings > Mini player > Direction, with the wallpaper behind each tile.
+    // Settings > Mini player > Layout, with the wallpaper behind each tile.
     for scheme in [ColorScheme.light, .dark] {
-        var direction = MiniDirection.automatic
+        var direction = MiniDirection.onRecord
         let form = Form {
-            Section("Direction") { MiniDirectionTiles(direction: Binding(get: { direction }, set: { direction = $0 })) }
+            Section("Layout") { MiniDirectionTiles(direction: Binding(get: { direction }, set: { direction = $0 })) }
         }
         .formStyle(.grouped)
-        renderOffscreen(form, size: CGSize(width: 520, height: 200), scheme: scheme,
-                        to: URL(fileURLWithPath: dir).appending(path: "mini-direction-\(scheme == .dark ? "dark" : "light").png"))
+        renderOffscreen(form, size: CGSize(width: 520, height: 300), scheme: scheme,
+                        to: URL(fileURLWithPath: dir).appending(path: "mini-layout-\(scheme == .dark ? "dark" : "light").png"))
     }
     // The whole editor of Settings > Mini player, with its tray, in both schemes.
     for scheme in [ColorScheme.light, .dark] {

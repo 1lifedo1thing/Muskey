@@ -465,7 +465,7 @@ struct MiniRecord: View {
     let spinning: Bool
     let side: CGFloat
     var flash: PlayFlash?
-    /// The song's lines drawn on the record (Settings > Mini player > Song > On the record).
+    /// The song's lines drawn on the record (Settings > Mini player > Layout > On the record).
     var lines: [RecordSongLine] = []
     @Environment(\.renderingPreview) private var renderingPreview
 

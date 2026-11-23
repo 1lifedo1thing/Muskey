@@ -280,12 +280,11 @@ private struct MiniPlayerPane: View {
                 Toggle("Track", isOn: $prefs.miniLayout.track)
                 Toggle("Artist", isOn: $prefs.miniLayout.artist)
                 Toggle("Album", isOn: $prefs.miniLayout.album)
-                Toggle("On the record", isOn: $prefs.miniSongOnRecord)
             }
             Section("Record") {
                 MiniRecordSizeRow(scale: $prefs.miniRecordScale)
             }
-            Section("Direction") {
+            Section("Layout") {
                 MiniDirectionTiles(direction: $prefs.miniDirection)
             }
             Section("Background") {
@@ -318,14 +317,23 @@ struct MenuBarIconTiles: View {
     }
 }
 
-/// Settings > Mini player > Direction: a picture tile for each direction. It takes a binding so renders can show it
-/// without touching the saved settings.
+/// Settings > Mini player > Layout: a picture tile for each layout. Automatic and On the record get the first row, each
+/// as wide as two of the four sides under them, so both rows share the same columns. It takes a binding so renders can
+/// show it without touching the saved settings.
 struct MiniDirectionTiles: View {
     @Binding var direction: MiniDirection
 
     var body: some View {
+        VStack(spacing: 12) {
+            row([.automatic, .onRecord])
+            row([.below, .above, .left, .right])
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func row(_ choices: [MiniDirection]) -> some View {
         HStack(spacing: 8) {
-            ForEach(MiniDirection.allCases, id: \.self) { choice in
+            ForEach(choices, id: \.self) { choice in
                 ChoiceTile(title: choice.title, selected: direction == choice, height: 72, wallpaper: true) {
                     direction = choice
                 } preview: {
@@ -333,17 +341,27 @@ struct MiniDirectionTiles: View {
                 }
             }
         }
-        .padding(.vertical, 4)
     }
 }
 
-/// A small record with three lines of song beside it or under it, and for Automatic, a screen with one of each: beside
-/// the record in a corner, and over it at the bottom edge.
+/// A small record with three lines of song beside it or under it. Automatic shows a screen with one of each: beside the
+/// record in a corner, and over it at the bottom edge. On the record shows the lines on a larger record, with a pill
+/// hanging from its bottom edge.
 private struct MiniDirectionPreview: View {
     let direction: MiniDirection
 
     var body: some View {
         switch direction {
+        case .onRecord:
+            record(50, label: 0)
+                .overlay { lines(.center, 26) }
+                .overlay(alignment: .bottom) {
+                    Capsule()
+                        .fill(Color(red: 0.95, green: 0.62, blue: 0.3))
+                        .frame(width: 16, height: 6)
+                        .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
+                        .offset(y: 4)
+                }
         case .below:
             VStack(spacing: 4) { record(26); lines(.center, 32) }
         case .above:
@@ -366,11 +384,12 @@ private struct MiniDirectionPreview: View {
         }
     }
 
-    private func record(_ size: CGFloat) -> some View {
+    /// The record that carries the song has no label, so its lines read over grooves instead of over the orange label.
+    private func record(_ size: CGFloat, label: CGFloat = 0.36) -> some View {
         Circle()
             .fill(Color(white: 0.08))
             .overlay(Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5).padding(size * 0.12))
-            .overlay(Circle().fill(Color(red: 0.95, green: 0.62, blue: 0.3)).frame(width: size * 0.36, height: size * 0.36))
+            .overlay(Circle().fill(Color(red: 0.95, green: 0.62, blue: 0.3)).frame(width: size * label, height: size * label))
             .frame(width: size, height: size)
             .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
     }

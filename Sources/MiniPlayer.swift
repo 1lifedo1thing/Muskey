@@ -279,14 +279,15 @@ struct MiniBackdropShape: Equatable {
     }
 }
 
-/// Where the song goes around the record (Settings > Mini player > Direction): wherever the screen suits it, or
-/// always on one side.
+/// Where the song goes around the record (Settings > Mini player > Layout): wherever the screen suits it, on the record
+/// itself with the pills of its line under the record, or always on one side.
 enum MiniDirection: String, CaseIterable {
-    case automatic, below, above, left, right
+    case automatic, onRecord, below, above, left, right
 
     var title: String {
         switch self {
         case .automatic: "Automatic"
+        case .onRecord: "On the record"
         case .below: "Below"
         case .above: "Above"
         case .left: "Left"
@@ -294,11 +295,12 @@ enum MiniDirection: String, CaseIterable {
         }
     }
 
-    /// The side that the song keeps, or nil when the screen picks it.
+    /// The side that the song keeps, or nil when the screen picks it. On the record, the pills of the song's line stay
+    /// under it.
     var side: MiniTextSide? {
         switch self {
         case .automatic: nil
-        case .below: .below
+        case .onRecord, .below: .below
         case .above: .above
         case .left: .left
         case .right: .right
@@ -362,7 +364,7 @@ final class MiniState: ObservableObject {
     /// The luminance of the wallpaper under the player, which shows through glass and the lighter materials.
     @Published var behind = 0.2
     /// The song's title, artist and album on the record, in place of beside it.
-    @Published var songOnRecord = Preferences.shared.miniSongOnRecord
+    @Published var songOnRecord = Preferences.shared.miniDirection == .onRecord
     /// The size of the record against its usual size, which `MiniPlayerView.record` reads. A change draws the player
     /// again.
     @Published var recordScale = Preferences.shared.miniRecordScale
@@ -489,6 +491,7 @@ struct MiniPlayerView: View {
                     .frame(width: textWidth, height: Self.textHeight, alignment: textAlignment)
                     .offset(textOffset)
                     .animation(.easeOut(duration: 0.15), value: mini.side)
+                    .animation(.easeOut(duration: 0.15), value: hangs)
             }
         }
         .frame(width: Self.panelSize.width, height: Self.panelSize.height)
@@ -514,8 +517,10 @@ struct MiniPlayerView: View {
                 // meets the edge of the panel. The editor has no such edge.
                 let reach = Self.textReach(side, box: record.width).offsetBy(dx: center.x, dy: center.y)
                 let clamp = { (frame: CGRect) in editing ? frame : frame.intersection(reach) }
-                let text = frames["text"].map { clamp(proxy[$0]) }
-                let lines = frames.filter { $0.key.hasPrefix("line ") }.map { clamp(proxy[$0.value]) }
+                // A hanging pill ends inside the rim around the record, which the background already covers.
+                let hanging = hangs
+                let text = hanging ? nil : frames["text"].map { clamp(proxy[$0]) }
+                let lines = hanging ? [] : frames.filter { $0.key.hasPrefix("line ") }.map { clamp(proxy[$0.value]) }
                 let shape = MiniBackdropShape(record: record, text: text, lines: lines, side: side, roundness: mini.background.roundness)
                 MiniBackdrop(background: mini.background, radius: shape.radius)
                     .frame(width: shape.rect.width, height: shape.rect.height)
@@ -604,11 +609,24 @@ struct MiniPlayerView: View {
     /// Beside the record, the text may also use the panel's margin on its outer side.
     private var textWidth: CGFloat { Self.textPlace(mini.side).width }
 
-    /// Where the text box sits against the record in the middle of the panel.
+    /// Where the text box sits against the record in the middle of the panel. A hanging pill is lifted until its top
+    /// overlaps the record's bottom edge.
     private var textOffset: CGSize {
         if editing { return .zero }
         let place = Self.textPlace(mini.side, box: recordSide + Self.margin * 2)
-        return CGSize(width: place.midX, height: place.midY)
+        let lift = hangs ? place.minY - recordSide / 2 + Self.hangOverlap : 0
+        return CGSize(width: place.midX, height: place.midY - lift)
+    }
+
+    /// How much of a hanging pill lies over the record.
+    private static let hangOverlap: CGFloat = 6
+
+    /// With the song on the record, a single pill under it hangs from the record's bottom edge. Two or more pills (a
+    /// line of them, or one in the line and one on the rim) would crowd the edge, so they stay under the record.
+    private var hangs: Bool {
+        guard !editing, mini.songOnRecord, mini.side == .below else { return false }
+        let rim = layout.bottom.flatMap { value($0) } != nil
+        return !rim && layout.line.count { value($0) != nil } == 1
     }
 
     /// The smallest that the record gets beside the song, which still leaves its glyphs room.
@@ -669,8 +687,11 @@ struct MiniPlayerView: View {
                 .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line("places"))
                 .padding(.top, 4)
             } else {
+                let hanging = hangs
                 ForEach(layout.line.compactMap { element in value(element).map { (element, $0) } }, id: \.0) { element, value in
+                    // Over the record's edge, a light rim keeps the dark pill apart from the dark vinyl.
                     pill(element, value)
+                        .overlay { if hanging { Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 0.75) } }
                         .anchorPreference(key: MiniFrames.self, value: .bounds, transform: line(element.rawValue))
                         .layoutValue(key: MiniSongLayout.Pill.self, value: true)
                 }
@@ -1315,7 +1336,7 @@ struct RecordSongLine: Equatable {
     let kind: Kind
 }
 
-/// The song's title, artist and album on the mini player's record (Settings > Mini player > Song > On the record): one
+/// The song's title, artist and album on the mini player's record (Settings > Mini player > Layout > On the record): one
 /// line each, centred as a block on the record however many lines there are. Each line stays inside the record's
 /// circle: a line wider than the circle at its height is drawn smaller (`RecordLinesFit`), and only cut short at about
 /// half its size. The record is dimmed under the lines, which are white with a shadow, like the play glyph over the cover. They

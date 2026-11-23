@@ -279,14 +279,10 @@ final class Preferences: ObservableObject {
     @Published var miniBackground: MiniBackground {
         didSet { defaults.set(try? JSONEncoder().encode(miniBackground), forKey: "miniBackground") }
     }
-    /// Whether the song goes beside the record, above or below it, or where the screen has room (Settings > Mini player > Direction).
+    /// Whether the song goes beside the record, above or below it, on the record itself, or where the screen has room
+    /// (Settings > Mini player > Layout).
     @Published var miniDirection: MiniDirection {
         didSet { defaults.set(miniDirection.rawValue, forKey: "miniDirection") }
-    }
-    /// The song's title, artist and album on the mini player's record, in place of beside it (Settings > Mini player >
-    /// Song > On the record).
-    @Published var miniSongOnRecord: Bool {
-        didSet { defaults.set(miniSongOnRecord, forKey: "miniSongOnRecord") }
     }
     /// The size of the mini player's record against its usual size (Settings > Mini player > Record > Size).
     @Published var miniRecordScale: Double {
@@ -326,7 +322,12 @@ final class Preferences: ObservableObject {
         miniLayout = defaults.data(forKey: "miniLayout").flatMap { try? JSONDecoder().decode(MiniLayout.self, from: $0) } ?? MiniLayout()
         miniBackground = defaults.data(forKey: "miniBackground").flatMap { try? JSONDecoder().decode(MiniBackground.self, from: $0) } ?? MiniBackground()
         miniDirection = defaults.string(forKey: "miniDirection").flatMap(MiniDirection.init) ?? .automatic
-        miniSongOnRecord = defaults.bool(forKey: "miniSongOnRecord")
+        // The song on the record was a switch of its own before it became a layout.
+        if defaults.bool(forKey: "miniSongOnRecord") {
+            miniDirection = .onRecord
+            defaults.set(MiniDirection.onRecord.rawValue, forKey: "miniDirection")
+        }
+        defaults.removeObject(forKey: "miniSongOnRecord")
         let scales = MiniPlayerView.scales
         miniRecordScale = (defaults.object(forKey: "miniRecordScale") as? Double).map { min(max($0, scales.lowerBound), scales.upperBound) } ?? 1
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
