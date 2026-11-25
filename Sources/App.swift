@@ -8422,7 +8422,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The output reads a slowed song from another player as a record played slower, which the correction undoes.
         let read = playsInFilePlayer ? speed : slow.active ? slow.readSpeed : 1
         let correction = read == 1 ? 0 : -12 * log2(read)
+        if let pending = pendingCorrection {
+            if pending.value == correction { return }
+            pending.work.cancel()
+            pendingCorrection = nil
+        }
         guard correction != pitch.correction else { return }
+        // The stems and the lyrics delay play the song seconds behind the player, so the song at its new speed is heard
+        // only that much later. The correction waits for it: applied at once, it moved the song that still played at the
+        // old speed by the whole correction, four semitones up for five seconds after a change to 80 %.
+        let behind = pitch.running && (pitch.stemsOn || lyricsDelayed) ? pitch.stemsDelay : 0
+        if behind > 0.1 {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                pendingCorrection = nil
+                applyCorrection(correction)
+            }
+            pendingCorrection = (correction, work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + behind, execute: work)
+            log(String(format: "tempo correction of %+.2f semitones in %.1f s, when the new speed is heard", correction, behind))
+            return
+        }
+        applyCorrection(correction)
+    }
+
+    /// A correction that waits for the song at its new speed to be heard.
+    private var pendingCorrection: (value: Double, work: DispatchWorkItem)?
+
+    private func applyCorrection(_ correction: Double) {
         pitch.correction = correction
         updateWatching(shown: model.shown)
         if pitchWanted, !pitch.running {
@@ -8498,6 +8525,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         follow = nil
         keptKey = nil
         if filePlayer.speed != 1 { filePlayer.setSpeed(1) }
+        pendingCorrection?.work.cancel()
+        pendingCorrection = nil
         pitch.correction = 0
         model.speed = 1
     }
