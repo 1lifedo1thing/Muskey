@@ -496,7 +496,7 @@
         if (Date.now() - touched > 3000) {
             const stems = new Set(state.mutedStems || []);
             const changed = shift !== state.shift || relative !== state.relative || Math.abs(speed - state.speed) > 0.001
-                || stems.size !== muted.size || [...stems].some((name) => !muted.has(name));
+                || stems.size !== muted.size || [...stems].some((name) => !muted.has(name)) || drawnKey !== (state.key ?? null);
             shift = state.shift;
             relative = state.relative;
             speed = state.speed;
@@ -515,7 +515,11 @@
 
     // MARK: Key
 
+    /** The song's key that the key row shows, which a new song or a listen changes. */
+    let drawnKey = null;
+
     function drawKeys() {
+        drawnKey = state?.key ?? null;
         const key = original();
         // Both rows always: a phone has no Option key to reach the other mode.
         const both = Boolean(key);

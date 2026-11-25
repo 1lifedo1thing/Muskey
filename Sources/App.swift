@@ -3315,7 +3315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return WebRemote.State(
             title: track?.title, artist: track?.artist, app: playsInFilePlayer ? "Muskey Player" : app, playing: playing,
-            listening: state != .idle && model.phase == .listening, key: model.key?.code, shift: model.shift, relative: model.relative,
+            listening: state != .idle && model.phase == .listening, key: remoteKey(track)?.code, shift: model.shift, relative: model.relative,
             bpm: model.tempo?.bpm, speed: currentSpeed, cover: model.artwork != nil, muted: OutputMute.muted,
             relativeKeys: prefs.relativeKeys, file: playsInFilePlayer ? filePlayer.current?.path : nil,
             // While the stems play seconds behind the player, the phone shows the moment that is heard, as the lyrics do.
@@ -3326,6 +3326,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             wave: model.wave.waveform.map { wave in wave.levels.count &* 7919 &+ wave.levels.reduce(0) { $0 + ($1 > 0 ? 1 : 0) } },
             source: remoteSource(track).kind, sourceApp: remoteSource(track).app
         )
+    }
+
+    /// The key of the song that plays: the HUD's while it is up, and the menu bar's while it is closed, since the HUD
+    /// keeps the key of the last song that it showed.
+    @MainActor private func remoteKey(_ track: NowPlaying.Track?) -> DetectedKey? {
+        if state != .idle { return model.key }
+        guard let songKey, songKey.song == nil || songKey.song == track?.song else { return nil }
+        return songKey.key
     }
 
     /// The source of the song for the badge on the phone's cover, kept for the file that Muskey Player plays, since
@@ -4990,7 +4998,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The song that Muskey opened plays: the HUD opens on it as the hotkey opens it, unless it already shows. During a
     /// pitch change or with a key locked, that is the key picker, since the song change moves the song already.
+    /// The song that Now Playing still names when Muskey Player starts another file. A listen doesn't take that song's
+    /// key until Now Playing names the new one, for at most 3 seconds.
+    private var staleSong: (song: [String?], until: Date)?
+
     private func filePlays() {
+        if let song = nowPlaying.track?.song { staleSong = (song, Date().addingTimeInterval(3)) }
         syncStemsCache()
         raisedForOpening = false
         // The HUD that showed the song while it opened, or that offered to open one, goes on to the listen.
@@ -5370,6 +5383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// more when Noiseblend answers. A click on the key listens again without either.
     private func startOnKnownKey() {
         guard state == .listening, !estimated, remembered == nil, let track = nowPlaying.track, track.playing else { return }
+        if let stale = staleSong, stale.song == track.song, Date() < stale.until { return }
         // A paused player that Now Playing still names may not be what the Mac plays.
         listenSong = listenSong ?? track.song
         guard track.song == listenSong, !redetecting else { return }
