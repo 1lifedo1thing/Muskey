@@ -483,47 +483,59 @@
 
     // MARK: Instruments
 
+    /** The circles are made once and updated in place, so a hold that plays one stem keeps its button under the finger. */
     function drawStems() {
-        $("stems").replaceChildren(...STEMS.map((stem) => {
-            const button = document.createElement("button");
-            button.className = `stem${muted.has(stem.name) ? " muted" : ""}`;
-            button.style.setProperty("--hue", stem.hue);
-            button.setAttribute("aria-pressed", String(!muted.has(stem.name)));
-            button.setAttribute("aria-label", stem.label);
-            const disc = document.createElement("span");
-            disc.className = "disc";
-            disc.append(icon(stem.symbol));
-            const name = document.createElement("span");
-            name.className = "name";
-            name.textContent = stem.label;
-            button.append(disc, name);
-            // A tap mutes or plays the stem, and holding it plays only that stem, as Option-click does in the HUD.
-            let held = null;
-            let solo = false;
-            button.onpointerdown = () => {
-                solo = false;
-                held = setTimeout(() => {
-                    solo = true;
-                    setStems(new Set(STEMS.map((s) => s.name).filter((n) => n !== stem.name)));
-                    navigator.vibrate?.(10);
-                }, 450);
-            };
-            const release = () => clearTimeout(held);
-            button.onpointerup = release;
-            button.onpointerleave = release;
-            button.onpointercancel = release;
-            button.oncontextmenu = (event) => event.preventDefault();
-            button.onclick = () => {
-                if (solo) return;
-                const next = new Set(muted);
-                next.has(stem.name) ? next.delete(stem.name) : next.add(stem.name);
-                // Every stem muted plays nothing, so the last one stays on.
-                if (next.size === STEMS.length) return;
-                setStems(next);
-            };
-            return button;
-        }));
+        const row = $("stems");
+        if (!row.children.length) row.append(...STEMS.map(stemButton));
+        for (const button of row.children) {
+            const on = !muted.has(button.dataset.stem);
+            button.classList.toggle("muted", !on);
+            button.setAttribute("aria-pressed", String(on));
+        }
         $("play-all").hidden = muted.size === 0;
+    }
+
+    function stemButton(stem) {
+        const button = document.createElement("button");
+        button.className = "stem";
+        button.dataset.stem = stem.name;
+        button.style.setProperty("--hue", stem.hue);
+        button.setAttribute("aria-label", stem.label);
+        const disc = document.createElement("span");
+        disc.className = "disc";
+        disc.append(icon(stem.symbol));
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = stem.label;
+        button.append(disc, name);
+        // A tap mutes or plays the stem, and holding it plays only that stem, as Option-click does in the HUD.
+        let held = null;
+        let solo = false;
+        button.onpointerdown = () => {
+            solo = false;
+            held = setTimeout(() => {
+                solo = true;
+                setStems(new Set(STEMS.map((s) => s.name).filter((n) => n !== stem.name)));
+                navigator.vibrate?.(10);
+            }, 450);
+        };
+        const release = () => clearTimeout(held);
+        button.onpointerup = release;
+        button.onpointerleave = release;
+        button.onpointercancel = release;
+        button.oncontextmenu = (event) => event.preventDefault();
+        button.onclick = () => {
+            if (solo) {
+                solo = false;
+                return;
+            }
+            const next = new Set(muted);
+            next.has(stem.name) ? next.delete(stem.name) : next.add(stem.name);
+            // Every stem muted plays nothing, so the last one stays on.
+            if (next.size === STEMS.length) return;
+            setStems(next);
+        };
+        return button;
     }
 
     function setStems(next) {

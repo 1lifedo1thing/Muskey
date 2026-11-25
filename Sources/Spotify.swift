@@ -63,7 +63,7 @@ enum Spotify {
                 }
                 guard let spotify = SBApplication(processIdentifier: pid) else { return .failed("ScriptingBridge can't reach Spotify") }
                 // `play track "spotify:…"`, which plays an album, a playlist or an artist from its start.
-                _ = spotify.perform(NSSelectorFromString("playTrack:inContext:"), with: uri, with: "")
+                _ = spotify.perform(NSSelectorFromString("playTrack:inContext:"), with: uri, with: nil)
                 return .playing
             }.value
             done(outcome)

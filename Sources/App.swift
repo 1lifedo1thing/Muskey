@@ -3180,17 +3180,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if (request.stems != nil || request.mute != nil), !StemModel.installed {
             return job.fail("the separation model is not installed. Install it in Settings > Instruments and vocals")
         }
-        if request.remote { muteForRemote() }
+        let unmuted = request.remote && !muteForRemote()
         let before = nowPlaying.track
         let sent = Date()
         job.step = "Opening Spotify"
         log("cli: playing \(uri.split(separator: ":").dropLast().joined(separator: ":")) in Spotify")
         Spotify.play(uri) { [weak self] outcome in
             guard let self else { return }
+            // Nothing plays after a failure, so the sound that the remote muted comes back.
             switch outcome {
-            case .refused: return job.fail("Muskey isn't allowed to control Spotify. Allow it in System Settings > Privacy & Security > Automation")
-            case .needsConsent: return job.fail("Muskey needs permission to control Spotify. Click Allow in the dialog on the Mac, then send the link again")
-            case let .failed(reason): return job.fail(reason)
+            case .refused:
+                restoreRemoteMute()
+                return job.fail("Muskey isn't allowed to control Spotify. Allow it in System Settings > Privacy & Security > Automation")
+            case .needsConsent:
+                restoreRemoteMute()
+                return job.fail("Muskey needs permission to control Spotify. Click Allow in the dialog on the Mac, then send the link again")
+            case let .failed(reason):
+                restoreRemoteMute()
+                return job.fail(reason)
             case .playing: break
             }
             job.step = "Listening"
@@ -3201,7 +3208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard changed else { return false }
                 if state == .idle { toggle() }
                 return model.pending == nil && model.key != nil && state == .showing && model.track?.song == track.song
-            }) { [weak self] in self?.cliApply(request, job: job) }
+            }) { [weak self] in self?.cliApply(request, job: job, notes: unmuted ? ["the Mac's sound couldn't be muted"] : []) }
         }
     }
 
@@ -3209,11 +3216,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// on the remote and the hotkey end it, and the HUD closing doesn't, since nobody may be at the Mac to hear it.
     private var remoteMuteBefore: Bool?
 
-    private func muteForRemote() {
-        guard remoteMuteBefore == nil, let before = OutputMute.muted else { return }
-        guard before || OutputMute.set(true) else { return log("remote: the sound output can't be muted") }
+    /// Mutes the sound output, and tells whether it is muted now.
+    @discardableResult private func muteForRemote() -> Bool {
+        guard remoteMuteBefore == nil else { return true }
+        guard let before = OutputMute.muted else { return false }
+        guard before || OutputMute.set(true) else {
+            log("remote: the sound output can't be muted")
+            return false
+        }
         remoteMuteBefore = before
         log("remote: sound output muted")
+        return true
     }
 
     private func restoreRemoteMute() {
@@ -3259,7 +3272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @MainActor private func cliApply(_ request: CLIRequest, job: CLIJob) {
+    @MainActor private func cliApply(_ request: CLIRequest, job: CLIJob, notes: [String] = []) {
         var said: [String] = []
         if let text = request.key, let key = model.key {
             guard let shift = key.cliShift(to: text) else { return job.fail("unknown key \"\(text)\"") }
@@ -3303,7 +3316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             said.append("transcribing the \(stem.name.lowercased())")
         }
         let title = model.track?.title ?? "the song"
-        job.finish(([urlsPlaying(request) ? "Playing \(title)" : "Listening to \(title)"] + said).joined(separator: ", "))
+        job.finish(([urlsPlaying(request) ? "Playing \(title)" : "Listening to \(title)"] + said + notes).joined(separator: ", "))
     }
 
     private func urlsPlaying(_ request: CLIRequest) -> Bool { !request.inputs.isEmpty }
