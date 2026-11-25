@@ -643,6 +643,19 @@
         display: none;
     }
 
+    /* Without the hints, the key, the tempo and the capo sit in the middle, with no divider before the first. */
+    .ms-status {
+        padding-left: 8px;
+    }
+
+    .ms-state {
+        margin-right: auto;
+    }
+
+    .ms-state > .ms-item:first-child {
+        box-shadow: none;
+    }
+
     .ms-key > .ms-step:not(:disabled) {
         opacity: 1;
     }

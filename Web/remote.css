@@ -451,7 +451,7 @@ button:disabled { cursor: default; }
 }
 #sheet { height: min(80dvh, 760px); min-height: 460px; margin-top: 12px; border-radius: 16px; overflow: hidden; }
 
-/* The player after Listen Here */
+/* The player after Listen here */
 .player { display: flex; align-items: center; gap: 12px; }
 .play {
     flex: none;
@@ -470,7 +470,7 @@ button:disabled { cursor: default; }
 /* Play, pause and seek of the song that plays on the Mac */
 .transport { display: grid; gap: 2px; }
 .scrub { display: flex; align-items: center; gap: 10px; }
-.scrub input[type="range"] { flex: 1; min-width: 0; height: 32px; margin: 0; }
+.scrub input[type="range"] { flex: 1; min-width: 0; height: 40px; margin: 0; }
 .scrub .clock { flex: none; width: 44px; font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--muted) 80%, transparent); }
 .scrub .clock:last-child { text-align: right; }
 .transport.unknown .scrub { visibility: hidden; }
