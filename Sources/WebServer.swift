@@ -1,11 +1,13 @@
 import Foundation
 import Network
-import os.log
+import os
+import Security
 import SystemConfiguration
 
 // A small HTTP/1.1 server on Network.framework for the links that `muskey --link` prints. It listens on the private
 // addresses of this Mac (the local network, Tailscale and other VPNs) and never on 0.0.0.0, so nothing outside those
-// networks can reach it. Files go out a chunk at a time, with byte ranges, which Safari needs to play audio.
+// networks can reach it. Files go out a chunk at a time, with byte ranges, which Safari needs to play audio. The
+// Tailscale addresses can listen with TLS instead, with Tailscale's certificate for the Mac's MagicDNS name.
 
 private let webLog = Logger(subsystem: LOG_SUBSYSTEM, category: "WebServer")
 
@@ -19,12 +21,17 @@ struct WebRequest {
     let body: Data
     /// The body of an upload, which went straight to this file as it arrived instead of into `body`.
     var bodyFile: URL?
+    /// Arrived over TLS, on a Tailscale address that serves HTTPS.
+    var secure = false
+
+    /// The origin of a page served on this connection, as a browser names it in the Origin header.
+    var ownOrigin: String { WebAddresses.origin(host: headers["host"], secure: secure) }
 }
 
 /// Where the body of a request goes when it is an upload: a file, for a request that `WebUploads.target` accepts from
-/// its method, path and headers alone, before any of the body is read.
+/// its method, path and headers alone (and whether it arrived over TLS), before any of the body is read.
 enum WebUploads {
-    nonisolated(unsafe) static var target: (_ method: String, _ path: String, _ headers: [String: String], _ length: Int) -> URL? = { _, _, _, _ in nil }
+    nonisolated(unsafe) static var target: (_ method: String, _ path: String, _ headers: [String: String], _ length: Int, _ secure: Bool) -> URL? = { _, _, _, _, _ in nil }
     static let maxLength = 2_000_000_000
 }
 
@@ -60,22 +67,25 @@ final class WebServer: @unchecked Sendable {
 
     let port: UInt16
 
-    /// Listens on exactly `addresses`: new ones start and missing ones stop.
-    func listen(on addresses: [String]) {
+    /// Listens on exactly `addresses`, with TLS on those that `tls` has an identity for: new ones start, missing ones
+    /// stop, and one whose identity changed starts again.
+    func listen(on addresses: [String], tls: [String: sec_identity_t] = [:]) {
         queue.async { [self] in
-            for (address, listener) in listeners where !addresses.contains(address) {
-                listener.cancel()
+            wanted = Dictionary(addresses.map { ($0, Want(tls: tls[$0])) }, uniquingKeysWith: { first, _ in first })
+            for (address, current) in listeners where !(wanted[address].map { Self.same($0.tls, current.tls) } ?? false) {
+                current.listener.cancel()
                 listeners[address] = nil
             }
-            for address in addresses where listeners[address] == nil {
-                start(address)
+            for (address, want) in wanted where listeners[address] == nil {
+                start(address, tls: want.tls)
             }
         }
     }
 
     func stop() {
         queue.async { [self] in
-            listeners.values.forEach { $0.cancel() }
+            wanted.removeAll()
+            listeners.values.forEach { $0.listener.cancel() }
             listeners.removeAll()
             connections.values.forEach { $0.cancel() }
             connections.removeAll()
@@ -85,14 +95,33 @@ final class WebServer: @unchecked Sendable {
     /// A handful of phones and Macs, with room to spare: a browser opens six connections per address at most.
     private static let maxConnections = 64
 
+    private struct Want {
+        let tls: sec_identity_t?
+    }
+
     private let handler: WebHandler
     private let queue = DispatchQueue(label: "com.lowtechguys.Muskey.web")
-    private var listeners: [String: NWListener] = [:]
+    private var wanted: [String: Want] = [:]
+    private var listeners: [String: (listener: NWListener, tls: sec_identity_t?)] = [:]
     private var connections: [ObjectIdentifier: WebConnection] = [:]
 
-    private func start(_ address: String) {
+    private static func same(_ a: sec_identity_t?, _ b: sec_identity_t?) -> Bool {
+        (a as AnyObject?) === (b as AnyObject?)
+    }
+
+    /// `attempt` counts the tries after "in use": a listener that starts again with a new certificate can find the one
+    /// that it replaces still holding the port.
+    private func start(_ address: String, tls: sec_identity_t?, attempt: Int = 0) {
         guard let port = NWEndpoint.Port(rawValue: port) else { return }
-        let parameters = NWParameters.tcp
+        var tlsOptions: NWProtocolTLS.Options?
+        if let tls {
+            let options = NWProtocolTLS.Options()
+            sec_protocol_options_set_local_identity(options.securityProtocolOptions, tls)
+            sec_protocol_options_set_min_tls_protocol_version(options.securityProtocolOptions, .TLSv12)
+            sec_protocol_options_add_tls_application_protocol(options.securityProtocolOptions, "http/1.1")
+            tlsOptions = options
+        }
+        let parameters = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
         parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(address), port: port)
         parameters.allowLocalEndpointReuse = true
         guard let listener = try? NWListener(using: parameters) else {
@@ -103,25 +132,33 @@ final class WebServer: @unchecked Sendable {
             guard let self, let listener else { return }
             switch state {
             case .ready:
-                webLog.info("Listening on \(address, privacy: .public):\(port.rawValue)")
+                webLog.info("Listening on \(address, privacy: .public):\(port.rawValue)\(tls == nil ? "" : " with TLS", privacy: .public)")
             case let .failed(error):
-                webLog.error("Listener on \(address, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 listener.cancel()
-                if listeners[address] === listener { listeners[address] = nil }
+                if listeners[address]?.listener === listener { listeners[address] = nil }
+                if case .posix(.EADDRINUSE) = error, attempt < 4 {
+                    queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        guard let self, listeners[address] == nil, let want = wanted[address], Self.same(want.tls, tls) else { return }
+                        start(address, tls: tls, attempt: attempt + 1)
+                    }
+                    return
+                }
+                webLog.error("Listener on \(address, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             default:
                 break
             }
         }
+        let secure = tls != nil
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return connection.cancel() }
             guard connections.count < Self.maxConnections else { return connection.cancel() }
-            let client = WebConnection(connection, queue: queue, handler: handler) { [weak self] closed in
+            let client = WebConnection(connection, secure: secure, queue: queue, handler: handler) { [weak self] closed in
                 self?.connections[ObjectIdentifier(closed)] = nil
             }
             connections[ObjectIdentifier(client)] = client
             client.start()
         }
-        listeners[address] = listener
+        listeners[address] = (listener, tls)
         listener.start(queue: queue)
     }
 }
@@ -129,8 +166,9 @@ final class WebServer: @unchecked Sendable {
 /// One client connection: requests are read one after another on it, and each answer is sent in full before the next
 /// request is read.
 private final class WebConnection: @unchecked Sendable {
-    init(_ connection: NWConnection, queue: DispatchQueue, handler: @escaping WebHandler, onClose: @escaping (WebConnection) -> Void) {
+    init(_ connection: NWConnection, secure: Bool, queue: DispatchQueue, handler: @escaping WebHandler, onClose: @escaping (WebConnection) -> Void) {
         self.connection = connection
+        self.secure = secure
         self.queue = queue
         self.handler = handler
         self.onClose = onClose
@@ -157,6 +195,8 @@ private final class WebConnection: @unchecked Sendable {
     private static let idle: TimeInterval = 30
 
     private let connection: NWConnection
+    /// Over TLS, so every request on it is `secure`.
+    private let secure: Bool
     private let queue: DispatchQueue
     private let handler: WebHandler
     private let onClose: (WebConnection) -> Void
@@ -213,6 +253,7 @@ private final class WebConnection: @unchecked Sendable {
         let pathPart = current.target.split(separator: "?", maxSplits: 1).first.map(String.init) ?? "/"
         var request = WebRequest(method: current.method, path: pathPart.removingPercentEncoding ?? pathPart, query: [:], headers: current.headers, body: Data())
         request.bodyFile = current.file
+        request.secure = secure
         return request
     }
 
@@ -263,7 +304,7 @@ private final class WebConnection: @unchecked Sendable {
         }
         let length = Int(headers["content-length"] ?? "0") ?? 0
         let uploadPath = String(parts[1]).split(separator: "?", maxSplits: 1).first.map(String.init) ?? "/"
-        if length > 0, length <= WebUploads.maxLength, let file = WebUploads.target(String(parts[0]), uploadPath.removingPercentEncoding ?? uploadPath, headers, length) {
+        if length > 0, length <= WebUploads.maxLength, let file = WebUploads.target(String(parts[0]), uploadPath.removingPercentEncoding ?? uploadPath, headers, length, secure) {
             // The body goes to the file as it arrives, so a song of hundreds of megabytes never sits in memory.
             let rest = Data(buffer[end.upperBound...])
             buffer = Data()
@@ -295,7 +336,9 @@ private final class WebConnection: @unchecked Sendable {
                 query[name] = kv.count > 1 ? kv[1] : ""
             }
         }
-        return WebRequest(method: String(parts[0]), path: pathPart.removingPercentEncoding ?? pathPart, query: query, headers: headers, body: body)
+        var request = WebRequest(method: String(parts[0]), path: pathPart.removingPercentEncoding ?? pathPart, query: query, headers: headers, body: body)
+        request.secure = secure
+        return request
     }
 
     private func handle(_ request: WebRequest) {
@@ -493,29 +536,58 @@ enum WebAddresses {
     static let choiceKey = "remoteAddress"
     static var choice: String? { UserDefaults.standard.string(forKey: choiceKey)?.lowercased() }
 
-    /// The names that a request's Host may carry: the Mac's addresses, localhost, and the DNS name picked in Settings,
-    /// exactly that one. Any other name is refused, so that a web page elsewhere can't reach the remote through a DNS
-    /// name that resolves to the Mac.
+    private static let served = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    /// The MagicDNS name that the Tailscale addresses serve HTTPS for, while they do. `WebLinks` sets it when Tailscale's
+    /// certificate arrives, and every request reads it.
+    static var secureHost: String? {
+        get { served.withLock { $0 } }
+        set { served.withLock { $0 = newValue } }
+    }
+
+    /// The scheme and host of a page served on a connection, from the Host header of a request on it.
+    static func origin(host: String?, secure: Bool) -> String {
+        "\(secure ? "https" : "http")://\(host ?? "")"
+    }
+
+    /// The names that a request's Host may carry: the Mac's addresses, localhost, the DNS name picked in Settings
+    /// (exactly that one), and the name that the Tailscale addresses serve HTTPS for. Any other name is refused, so
+    /// that a web page elsewhere can't reach the remote through a DNS name that resolves to the Mac.
     static func allowedHosts() -> [String] {
-        var hosts = current().map(\.address) + ["localhost"]
+        let addresses = current()
+        var hosts = addresses.map(\.address) + ["localhost"]
         if let choice, isName(choice) { hosts.append(choice) }
+        if let secure = servedName(addresses) { hosts.append(secure) }
         return hosts
     }
 
     /// The host that the pairing link and the links of `muskey --link` carry: the one picked in Settings while it reaches
     /// this Mac, or else Tailscale's address, then the local network's. A picked address that went away is kept for
-    /// when it comes back.
+    /// when it comes back. While the Tailscale addresses serve HTTPS, they answer only for the name that the certificate
+    /// is for, so a pick of theirs and Automatic both give that name.
     static func linkHost() -> String? {
         let addresses = current()
-        if let choice {
-            if isName(choice) {
-                // A Tailscale name leads here only while Tailscale is up.
-                if !choice.hasSuffix(".ts.net") || addresses.contains(where: \.tailscale) { return choice }
-            } else if addresses.contains(where: { $0.host.lowercased() == choice }) {
-                return choice
-            }
-        }
+        if let choice, let host = reachable(choice, addresses: addresses) { return host }
+        if let secure = servedName(addresses) { return secure }
         return (addresses.first(where: { !$0.interface.hasPrefix("lo") }) ?? addresses.first)?.host
+    }
+
+    /// The host that a pick in Settings gives while it reaches this Mac: the pick itself, or the name served over HTTPS
+    /// for a pick of Tailscale's.
+    static func reachable(_ choice: String, addresses: [Address]) -> String? {
+        let secure = servedName(addresses)
+        if isName(choice) {
+            // A Tailscale name leads here only while Tailscale is up.
+            guard choice.hasSuffix(".ts.net") else { return choice }
+            return addresses.contains(where: \.tailscale) ? secure ?? choice : nil
+        }
+        guard let picked = addresses.first(where: { $0.host.lowercased() == choice }) else { return nil }
+        return picked.tailscale ? secure ?? choice : choice
+    }
+
+    /// The name that the Tailscale addresses serve HTTPS for, while one of them is up.
+    private static func servedName(_ addresses: [Address]) -> String? {
+        addresses.contains(where: \.tailscale) ? secureHost : nil
     }
 
     /// A DNS name, as opposed to an IPv4 or IPv6 address.
@@ -536,14 +608,20 @@ enum WebAddresses {
     }
 
     /// Each address with the name of its network, after the DNS name that leads back to it, then the Mac's local
-    /// hostname. With `lookUp`, it waits on the network's DNS for the names, so it runs off the main thread then.
+    /// hostname. With `lookUp`, it waits on the network's DNS for the names, so it runs off the main thread then. While
+    /// the Tailscale addresses serve HTTPS, they are listed once, as the name that the certificate is for.
     static func choices(lookUp: Bool) -> [Choice] {
         let addresses = current().filter { !$0.interface.hasPrefix("lo") }
+        let secure = servedName(addresses)
         let interfaces = interfaceNames()
         let vpns = vpnNames()
         let ours = Set(addresses.map(\.address))
         var choices: [Choice] = []
         for address in addresses {
+            if address.tailscale, let secure {
+                if !choices.contains(where: { $0.host == secure }) { choices.append(Choice(host: secure, title: "Tailscale · \(secure)")) }
+                continue
+            }
             let label: String = if address.tailscale {
                 "Tailscale"
             } else if ["utun", "ipsec", "ppp"].contains(where: { address.interface.hasPrefix($0) }) {

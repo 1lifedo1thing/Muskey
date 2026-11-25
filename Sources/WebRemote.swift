@@ -191,11 +191,11 @@ struct WebNotes: Encodable {
 
     /// The file that the body of `POST /api/upload` goes to, for a paired phone of the remote's own page. The checks
     /// run on the headers alone, before any of the body is read.
-    nonisolated static func uploadTarget(method: String, path: String, headers: [String: String], length: Int) -> URL? {
+    nonisolated static func uploadTarget(method: String, path: String, headers: [String: String], length: Int, secure: Bool) -> URL? {
         guard method == "POST", path == "/api/upload", enabled, let key = storedKey,
               let host = host(headers["host"])?.lowercased(), WebAddresses.allowedHosts().contains(host),
               same(cookieValue(headers) ?? "", key),
-              let origin = headers["origin"], origin == "http://\(headers["host"] ?? "")"
+              let origin = headers["origin"], origin == WebAddresses.origin(host: headers["host"], secure: secure)
         else { return nil }
         let sent = (headers["x-file-name"]?.removingPercentEncoding ?? "song") as NSString
         var name = String(sent.lastPathComponent.filter { !"/:\\\0".contains($0) }.prefix(180))
@@ -286,7 +286,7 @@ struct WebNotes: Encodable {
         }
         guard paired else { return .text("This device isn't paired", status: 403) }
         if request.method == "POST" {
-            guard let origin = request.headers["origin"], origin == "http://\(request.headers["host"] ?? "")" else {
+            guard let origin = request.headers["origin"], origin == request.ownOrigin else {
                 return .text("Wrong origin", status: 403)
             }
         }

@@ -7,7 +7,10 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "WebLinks")
 /// The private links that `muskey --link` prints. Each file is copied into a folder named after a random token of 128
 /// bits, so a link keeps working after Muskey restarts, and the folder's date ends it after three days. A request
 /// names only a token, so no path from the network ever reaches the disk.
-@MainActor final class WebLinks {
+///
+/// With HTTPS on Tailscale turned on, the Tailscale addresses listen with TLS once Tailscale hands over its certificate
+/// for the Mac's MagicDNS name, and the links and the pairing link for Tailscale carry `https://` and that name.
+@MainActor final class WebLinks: ObservableObject {
     static let shared = WebLinks()
 
     /// A fixed port, so that a link stays the same across restarts.
@@ -15,6 +18,20 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "WebLinks")
     nonisolated static let lifetime: TimeInterval = 3 * 24 * 3600
     /// Kept apart from `Muskey/Links`, where Muskey Player keeps the songs that it downloads from links.
     nonisolated static let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "Muskey/Shared")
+
+    /// Settings > Remote > HTTPS on Tailscale. Off until asked for: getting the certificate puts the Mac's Tailscale name
+    /// in Let's Encrypt's public certificate logs.
+    nonisolated static let httpsKey = "webRemoteHTTPS"
+    nonisolated static var https: Bool { UserDefaults.standard.bool(forKey: httpsKey) }
+
+    /// The MagicDNS name that the Tailscale addresses serve HTTPS for, while they do.
+    @Published private(set) var secureHost: String? {
+        didSet { WebAddresses.secureHost = secureHost }
+    }
+
+    /// The name that Tailscale would issue this Mac a certificate for, asked without getting one. Settings offers HTTPS
+    /// only while there is one.
+    @Published private(set) var certificateDomain: String?
 
     /// Serves the links from before a restart while any of them is still valid.
     func startIfNeeded() {
@@ -49,12 +66,23 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "WebLinks")
     /// furthest: Tailscale's, then the local network's.
     nonisolated static var base: String? {
         guard let host = WebAddresses.linkHost() else { return nil }
-        return "http://\(host):\(port)"
+        return "\(host == WebAddresses.secureHost ? "https" : "http")://\(host):\(port)"
     }
 
     private var server: WebServer?
     private var monitor: NWPathMonitor?
     private var relisten: DispatchWorkItem?
+    private var addresses: [WebAddresses.Address] = []
+
+    private var certificate: TailscaleTLS.Certificate?
+    private var certificateFetch: Task<Void, Never>?
+    private var certificateChecked: Date?
+    private var certificateTimer: Timer?
+    /// The next try after a fetch that got no certificate, while none is served: the Tailscale addresses stay plain HTTP
+    /// until one comes.
+    private var certificateRetry: DispatchWorkItem?
+    private var certificateFailures = 0
+    private var tailscaleCheck: Task<Void, Never>?
 
     /// Starts the server, for the links or for the web remote.
     func start() {
@@ -67,8 +95,14 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "WebLinks")
             }
             monitor.start(queue: .main)
             self.monitor = monitor
+            // `tailscale cert` renews a certificate only when asked, so it is asked a few times a day.
+            certificateTimer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) { _ in
+                MainActor.assumeIsolated { WebLinks.shared.refreshCertificate() }
+            }
         }
-        server?.listen(on: WebAddresses.current().map(\.address))
+        listen()
+        checkTailscale()
+        refreshCertificate()
     }
 
     /// Stops listening when no link is valid and the web remote is off.
@@ -80,11 +114,121 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "WebLinks")
         server = nil
         monitor?.cancel()
         monitor = nil
+        relisten?.cancel()
+        addresses = []
+        certificateTimer?.invalidate()
+        certificateTimer = nil
+        certificateRetry?.cancel()
+        certificateRetry = nil
+        certificateFailures = 0
+        certificate = nil
+        certificateChecked = nil
+        secureHost = nil
+        certificateDomain = nil
     }
 
+    /// Settings > Remote > HTTPS on Tailscale changed.
+    func httpsChanged() {
+        guard server != nil else { return }
+        if Self.https {
+            refreshCertificate()
+        } else {
+            certificateRetry?.cancel()
+            certificateRetry = nil
+            certificateFailures = 0
+            certificate = nil
+            certificateChecked = nil
+            secureHost = nil
+            listen()
+        }
+    }
+
+    /// Fetches Tailscale's certificate for this Mac when HTTPS is on and a Tailscale address is up, then starts those
+    /// listeners again with TLS, or with the renewed certificate. Off the main thread: a first certificate can take a
+    /// minute.
+    func refreshCertificate() {
+        guard Self.https, server != nil, certificateFetch == nil, addresses.contains(where: \.tailscale) else { return }
+        if let certificateChecked, certificate != nil, Date().timeIntervalSince(certificateChecked) < 3 * 3600 { return }
+        certificateRetry?.cancel()
+        certificateRetry = nil
+        certificateFetch = Task.detached(priority: .utility) {
+            let certificate = Self.fetchCertificate()
+            await MainActor.run { WebLinks.shared.certificateArrived(certificate) }
+        }
+    }
+
+    nonisolated private static func fetchCertificate() -> TailscaleTLS.Certificate? {
+        guard let cli = TailscaleTLS.cli() else {
+            log.error("No Tailscale app or CLI to get a certificate from")
+            return nil
+        }
+        guard let domain = TailscaleTLS.domain(cli: cli) else {
+            log.error("Tailscale didn't say which name this Mac has a certificate for")
+            return nil
+        }
+        return TailscaleTLS.certificate(cli: cli, domain: domain)
+    }
+
+    /// A failed refresh keeps the certificate already served: it stays valid for weeks.
+    private func certificateArrived(_ new: TailscaleTLS.Certificate?) {
+        certificateFetch = nil
+        certificateChecked = Date()
+        if new == nil, certificate == nil, server != nil, Self.https {
+            // After a minute, then less often, up to every 10 minutes.
+            certificateFailures += 1
+            let retry = DispatchWorkItem { MainActor.assumeIsolated { WebLinks.shared.refreshCertificate() } }
+            certificateRetry = retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + min(600, 60 * pow(2, Double(certificateFailures - 1))), execute: retry)
+        } else if new != nil {
+            certificateFailures = 0
+        }
+        guard server != nil, Self.https, let new, new.leaf != certificate?.leaf || new.domain != certificate?.domain else { return }
+        log.notice("Serving HTTPS for \(new.domain, privacy: .public)")
+        certificate = new
+        secureHost = new.domain
+        listen()
+    }
+
+    /// Asks Tailscale for this Mac's name and whether the tailnet issues certificates, which gets none.
+    private func checkTailscale() {
+        guard server != nil, tailscaleCheck == nil else { return }
+        guard addresses.contains(where: \.tailscale) else {
+            certificateDomain = nil
+            return
+        }
+        tailscaleCheck = Task.detached(priority: .utility) {
+            let domain = TailscaleTLS.cli().flatMap { TailscaleTLS.domain(cli: $0) }
+            await MainActor.run {
+                WebLinks.shared.tailscaleCheck = nil
+                WebLinks.shared.certificateDomain = domain
+            }
+        }
+    }
+
+    private func listen() {
+        guard let server else { return }
+        addresses = WebAddresses.current()
+        var tls: [String: sec_identity_t] = [:]
+        if let certificate {
+            for address in addresses where address.tailscale {
+                tls[address.address] = certificate.identity
+            }
+        }
+        server.listen(on: addresses.map(\.address), tls: tls)
+    }
+
+    /// Settles for a second first, since joining a network changes the path several times in a row. Tailscale is asked
+    /// again only when the addresses changed.
     private func scheduleListen() {
         relisten?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.server?.listen(on: WebAddresses.current().map(\.address)) }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, server != nil else { return }
+            let before = addresses
+            listen()
+            guard addresses != before else { return }
+            checkTailscale()
+            refreshCertificate()
+        }
         relisten = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }

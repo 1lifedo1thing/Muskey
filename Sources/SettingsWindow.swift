@@ -292,6 +292,8 @@ private struct GeneralPane: View {
 /// the web remote lists.
 private struct RemotePane: View {
     @ObservedObject var prefs: Preferences
+    @ObservedObject private var links = WebLinks.shared
+    @State private var confirmsHTTPS = false
 
     var body: some View {
         Form {
@@ -302,6 +304,22 @@ private struct RemotePane: View {
                 Toggle(isOn: $prefs.webRemote) {
                     Text("Web remote")
                     Text("Access Muskey on your Mac from your phone through web interface")
+                }
+                // Only where Tailscale would issue the certificate: anywhere else the switch could do nothing.
+                if prefs.webRemote, let domain = links.certificateDomain {
+                    Toggle("HTTPS on Tailscale", isOn: Binding(
+                        get: { prefs.remoteHTTPS },
+                        set: { on in
+                            if on { confirmsHTTPS = true } else { prefs.remoteHTTPS = false }
+                        }
+                    ))
+                    // Asked before the first certificate, since getting one publishes the Mac's name on the tailnet.
+                    .alert("Get an HTTPS certificate for this Mac?", isPresented: $confirmsHTTPS) {
+                        Button("Get Certificate") { prefs.remoteHTTPS = true }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Tailscale gets it from Let's Encrypt, which lists every certificate in public logs, with this Mac's Tailscale name: \(domain)")
+                    }
                 }
                 if prefs.webRemote {
                     PairingControls(prefs: prefs)
@@ -329,30 +347,41 @@ private struct RemotePane: View {
 /// and Reset Link, which makes a new one and unpairs every device that opened the old one.
 private struct PairingControls: View {
     @ObservedObject var prefs: Preferences
+    @ObservedObject private var links = WebLinks.shared
     @State private var link: String?
     @State private var choices = WebAddresses.choices(lookUp: false)
     @State private var copied = false
     @State private var confirmsReset = false
 
+    /// The pick as the menu shows it: a Tailscale address shows as the name that HTTPS is served for, which is the one
+    /// that the link carries. The pick itself is kept, for when HTTPS is turned off.
+    private var shownPick: String {
+        guard let picked = prefs.remoteAddress else { return "" }
+        return WebAddresses.reachable(picked, addresses: WebAddresses.current()) ?? picked
+    }
+
     var body: some View {
         LabeledContent("Address") {
-            Picker("Address", selection: Binding(get: { prefs.remoteAddress ?? "" }, set: { prefs.remoteAddress = $0.isEmpty ? nil : $0 })) {
+            Picker("Address", selection: Binding(get: { shownPick }, set: { prefs.remoteAddress = $0.isEmpty ? nil : $0 })) {
                 Text("Automatic").tag("")
                 ForEach(choices) { Text(verbatim: $0.title).tag($0.host) }
                 // A picked address that went away stays picked, for when it comes back.
-                if let picked = prefs.remoteAddress, !choices.contains(where: { $0.host == picked }) {
-                    Text(verbatim: "Not connected · \(picked)").tag(picked)
+                if !shownPick.isEmpty, !choices.contains(where: { $0.host == shownPick }) {
+                    Text(verbatim: "Not connected · \(shownPick)").tag(shownPick)
                 }
             }
             .labelsHidden()
             .fixedSize()
         }
-        .task {
+        .task(id: links.secureHost) {
+            choices = WebAddresses.choices(lookUp: false)
             // Reverse lookups wait on the network's DNS, so the names arrive after the addresses.
             let named = await Task.detached(priority: .userInitiated) { WebAddresses.choices(lookUp: true) }.value
             choices = named
         }
         .onChange(of: prefs.remoteAddress) { refresh() }
+        // The certificate can arrive a minute after HTTPS is turned on, and the link moves to its name then.
+        .onChange(of: links.secureHost) { refresh() }
 
         VStack(spacing: 12) {
             if let link {

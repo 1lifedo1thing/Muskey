@@ -288,18 +288,22 @@ Spotify plays on the device that Spotify Connect has picked. When that is anothe
 
 #### Links
 
-`--link` copies the file into `~/Library/Caches/Muskey/Shared/<token>/`, where the token is 128 random bits, and prints `http://<address>:25471/l/<token>/<name>`. The address is the one picked in Settings > Remote > Address. **Automatic** picks Tailscale's when it is up, or else the local network's, and so does a picked address that is gone for now.
+`--link` copies the file into `~/Library/Caches/Muskey/Shared/<token>/`, where the token is 128 random bits, and prints `http://<address>:25471/l/<token>/<name>`, or `https://<MagicDNS name>:25471/…` while the Tailscale addresses serve HTTPS. The address is the one picked in Settings > Remote > Address. **Automatic** picks Tailscale's when it is up, or else the local network's, and so does a picked address that is gone for now.
 
 The Address menu lists each private address with the name of its network (from System Settings > Network and > VPN), the DNS name that leads back to each one (Tailscale's MagicDNS name, or a router's), and the Mac's local hostname (`<name>.local`). A name is listed only when its forward lookup gives one of the Mac's addresses again.
 
 The server in `WebServer.swift` listens on port 25471 of each private address of the Mac, and never on all of them: RFC 1918 and link-local IPv4, 100.64/10 on a tunnel interface only (on Wi-Fi it is a carrier's shared range), IPv6 unique-local, and 127.0.0.1. A request names only a token, so no path from the network reaches the disk. Files go out with byte ranges, which Safari needs to play audio. The links keep working after a restart, and the folder's date ends them after three days.
 
+#### HTTPS on Tailscale
+
+**HTTPS on Tailscale** in Settings > Remote serves the Tailscale addresses over HTTPS, which a page needs before Chrome offers to install it as an app and before it can run a service worker. The switch is off by default, and it shows only while Tailscale says that the tailnet issues certificates for this Mac. `TailscaleTLS.swift` asks Tailscale for the Mac's MagicDNS name and its Let's Encrypt certificate through the local API of the standalone app, or else through the CLI. The CLI runs with `TAILSCALE_BE_CLI=1`, because the App Store app's binary started by another app tries to reach the Tailscale app instead, and still exits with 0. openssl packs the chain and the key into a PKCS#12 archive, which is imported into memory only, never into a keychain. Once the certificate arrives, the Tailscale listeners start again with TLS, and the links and the pairing link for Tailscale carry `https://<MagicDNS name>:25471`. The Address menu then lists Tailscale once, as that name, and a pick of a Tailscale address gives that name too. Tailscale renews the certificate only when asked, so Muskey asks every 4 hours, and after a failure it tries again after a minute, then less often, up to every 10 minutes. The local network stays plain HTTP, since no public certificate can name a 192.168 address. A link printed before the switch changed stops working after it, and a device that paired at a Tailscale address pairs again at the name.
+
 #### Web remote
 
 While **Web remote** is on in Settings > Remote, the same server answers a page at `/` for paired devices. The pairing link (`/pair/<key>`, with 128 random bits) sets a cookie with `SameSite=Lax`, Settings shows the link as a QR code, and **Reset Link** makes a new key, which unpairs every device. Safari sends a Lax cookie after a QR code scan or a link from another app, and never with a request from another site. The cookie belongs to the host in the link, so a device pairs again after the address changes. The server also refuses a request when:
 
-- its Host isn't one of the Mac's addresses or the DNS name picked in Settings (exactly that one), which stops a web page elsewhere from reaching the remote through a DNS name that resolves to the Mac
-- it changes something, and its Origin isn't the address of the remote
+- its Host isn't one of the Mac's addresses, the DNS name picked in Settings (exactly that one) or the name that HTTPS is served for, which stops a web page elsewhere from reaching the remote through a DNS name that resolves to the Mac
+- it changes something, and its Origin isn't the address of the remote, with `https://` when it arrived over TLS
 
 The page (`Web/remote.html`, `remote.js` and `remote.css`) has the HUD's key row with both modes, tempo and instruments, drawn with the HUD's colours and with SF Symbols that the app renders as PNG masks (`/api/symbol/<name>`, from a fixed list). It asks for the HUD's state every 1.5 seconds: the song that plays, its position, its key, the change, the tempo and the muted instruments. A change to the song that plays is sent at once, as a play without an input. The buttons under the song send `/api/transport`, which plays, pauses and seeks the way Space, ← and → do over the HUD.
 

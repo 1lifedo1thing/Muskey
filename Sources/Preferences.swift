@@ -311,6 +311,15 @@ final class Preferences: ObservableObject {
     @Published var remoteHeadless: Bool {
         didSet { defaults.set(remoteHeadless, forKey: "remoteHeadless") }
     }
+    /// Settings > Remote > HTTPS on Tailscale: the Tailscale addresses serve the remote and the links over HTTPS, with
+    /// Tailscale's certificate for the Mac's MagicDNS name. Off by default, like in Cling, since getting the certificate
+    /// puts that name in Let's Encrypt's public logs.
+    @Published var remoteHTTPS: Bool {
+        didSet {
+            defaults.set(remoteHTTPS, forKey: WebLinks.httpsKey)
+            Task { @MainActor in WebLinks.shared.httpsChanged() }
+        }
+    }
     /// Settings > Remote > Folders: the folders whose songs the web remote lists, by path.
     @Published var remoteFolders: [String] {
         didSet { defaults.set(remoteFolders, forKey: "remoteFolders") }
@@ -364,6 +373,7 @@ final class Preferences: ObservableObject {
         errorReports = defaults.bool(forKey: "enableSentry")
         webRemote = defaults.bool(forKey: "webRemote")
         remoteAddress = defaults.string(forKey: WebAddresses.choiceKey)
+        remoteHTTPS = defaults.bool(forKey: WebLinks.httpsKey)
         remoteFolders = defaults.stringArray(forKey: "remoteFolders") ?? []
         remoteHeadless = defaults.bool(forKey: "remoteHeadless")
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
