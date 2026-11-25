@@ -163,6 +163,7 @@ $(BUNDLE): Sources/*.swift Shared/*.swift Sources/*.h Info.plist Muskey.entitlem
 	strip -S $@/Contents/MacOS/$(APP)
 	cp Info.plist $@/Contents/Info.plist
 	cp $(BUILD)/obj/Assets.car $(BUILD)/obj/muskey.icns $@/Contents/Resources/
+	ditto Web $@/Contents/Resources/Web
 	ditto $(SPARKLE)/Sparkle.framework $(SPARKLE_FRAMEWORK)
 	# The XPC services are only for sandboxed apps.
 	rm -rf $(SPARKLE_FRAMEWORK)/XPCServices $(SPARKLE_FRAMEWORK)/Versions/B/XPCServices

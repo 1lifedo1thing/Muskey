@@ -1,0 +1,709 @@
+/* The controls around Muskey's notes sheet, laid out like the notes window: the song and the views at the top, the
+   page in the middle, the pages under it, and the key, the tempo and the capo along the bottom. Everything sits under
+   .muskey-sheet, so the live page can use the same file next to its own styles. */
+
+.muskey-sheet {
+    --ms-ink: rgb(33 20 26);
+    --ms-muted: rgb(74 51 61);
+    --ms-paper: rgb(252 249 244);
+    --ms-accent: oklch(0.58 0.24 16);
+    --ms-surface: rgb(255 253 251);
+    --ms-warmth: rgb(242 184 158 / 0.12);
+    --ms-gutter: 12px;
+    --ms-font: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    container: muskey-sheet / inline-size;
+    color-scheme: light;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    min-height: 0;
+    color: var(--ms-ink);
+    background: radial-gradient(circle at 0% 100%, var(--ms-warmth), transparent 420px), var(--ms-surface);
+    font-family: var(--ms-font);
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .muskey-sheet:not([data-theme="light"]) {
+        --ms-ink: rgb(255 247 245);
+        --ms-muted: rgb(232 217 219);
+        --ms-paper: rgb(28 24 25);
+        --ms-accent: oklch(0.76 0.18 62);
+        --ms-surface: rgb(17 15 16);
+        --ms-warmth: rgb(92 23 38 / 0.12);
+        color-scheme: dark;
+    }
+}
+
+:root[data-theme="dark"] .muskey-sheet:not([data-theme="light"]),
+.muskey-sheet[data-theme="dark"] {
+    --ms-ink: rgb(255 247 245);
+    --ms-muted: rgb(232 217 219);
+    --ms-paper: rgb(28 24 25);
+    --ms-accent: oklch(0.76 0.18 62);
+    --ms-surface: rgb(17 15 16);
+    --ms-warmth: rgb(92 23 38 / 0.12);
+    color-scheme: dark;
+}
+
+.muskey-sheet *,
+.muskey-sheet *::before,
+.muskey-sheet *::after {
+    box-sizing: border-box;
+}
+
+.muskey-sheet button {
+    font: inherit;
+    color: inherit;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.muskey-sheet button:disabled {
+    cursor: default;
+    opacity: 0.3;
+}
+
+.muskey-sheet button:focus-visible {
+    outline: 2px solid var(--ms-accent);
+    outline-offset: 1px;
+}
+
+.muskey-sheet [hidden] {
+    display: none !important;
+}
+
+.muskey-sheet svg {
+    width: 10px;
+    height: 10px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* MARK: Top bar */
+
+.ms-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    padding: 14px 14px 10px 18px;
+}
+
+.ms-titles {
+    flex: 1 1 auto;
+    min-width: 90px;
+}
+
+.ms-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
+.ms-subtitle {
+    margin: 1px 0 0;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--ms-muted);
+    overflow-wrap: anywhere;
+}
+
+.ms-views {
+    display: flex;
+    flex: 0 0 auto;
+    padding: 2px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ms-ink) 7%, transparent);
+}
+
+.muskey-sheet .ms-view {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 800;
+    line-height: 14px;
+    color: var(--ms-muted);
+    white-space: nowrap;
+    transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+
+.muskey-sheet .ms-view:hover {
+    color: var(--ms-ink);
+}
+
+.muskey-sheet .ms-view.ms-on {
+    color: var(--ms-ink);
+    background: color-mix(in srgb, var(--ms-ink) 14%, transparent);
+}
+
+/* MARK: Page */
+
+.ms-page {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 120px;
+    margin: 0 var(--ms-gutter);
+    border-radius: 14px;
+    background: var(--ms-paper);
+    overflow: hidden;
+    /* Sideways swipes turn the pages; a pinch still zooms the page. */
+    touch-action: pan-y pinch-zoom;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+}
+
+.ms-page::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ms-ink) 6%, transparent);
+    pointer-events: none;
+}
+
+.ms-page canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.ms-hover-line,
+.ms-hover-time,
+.ms-pill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.ms-hover-line {
+    width: 1.5px;
+    border-radius: 1px;
+    background: color-mix(in srgb, var(--ms-ink) 40%, transparent);
+}
+
+.ms-hover-time {
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 12px;
+    white-space: nowrap;
+    color: color-mix(in srgb, var(--ms-ink) 80%, transparent);
+    background: color-mix(in srgb, var(--ms-ink) 10%, transparent);
+}
+
+/* The name of the note under the pointer, with the string and the fret in sheet music for guitar and bass. */
+.ms-pill {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    line-height: 22px;
+    white-space: nowrap;
+    color: var(--ms-ink);
+    /* The window's material, which hides what is behind it: the paper a shade towards the ink. */
+    background: color-mix(in srgb, color-mix(in srgb, var(--ms-paper) 91%, var(--ms-ink)) 94%, transparent);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    backdrop-filter: blur(14px) saturate(1.4);
+    box-shadow:
+        inset 0 0 0 0.5px color-mix(in srgb, var(--ms-ink) 12%, transparent),
+        0 1px 3px rgb(0 0 0 / 0.12);
+    transition: opacity 0.1s ease-out;
+}
+
+.ms-pill-name {
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.ms-pill-fret {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--ms-muted);
+}
+
+.ms-page .ms-shown {
+    opacity: 1;
+}
+
+/* MARK: Pages */
+
+.ms-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 50px;
+    padding: 0 20px;
+}
+
+.ms-pager {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 3px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ms-ink) 8%, transparent);
+}
+
+.muskey-sheet .ms-arrow {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+}
+
+.ms-arrow:not(:disabled):hover {
+    background: color-mix(in srgb, var(--ms-ink) 8%, transparent);
+}
+
+.ms-page-label {
+    padding: 0 2px;
+    font-size: 11.5px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+/* MARK: Status bar */
+
+.ms-status {
+    display: flex;
+    align-items: stretch;
+    min-height: 30px;
+    padding: 0 8px 0 20px;
+    background: color-mix(in srgb, var(--ms-ink) 3%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ms-ink) 8%, transparent);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* The hints that fit stay on the first line, and the ones that wrap fall out of sight, as in the window. */
+.ms-hints {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    column-gap: 12px;
+    min-width: 0;
+    height: 30px;
+    overflow: hidden;
+    opacity: 0.6;
+}
+
+.ms-hint {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 30px;
+    font-size: 9.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--ms-muted);
+}
+
+.ms-caps {
+    display: flex;
+    gap: 3px;
+}
+
+.ms-keycap {
+    display: inline-grid;
+    place-items: center;
+    min-width: 14px;
+    height: 13px;
+    padding: 0 3px;
+    border-radius: 4px;
+    font-family: var(--ms-font);
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+    color: color-mix(in srgb, var(--ms-ink) 80%, transparent);
+    background: color-mix(in srgb, var(--ms-ink) 7%, transparent);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--ms-ink) 18%, transparent);
+}
+
+.ms-state {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: stretch;
+    margin-left: auto;
+}
+
+.ms-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+    color: color-mix(in srgb, var(--ms-ink) 80%, transparent);
+    box-shadow: inset 1px 0 0 color-mix(in srgb, var(--ms-ink) 8%, transparent);
+}
+
+.ms-tempo {
+    padding: 0 15px;
+}
+
+.ms-capo {
+    gap: 4px;
+    padding: 0 12px;
+}
+
+.ms-capo-label.ms-muted {
+    color: var(--ms-muted);
+}
+
+.muskey-sheet .ms-round {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    color: var(--ms-ink);
+    background: color-mix(in srgb, var(--ms-ink) 8%, transparent);
+}
+
+.ms-round svg {
+    width: 8px;
+    height: 8px;
+    stroke-width: 2.6;
+}
+
+/* The key, with the shift beside it in the accent. The arrows show while the pointer is over it, in room that it keeps
+   for them on each side, so nothing moves when they appear. */
+.muskey-sheet .ms-key-name {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    align-self: stretch;
+    padding: 0 15px;
+    font-weight: 800;
+}
+
+.ms-key-name::before {
+    content: "";
+    position: absolute;
+    inset: 4px 1px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--ms-ink) 7%, transparent);
+    opacity: 0;
+    transition: opacity 0.12s ease-out;
+}
+
+.ms-key.ms-hovering .ms-key-name::before,
+.ms-key:focus-within .ms-key-name::before {
+    opacity: 1;
+}
+
+.ms-shift {
+    color: var(--ms-accent);
+}
+
+.ms-shift:empty {
+    display: none;
+}
+
+.muskey-sheet .ms-step {
+    display: grid;
+    place-items: center;
+    width: 13px;
+    height: 20px;
+    color: color-mix(in srgb, var(--ms-ink) 70%, transparent);
+}
+
+.ms-step svg {
+    width: 8px;
+    height: 8px;
+    stroke-width: 2.6;
+}
+
+.ms-key > .ms-step {
+    position: absolute;
+    top: 50%;
+    z-index: 1;
+    translate: 0 -50%;
+    opacity: 0;
+    transition: opacity 0.12s ease-out;
+}
+
+.ms-key > .ms-step:first-child {
+    left: 2px;
+}
+
+.ms-key > .ms-step:nth-child(3) {
+    right: 2px;
+}
+
+.ms-key.ms-hovering > .ms-step:not(:disabled),
+.ms-key:focus-within > .ms-step:not(:disabled) {
+    opacity: 1;
+}
+
+.ms-key.ms-hovering > .ms-step:disabled,
+.ms-key:focus-within > .ms-step:disabled {
+    opacity: 0.3;
+}
+
+/* The relative key over the key: the same notes in the other mode, which an Option-click switches to. */
+.ms-relative {
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 50%;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 20px;
+    padding: 0 4px 0 8px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--ms-muted);
+    background: color-mix(in srgb, var(--ms-paper) 80%, transparent);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--ms-ink) 10%, transparent);
+    translate: -50% 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease-out;
+}
+
+.ms-relative.ms-option {
+    padding-right: 8px;
+    color: var(--ms-ink);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--ms-ink) 25%, transparent);
+}
+
+.ms-relative-mark {
+    display: flex;
+}
+
+.ms-swap svg {
+    width: 9px;
+    height: 9px;
+    stroke-width: 2.2;
+}
+
+.ms-key.ms-hovering:not(.ms-picking) .ms-relative {
+    opacity: 1;
+}
+
+/* MARK: Key picker */
+
+.muskey-sheet .ms-picker {
+    position: fixed;
+    inset: auto;
+    top: 0;
+    left: 0;
+    max-width: calc(100vw - 16px);
+    margin: 0;
+    padding: 4px;
+    border: 0;
+    border-radius: 13px;
+    overflow: visible;
+    color: var(--ms-ink);
+    background: var(--ms-surface);
+    box-shadow:
+        0 10px 30px rgb(0 0 0 / 0.2),
+        inset 0 0 0 0.5px color-mix(in srgb, var(--ms-ink) 14%, transparent);
+}
+
+.ms-picker-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.ms-chips {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.ms-chips-other {
+    padding: 2px 0;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--ms-ink) 4.5%, transparent);
+}
+
+.ms-picker-step {
+    flex: 0 0 auto;
+    width: 13px;
+}
+
+.muskey-sheet .ms-chip {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 32px;
+    width: 32px;
+    height: 34px;
+    border-radius: 9px;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--ms-muted);
+}
+
+.ms-chips-other .ms-chip {
+    height: 22px;
+    border-radius: 6px;
+    font-size: 11px;
+    opacity: 0.78;
+}
+
+.ms-chip:hover {
+    background: color-mix(in srgb, var(--ms-ink) 11%, transparent);
+    opacity: 1;
+}
+
+.muskey-sheet .ms-chip.ms-original {
+    color: var(--ms-ink);
+}
+
+.ms-chip.ms-original::after {
+    content: "";
+    position: absolute;
+    bottom: 4px;
+    left: 50%;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.85;
+    translate: -50% 0;
+}
+
+.muskey-sheet .ms-chip.ms-selected {
+    font-weight: 700;
+    color: var(--ms-paper);
+    background: var(--ms-accent);
+    opacity: 1;
+}
+
+.muskey-sheet .ms-chip.ms-partner {
+    color: var(--ms-accent);
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ms-accent) 75%, transparent);
+    opacity: 1;
+}
+
+/* MARK: Narrow pages and touch */
+
+@container muskey-sheet (width < 600px) {
+    .ms-top {
+        padding: 12px 16px 8px;
+    }
+
+    .ms-page {
+        margin: 0 16px;
+    }
+
+    .ms-status {
+        padding-left: 8px;
+    }
+
+    .ms-state {
+        margin-right: auto;
+    }
+
+    /* Twelve keys share the width of a phone, so their names get smaller. */
+    .muskey-sheet .ms-chip {
+        font-size: 11.5px;
+        letter-spacing: -0.02em;
+    }
+
+    .muskey-sheet .ms-chips-other .ms-chip {
+        font-size: 10px;
+    }
+}
+
+@media (hover: none), (pointer: coarse) {
+    .ms-hints {
+        display: none;
+    }
+
+    .ms-key > .ms-step:not(:disabled) {
+        opacity: 1;
+    }
+
+    .ms-key > .ms-step:disabled {
+        opacity: 0.3;
+    }
+}
+
+@media (pointer: coarse) {
+    .ms-status {
+        min-height: 44px;
+    }
+
+    .muskey-sheet .ms-view {
+        padding: 8px 12px;
+    }
+
+    .muskey-sheet .ms-arrow {
+        width: 40px;
+        height: 36px;
+    }
+
+    .muskey-sheet .ms-key-name {
+        padding: 0 32px;
+    }
+
+    .muskey-sheet .ms-step {
+        width: 30px;
+        height: 40px;
+    }
+
+    .muskey-sheet .ms-round {
+        position: relative;
+        width: 26px;
+        height: 26px;
+    }
+
+    .ms-round::after {
+        content: "";
+        position: absolute;
+        inset: -9px -4px;
+    }
+
+    .muskey-sheet .ms-chip {
+        height: 40px;
+    }
+
+    .ms-chips-other .ms-chip {
+        height: 30px;
+    }
+
+    .muskey-sheet .ms-picker-step {
+        width: 24px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .muskey-sheet *,
+    .muskey-sheet *::before,
+    .muskey-sheet *::after {
+        transition: none !important;
+    }
+}

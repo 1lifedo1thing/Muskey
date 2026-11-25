@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="generator" content="Muskey">
+<title>{{TITLE}}</title>
+<style>
+html, body { margin: 0; height: 100%; }
+body { background: rgb(255 253 251); }
+@media (prefers-color-scheme: dark) { body { background: rgb(17 15 16); } }
+#sheet { height: 100vh; height: 100dvh; }
+{{CSS}}
+</style>
+</head>
+<body>
+<main id="sheet"></main>
+<script type="application/json" id="muskey-data">{{DATA}}</script>
+<script type="application/json" id="muskey-options">{{OPTIONS}}</script>
+<script>{{JS}}</script>
+<script>
+(() => {
+    const read = (id) => JSON.parse(document.getElementById(id).textContent);
+    const data = read("muskey-data");
+    const options = read("muskey-options");
+    // The view, the key, the capo and the page are kept in the address, so a reload or a shared link opens the sheet
+    // the way it was left.
+    let saved = new URLSearchParams();
+    try { saved = new URLSearchParams(location.hash.slice(1)); } catch {}
+    if (saved.has("view")) options.view = saved.get("view");
+    if (saved.has("shift")) options.shift = Number(saved.get("shift")) || 0;
+    if (saved.has("relative")) options.relative = saved.get("relative") === "1";
+    if (saved.has("capo")) options.capo = Number(saved.get("capo")) || 0;
+    if (saved.has("page")) options.page = Math.max(0, (Number(saved.get("page")) || 1) - 1);
+    const sheet = MuskeySheet.mount(document.getElementById("sheet"), data, options);
+    sheet.onChange = (state) => {
+        const hash = new URLSearchParams({ view: state.view, shift: state.shift, relative: state.relative ? 1 : 0, capo: state.capo, page: state.page + 1 });
+        try { history.replaceState(null, "", "#" + hash); } catch {}
+    };
+    window.muskeySheet = sheet;
+})();
+</script>
+</body>
+</html>

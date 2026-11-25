@@ -2934,6 +2934,7 @@ extension NotesModel {
 /// `--notes-render FIXTURE DIR`: the notes window with the notes of a fixture, in each view on a tall and a wide page,
 /// at `--notes-at S` seconds (40 by default), written as PNGs.
 @MainActor func renderNotesWindow(fixture path: String, to dir: String) {
+    if let out = TestFlags.value("--notes-html") { return writeNotesSheet(fixture: path, to: out) }
     guard let model = NotesModel.fixture(path) else {
         print("notes render: can't read \(path)")
         return
@@ -3011,5 +3012,28 @@ extension NotesModel {
                 print("wrote \(dir)/\(name)")
             }
         }
+    }
+}
+
+/// `--notes-render FIXTURE --notes-html OUT`: the page that a browser opens, written in place of the PNGs, with
+/// `--notes-shift N`, `--notes-capo N`, `--notes-relative`, `--notes-view tab|sheet|roll` and `--notes-artist NAME`.
+/// It rides on `--notes-render` because the app reads its launch flags in App.swift.
+@MainActor func writeNotesSheet(fixture path: String, to out: String) {
+    guard let data = FileManager.default.contents(atPath: path), let fixture = try? JSONDecoder().decode(NotesFixture.self, from: data) else {
+        print("notes html: can't read \(path)")
+        return
+    }
+    let html = NotesSheet.html(fixture, artist: TestFlags.value("--notes-artist"), view: TestFlags.value("--notes-view").flatMap(NotesView.init(rawValue:)),
+                               shift: TestFlags.value("--notes-shift").flatMap(Int.init) ?? 0, relative: TestFlags.has("--notes-relative"),
+                               capo: TestFlags.value("--notes-capo").flatMap(Int.init) ?? 0)
+    guard !html.isEmpty else {
+        print("notes html: the app has no Web folder in its resources")
+        return
+    }
+    do {
+        try html.write(toFile: out, atomically: true, encoding: .utf8)
+        print("wrote \(out)")
+    } catch {
+        print("notes html: \(error.localizedDescription)")
     }
 }
