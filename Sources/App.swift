@@ -5,6 +5,7 @@ import Network
 import os
 import ServiceManagement
 import SwiftUI
+import SystemConfiguration
 
 struct DetectedKey: Equatable {
     /// Each key spelled the way it is usually written, indexed by pitch class from C.
@@ -3133,6 +3134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.state = { [weak self] in self?.remoteState() }
         WebRemote.shared.nowCover = { [weak self] in self?.model.artwork }
         WebRemote.shared.mute = { [weak self] in self?.setOutputMuted($0) }
+        WebRemote.shared.transport = { [weak self] in self?.remoteTransport($0) }
         WebRemote.shared.update()
         cli.start()
     }
@@ -3253,11 +3255,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let track = model.track ?? nowPlaying.track
         let app = track?.bundleID.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first?.localizedName }
         return WebRemote.State(
-            title: track?.title, artist: track?.artist, app: playsInFilePlayer ? "Muskey" : app, playing: track?.playing ?? false,
+            title: track?.title, artist: track?.artist, app: playsInFilePlayer ? "Muskey Player" : app, playing: track?.playing ?? false,
             listening: state != .idle && model.phase == .listening, key: model.key?.code, shift: model.shift, relative: model.relative,
             bpm: model.tempo?.bpm, speed: currentSpeed, cover: model.artwork != nil, muted: OutputMute.muted,
-            relativeKeys: prefs.relativeKeys, file: playsInFilePlayer ? filePlayer.current?.path : nil
+            relativeKeys: prefs.relativeKeys, file: playsInFilePlayer ? filePlayer.current?.path : nil,
+            position: track?.position(at: Date()), duration: track?.duration, seekable: model.seekable, mac: Self.macName
         )
+    }
+
+    /// The Mac's name as Settings > General > Sharing shows it, read once without a lookup on the network.
+    private static let macName = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "Mac"
+
+    @MainActor private func remoteTransport(_ request: WebTransport) {
+        switch request.action {
+        case "toggle": playPause()
+        case "back": seek(by: -5)
+        case "forward": seek(by: 5)
+        case "seek":
+            guard let seconds = request.seconds, let duration = nowPlaying.track?.duration, duration > 0 else { return }
+            seek(to: seconds, flash: "\(Int((seconds / duration * 100).rounded()))%")
+        default: break
+        }
     }
 
     @MainActor private func cliWait(_ job: CLIJob, seconds: Double, until: @escaping () -> Bool, then: @escaping () -> Void) {

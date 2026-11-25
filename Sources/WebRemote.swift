@@ -41,6 +41,8 @@ struct WebNotes: Encodable {
     var state: () -> State? = { nil }
     var nowCover: () -> NSImage? = { nil }
     var mute: (Bool) -> Void = { _ in }
+    /// Plays or pauses the song that plays on the Mac, or moves it, as the HUD's Space and arrow keys do.
+    var transport: (WebTransport) -> Void = { _ in }
 
     /// What the remote shows of the song that plays on the Mac.
     struct State: Encodable {
@@ -66,9 +68,17 @@ struct WebNotes: Encodable {
         var file: String?
         /// The song of Recents that Muskey plays, by its ID.
         var song: String?
+        /// Seconds into the song, and its length, when the player gives them.
+        var position: Double?
+        var duration: Double?
+        /// The player takes seeks now.
+        var seekable: Bool
+        /// The Mac's name, from Settings > General > Sharing.
+        var mac: String
 
         enum CodingKeys: CodingKey {
-            case title, artist, app, playing, listening, key, shift, relative, bpm, speed, cover, muted, relativeKeys, song
+            case title, artist, app, playing, listening, key, shift, relative, bpm, speed, cover, muted, relativeKeys, song, position, duration,
+                 seekable, mac
         }
     }
 
@@ -76,7 +86,7 @@ struct WebNotes: Encodable {
     nonisolated static let symbols: Set<String> = [
         "music.mic", "metronome.fill", "hifispeaker.fill", "guitars.fill", "pianokeys", "music.quarternote.3", "wind", "headphones",
         "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "speaker.wave.2.fill", "speaker.slash.fill",
-        "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear",
+        "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear", "minus", "plus", "gobackward.5", "goforward.5",
     ]
 
     /// A symbol as a black PNG at three times its point size, which the page uses as a mask to colour it.
@@ -228,6 +238,12 @@ struct WebNotes: Encodable {
             play.remote = true
             let request = play
             return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
+        case "api/transport" where request.method == "POST" && parts.count == 2:
+            guard let action = try? JSONDecoder().decode(WebTransport.self, from: request.body), action.valid else {
+                return .text("Unreadable request", status: 400)
+            }
+            await MainActor.run { shared.transport(action) }
+            return WebResponse(status: 204)
         case "api/mute" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode([String: Bool].self, from: request.body), let muted = body["muted"] else {
                 return .text("Unreadable request", status: 400)
@@ -392,5 +408,19 @@ struct WebNotes: Encodable {
             }
         }
         return Self.json(WebJob(CLIService.shared.handle(request)))
+    }
+}
+
+/// A play, pause or move of the song that plays on the Mac: `toggle`, `back`, `forward`, or `seek` to `seconds`.
+struct WebTransport: Decodable {
+    let action: String
+    let seconds: Double?
+
+    var valid: Bool {
+        switch action {
+        case "toggle", "back", "forward": true
+        case "seek": seconds.map { $0.isFinite && $0 >= 0 } ?? false
+        default: false
+        }
     }
 }

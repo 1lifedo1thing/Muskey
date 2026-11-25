@@ -122,6 +122,11 @@
         const label = button.querySelector("span:last-child") || button;
         if (!button.dataset.label) button.dataset.label = label.textContent;
         label.textContent = "Retry";
+        const glyph = button.querySelector(".icon");
+        if (glyph && !button.dataset.symbol) {
+            button.dataset.symbol = glyph.style.getPropertyValue("--symbol");
+            glyph.style.setProperty("--symbol", symbol("arrow.clockwise"));
+        }
         button.classList.add("failed");
         if (button.classList.contains("primary")) {
             button.classList.remove("primary");
@@ -138,6 +143,8 @@
             label.textContent = button.dataset.label;
             delete button.dataset.label;
             button.classList.remove("failed");
+            if (button.dataset.symbol) button.querySelector(".icon").style.setProperty("--symbol", button.dataset.symbol);
+            delete button.dataset.symbol;
             if (button.dataset.primary) button.classList.add("primary");
             delete button.dataset.primary;
         }
@@ -215,27 +222,33 @@
     async function refreshState() {
         try {
             state = await api("/api/state");
+            stateAt = performance.now();
         } catch {
+            $("mac").classList.add("offline");
             return;
         }
+        $("mac").hidden = false;
+        $("mac").classList.remove("offline");
+        $("mac-name").textContent = state.mac;
         drawNow();
-        for (const toggle of document.querySelectorAll(".mac-sound")) {
-            toggle.checked = state.muted === false;
-            // A Mac without a sound output has nothing to mute, and the song's bar has the switch only for a live song.
-            const row = toggle.closest(".row");
-            row.hidden = state.muted == null || (row.id === "live-sound" && mode !== "live");
-        }
+        for (const toggle of document.querySelectorAll(".mac-sound")) toggle.checked = state.muted === false;
+        // A Mac without a sound output has nothing to mute, and the song view has the switch only for a live song.
+        document.querySelector("#now-card .mac-sound").closest(".row").hidden = state.muted == null;
+        $("live-sound").hidden = state.muted == null || mode !== "live";
         if (mode === "live") drawLive();
         // The second row follows Settings > HUD on the Mac.
         if (mode && state.relativeKeys !== relativeKeys) drawKeys();
         relativeKeys = state.relativeKeys;
     }
     let relativeKeys = null;
+    let stateAt = 0;
 
-    function nowPills(target) {
+    /** The player and the key and tempo that the Mac plays. The song view leaves out the two that its rows show. */
+    function nowPills(target, full = true) {
         target.replaceChildren();
         if (state.app) target.append(pill(state.app));
         if (state.listening) target.append(pill("Listening", "listening"));
+        if (!full) return;
         const key = parseKey(state.key);
         if (key) {
             const heardKey = heardOf(key, state.shift, state.relative);
@@ -287,15 +300,12 @@
         reset();
         $("song-title").textContent = $("bar-title").textContent = item.title;
         $("song-artist").textContent = item.artist || "";
-        const pills = $("song-pills");
-        pills.replaceChildren();
-        const key = parseKey(item.key);
-        if (key) pills.append(pill(keyName(key)));
-        if (item.bpm) pills.append(pill(`${Math.round(item.bpm)} BPM`));
+        $("song-pills").replaceChildren();
         setCover($("song-cover"), item.cover ? `/api/cover/${item.id}` : null);
         $("part-row").hidden = false;
         $("notes-section").hidden = false;
         $("file-actions").hidden = false;
+        $("transport").hidden = true;
         $("live-sound").hidden = true;
         drawAll();
         show("song");
@@ -314,6 +324,7 @@
         $("part-row").hidden = true;
         $("notes-section").hidden = true;
         $("file-actions").hidden = true;
+        $("transport").hidden = false;
         $("live-sound").hidden = state.muted == null;
         drawLive();
         drawAll();
@@ -325,7 +336,8 @@
     function drawLive() {
         $("song-title").textContent = $("bar-title").textContent = state.title || "Nothing playing";
         $("song-artist").textContent = state.artist || "";
-        nowPills($("song-pills"));
+        nowPills($("song-pills"), false);
+        drawTransport();
         setCover($("song-cover"), state.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : null);
         // The Mac's state wins, unless a change was just made here and the Mac hasn't applied it yet.
         if (Date.now() - touched > 3000) {
@@ -390,9 +402,12 @@
         }
         $("key-down").disabled = shift <= -12;
         $("key-up").disabled = shift >= 12;
+        // The key of the song, and the key that plays once it changed.
         const change = $("change-pill");
-        change.hidden = !key || (shift === 0 && !relative);
-        if (key && !change.hidden) {
+        change.hidden = !key;
+        change.classList.toggle("honey", Boolean(key) && (shift !== 0 || relative));
+        if (key && shift === 0 && !relative) change.replaceChildren(keyName(key));
+        else if (key) {
             const content = document.createElement("span");
             content.style.display = "inline-flex";
             content.style.gap = "4px";
@@ -461,7 +476,7 @@
 
     // MARK: Tempo
 
-    const fastest = () => (mode === "live" && state?.app !== "Muskey" ? 1 : 1.5);
+    const fastest = () => (mode === "live" && state?.app !== "Muskey Player" ? 1 : 1.5);
 
     function drawSpeed() {
         const percent = Math.round(speed * 100);
@@ -572,10 +587,46 @@
         }, 250);
     }
 
+    // MARK: Play, pause and seek on the Mac
+
+    /** The player's position, moved on from the last state by the time since, while the song plays. */
+    function macPosition() {
+        if (state?.position == null) return null;
+        const since = state.playing ? ((performance.now() - stateAt) / 1000) * (state.speed || 1) : 0;
+        return Math.min(state.position + since, state.duration ?? Infinity);
+    }
+
+    let macSeeking = false;
+    function drawTransport() {
+        if (mode !== "live" || !state) return;
+        $("mac-play-icon").style.setProperty("--symbol", symbol(state.playing ? "pause.fill" : "play.fill"));
+        $("mac-play").setAttribute("aria-label", state.playing ? "Pause" : "Play");
+        const position = macPosition();
+        const duration = state.duration || 0;
+        const known = position != null && duration > 0;
+        $("transport").classList.toggle("unknown", !known);
+        for (const id of ["mac-seek", "mac-back", "mac-forward"]) $(id).disabled = !known || !state.seekable;
+        if (!known) return;
+        if (!macSeeking) $("mac-seek").value = String(Math.round((position / duration) * 1000));
+        const shownAt = macSeeking ? (Number($("mac-seek").value) / 1000) * duration : position;
+        $("mac-elapsed").textContent = clock(shownAt);
+        $("mac-left").textContent = `\u2212${clock(duration - shownAt)}`;
+    }
+
+    async function transport(body) {
+        try {
+            await api("/api/transport", body);
+        } finally {
+            setTimeout(refreshState, 300);
+        }
+    }
+
     // MARK: Notes
 
     function drawNotesPicker() {
         const options = [{ name: "auto", label: "Auto" }, ...STEMS.filter((s) => s.name !== "drums")];
+        const picked = options.find((o) => o.name === notesStem);
+        if (!$("transcribe").classList.contains("failed")) $("transcribe").textContent = notesStem === "auto" ? "Transcribe" : `Transcribe ${picked.label.toLowerCase()}`;
         $("notes-stem").replaceChildren(...options.map((option) => {
             const button = document.createElement("button");
             button.setAttribute("aria-pressed", String(option.name === notesStem));
@@ -584,6 +635,7 @@
             else button.textContent = option.label;
             button.onclick = () => {
                 notesStem = option.name;
+                clearFailures();
                 drawNotesPicker();
             };
             return button;
@@ -735,7 +787,7 @@
         } catch (error) {
             if (error.message !== "Stopped") fail(button, $("spotify-status"), error);
         } finally {
-            button.disabled = false;
+            button.disabled = !$("spotify-link").value.trim();
         }
     }
 
@@ -750,7 +802,38 @@
     $("speed-up").onclick = () => setSpeed(speed + 0.05);
     $("speed-value").onclick = () => setSpeed(1);
     $("play-all").onclick = () => setStems(new Set());
-    $("from").oninput = $("to").oninput = $("spotify-link").oninput = clearFailures;
+    $("from").oninput = $("to").oninput = clearFailures;
+    $("spotify-link").oninput = () => {
+        clearFailures();
+        $("spotify-play").disabled = !$("spotify-link").value.trim();
+    };
+    $("spotify-play").disabled = true;
+    $("mac-play").onclick = () => {
+        if (!state) return;
+        // The glyph changes at once, and the next state from the Mac confirms it.
+        state.playing = !state.playing;
+        state.position = macPosition();
+        stateAt = performance.now();
+        drawTransport();
+        transport({ action: "toggle" });
+    };
+    $("mac-back").onclick = () => transport({ action: "back" });
+    $("mac-forward").onclick = () => transport({ action: "forward" });
+    $("mac-seek").oninput = () => {
+        macSeeking = true;
+        drawTransport();
+    };
+    $("mac-seek").onchange = () => {
+        const seconds = (Number($("mac-seek").value) / 1000) * (state.duration || 0);
+        state.position = seconds;
+        stateAt = performance.now();
+        macSeeking = false;
+        transport({ action: "seek", seconds });
+    };
+    setInterval(() => { if (mode === "live" && document.visibilityState === "visible") drawTransport(); }, 250);
+    // The bar's title shows once the song's name scrolls under it, as a large title does.
+    new IntersectionObserver(([entry]) => $("top").classList.toggle("scrolled", !entry.isIntersecting), { rootMargin: "-60px 0px 0px 0px" })
+        .observe($("head"));
     $("transcribe").onclick = transcribe;
     $("play-mac").onclick = playOnMac;
     $("listen").onclick = listenHere;
@@ -778,7 +861,7 @@
     }
 
     // The song view's symbols are fetched while the home view shows, so that its icons are there when a song opens.
-    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "headphones", "speaker.wave.2.fill"]) {
+    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "headphones", "speaker.wave.2.fill", "minus", "plus", "gobackward.5", "goforward.5", "arrow.clockwise"]) {
         new Image().src = `/api/symbol/${name}`;
     }
 

@@ -266,9 +266,9 @@ While **Web remote** is on in Settings > General, the same server answers a page
 - its Host isn't one of the Mac's addresses, which stops a web page elsewhere from reaching the remote through a DNS name that resolves to the Mac
 - it changes something, and its Origin isn't the address of the remote
 
-The page (`Web/remote.html`, `remote.js` and `remote.css`) has the HUD's key row, tempo and instruments, drawn with the HUD's colours and with SF Symbols that the app renders as PNG masks (`/api/symbol/<name>`, from a fixed list). It asks for the HUD's state every 1.5 seconds: the song that plays, its key, the change, the tempo and whether the Mac's sound is muted. A change to the song that plays is sent at once, as a play without an input.
+The page (`Web/remote.html`, `remote.js` and `remote.css`) has the HUD's key row, tempo and instruments, drawn with the HUD's colours and with SF Symbols that the app renders as PNG masks (`/api/symbol/<name>`, from a fixed list). It asks for the HUD's state every 1.5 seconds: the song that plays, its position, its key, the change, the tempo and whether the Mac's sound is muted. A change to the song that plays is sent at once, as a play without an input. The buttons under the song that plays send `/api/transport`, which plays, pauses and seeks the way Space, ← and → do over the HUD.
 
-The page lists Recents by an ID made from each song's URL, never by a path. **Play on Mac** and **Listen Here** send the same requests as the tool through `CLIService`: a play, or a write job of an M4A that the browser plays with byte ranges. The notes come from a write job in JSON, and `Web/sheet.js` draws them as the notes window does, moving its line with the audio element. A key picked on the sheet is the key of the next render.
+The page lists Recents by an ID made from each song's URL, never by a path. **Play on Mac** and **Listen here** send the same requests as the tool through `CLIService`: a play, or a write job of an M4A that the browser plays with byte ranges. The notes come from a write job in JSON, and `Web/sheet.js` draws them as the notes window does, moving its line with the audio element. A key picked on the sheet is the key of the next render.
 
 ## Limitations
 

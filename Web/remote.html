@@ -18,11 +18,14 @@
 <body>
 
 <div class="view" id="home">
-    <header class="large-title"><h1>Muskey</h1></header>
+    <header class="large-title">
+        <h1>Muskey</h1>
+        <div class="mac" id="mac" hidden><span class="dot"></span><span id="mac-name"></span></div>
+    </header>
 
     <section class="section">
         <div class="label">Now playing</div>
-        <div class="card">
+        <div class="card" id="now-card">
             <button class="row song-row" id="now" disabled>
                 <img class="cover" id="now-cover" alt="">
                 <div class="grow">
@@ -56,13 +59,13 @@
 </div>
 
 <div class="view" id="song" hidden>
-    <header class="top">
+    <header class="top" id="top">
         <button class="close" id="close">Close song</button>
         <div class="title" id="bar-title"></div>
         <div class="spacer"></div>
     </header>
 
-    <div class="head">
+    <div class="head" id="head">
         <img class="cover large" id="song-cover" alt="">
         <div class="grow" style="min-width: 0">
             <div class="song-title" id="song-title"></div>
@@ -72,7 +75,7 @@
     </div>
 
     <section class="section">
-        <div class="label">Key <span class="pill honey" id="change-pill" hidden></span></div>
+        <div class="label">Key <span class="pill" id="change-pill" hidden></span></div>
         <div class="keyrow" id="keyrow">
             <button class="step down" id="key-down" aria-label="Semitone down"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
             <div class="keys" id="keys" role="group" aria-label="Key"></div>
@@ -86,9 +89,9 @@
                 <span class="row-label">Tempo</span>
                 <span class="grow"><span class="pill" id="bpm-pill" hidden></span></span>
                 <div class="stepper">
-                    <button class="down" id="speed-down" aria-label="Slower"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
+                    <button class="down" id="speed-down" aria-label="Slower"><span class="icon" style="--symbol: url(/api/symbol/minus)"></span></button>
                     <button class="value" id="speed-value" aria-label="Play at the song's tempo">100%</button>
-                    <button class="up" id="speed-up" aria-label="Faster"><span class="icon" style="--symbol: url(/api/symbol/chevron.right)"></span></button>
+                    <button class="up" id="speed-up" aria-label="Faster"><span class="icon" style="--symbol: url(/api/symbol/plus)"></span></button>
                 </div>
             </div>
             <div class="row" id="part-row">
@@ -102,6 +105,14 @@
     <section class="section">
         <div class="label">Instruments <button class="small-button" id="play-all" hidden>Play all</button></div>
         <div class="card padded"><div class="stems" id="stems" role="group" aria-label="Instruments"></div></div>
+    </section>
+
+    <section class="section" id="live-sound" hidden>
+        <label class="card row">
+            <span class="icon" style="--symbol: url(/api/symbol/speaker.wave.2.fill)"></span>
+            <span class="grow row-label">Mac sound</span>
+            <span class="switch"><input type="checkbox" class="mac-sound" role="switch" aria-label="Mac sound"><span></span></span>
+        </label>
     </section>
 
     <section class="section" id="notes-section">
@@ -124,13 +135,20 @@
         </div>
         <div class="actions" id="file-actions">
             <button class="button big" id="play-mac"><span class="icon" style="--symbol: url(/api/symbol/macbook)"></span><span>Play on Mac</span></button>
-            <button class="button big primary" id="listen"><span class="icon" style="--symbol: url(/api/symbol/headphones)"></span><span>Listen Here</span></button>
+            <button class="button big primary" id="listen"><span class="icon" style="--symbol: url(/api/symbol/headphones)"></span><span>Listen here</span></button>
         </div>
-        <label class="row" id="live-sound" style="min-height: 44px; padding: 0 4px" hidden>
-            <span class="icon" style="--symbol: url(/api/symbol/speaker.wave.2.fill)"></span>
-            <span class="grow row-label">Mac sound</span>
-            <span class="switch"><input type="checkbox" class="mac-sound" role="switch" aria-label="Mac sound"><span></span></span>
-        </label>
+        <div class="transport" id="transport" hidden>
+            <div class="scrub">
+                <span class="clock" id="mac-elapsed">0:00</span>
+                <input type="range" id="mac-seek" min="0" max="1000" value="0" aria-label="Position">
+                <span class="clock" id="mac-left">0:00</span>
+            </div>
+            <div class="transport-buttons">
+                <button class="round" id="mac-back" aria-label="Back 5 seconds"><span class="icon" style="--symbol: url(/api/symbol/gobackward.5)"></span></button>
+                <button class="play" id="mac-play" aria-label="Play"><span class="icon" id="mac-play-icon" style="--symbol: url(/api/symbol/play.fill)"></span></button>
+                <button class="round" id="mac-forward" aria-label="Forward 5 seconds"><span class="icon" style="--symbol: url(/api/symbol/goforward.5)"></span></button>
+            </div>
+        </div>
     </footer>
     <audio id="audio" preload="auto"></audio>
 </div>
