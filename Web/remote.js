@@ -102,9 +102,10 @@
 
     // MARK: Requests
 
-    /** A line in Muskey's log on the Mac, for what goes wrong on the phone, where nobody can read the console. */
-    function report(message) {
-        fetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: String(message) }) }).catch(() => {});
+    /** A line in Muskey's log on the Mac, for what goes wrong on the phone, where nobody can read the console. A failure
+     * is logged as an error, which macOS keeps on disk; `level` is "info" or "debug" for anything else. */
+    function report(message, level = "error") {
+        fetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: String(message), level }) }).catch(() => {});
     }
     addEventListener("error", (event) => report(`script error: ${event.message} at ${event.filename}:${event.lineno}`));
     addEventListener("unhandledrejection", (event) => report(`unhandled: ${event.reason?.message || event.reason}`));
@@ -944,7 +945,7 @@
         setInterval(() => {
             if (!context || abort === null) return;
             const db = peak > 0 ? Math.round(20 * Math.log10(peak)) : -Infinity;
-            report(`stream: ${receivedSeconds.toFixed(1)} s received in 10 s as ${format} (${Math.round(receivedBytes / 1000)} kB), peak ${db} dB, ${Math.round((playAt - context.currentTime) * 1000)} ms ahead`);
+            report(`stream: ${receivedSeconds.toFixed(1)} s received in 10 s as ${format} (${Math.round(receivedBytes / 1000)} kB), peak ${db} dB, ${Math.round((playAt - context.currentTime) * 1000)} ms ahead`, "debug");
             receivedSeconds = 0;
             receivedBytes = 0;
             peak = 0;
@@ -981,7 +982,7 @@
                     if (!response.ok) throw new Error(`the stream answered ${response.status}`);
                     const rate = Number(response.headers.get("X-Sample-Rate")) || 48000;
                     format = aac ? "aac" : "pcm";
-                    report(`stream connected at ${rate} Hz as ${format}, the context runs at ${context.sampleRate} Hz (${context.state})`);
+                    report(`stream connected at ${rate} Hz as ${format}, the context runs at ${context.sampleRate} Hz (${context.state})`, "info");
                     const reader = response.body.getReader();
                     playAt = 0;
                     if (aac) {
@@ -1093,8 +1094,11 @@
             receivedSeconds += buffer.duration;
             peak = Math.max(peak, loudest);
             const now = context.currentTime;
-            // Too close to the speaker after a gap, or too far after a burst: start again a quarter second ahead.
-            if (playAt < now + 0.03 || playAt > now + 1.2) playAt = now + 0.25;
+            // Too close to the speaker after a gap: start again a quarter second ahead. Too far ahead after a burst, like
+            // the first frames out of the AAC decoder or a stall on Wi-Fi: leave this part out, so that the phone stays
+            // close to the Mac. Moving playAt back instead would play two parts over each other.
+            if (playAt < now + 0.03) playAt = now + 0.25;
+            else if (playAt > now + 0.45) return;
             const source = context.createBufferSource();
             source.buffer = buffer;
             source.connect(gain);
@@ -1308,7 +1312,7 @@
         uploadFile = file;
         clearFailures();
         progress(row, 0);
-        report(`sending ${file.name} (${(file.size / 1e6).toFixed(1)} MB)`);
+        report(`sending ${file.name} (${(file.size / 1e6).toFixed(1)} MB)`, "info");
         try {
             const job = await new Promise((resolve, reject) => {
                 const request = new XMLHttpRequest();

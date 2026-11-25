@@ -53,14 +53,19 @@ struct WebNotes: Encodable {
     var songShown: () -> Void = {}
     private var pageLines: [Date] = []
 
-    /// A line from the page, at most 30 a minute and 400 characters each.
-    func pageLog(_ text: String) {
+    /// A line from the page, at most 30 a minute and 400 characters each. The page says what failed at the error level,
+    /// so that macOS keeps it on disk, and reports how the stream plays at the debug level.
+    func pageLog(_ text: String, level: String?) {
         let now = Date()
         pageLines = pageLines.filter { now.timeIntervalSince($0) < 60 }
         guard pageLines.count < 30 else { return }
         pageLines.append(now)
         let line = String(text.replacingOccurrences(of: "\n", with: " ").prefix(400))
-        log.info("remote page: \(line, privacy: .public)")
+        switch level {
+        case "debug": log.debug("remote page: \(line, privacy: .public)")
+        case "info": log.info("remote page: \(line, privacy: .public)")
+        default: log.error("remote page: \(line, privacy: .public)")
+        }
     }
 
     /// What the remote shows of the song that plays on the Mac.
@@ -335,7 +340,7 @@ struct WebNotes: Encodable {
             guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let message = body["message"] else {
                 return .text("Unreadable request", status: 400)
             }
-            await MainActor.run { shared.pageLog(message) }
+            await MainActor.run { shared.pageLog(message, level: body["level"]) }
             return WebResponse(status: 204)
         case "api/transport" where request.method == "POST" && parts.count == 2:
             guard let action = try? JSONDecoder().decode(WebTransport.self, from: request.body), action.valid else {
