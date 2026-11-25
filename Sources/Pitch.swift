@@ -21,6 +21,8 @@ final class PitchChanger {
     private var shifted: Float { Float(Double(semitones) + correction) }
 
     var running: Bool { aggregateID != kAudioObjectUnknown }
+    /// Frames of sound that the tap heard since the shifter was built.
+    var framesHeard: UInt64 { shifter.map { ps_frames_heard($0) } ?? 0 }
 
     /// The ring that the web remote sends to phones, which every shifter writes its output into.
     var stream: OpaquePointer? {
@@ -203,10 +205,30 @@ final class PitchChanger {
     var heardProcess: pid_t? {
         didSet {
             guard heardProcess != oldValue, running else { return }
-            stemsLog("pitch change: \(heardProcess == nil ? "hearing every app" : "hearing only Muskey Player")")
-            rebuild()
+            tapSwitch?.invalidate()
+            tapSwitch = nil
+            // Muskey Player's sound stalls for 5 to 15 seconds when its tap is made while its song starts, and then the
+            // song starts over. The tap of every app hears it at once, so it stays until the song has been heard for a
+            // second, at most 10 seconds.
+            guard heardProcess != nil, !hearsOneProcess else {
+                stemsLog("pitch change: \(heardProcess == nil ? "hearing every app" : "hearing only Muskey Player")")
+                return rebuild()
+            }
+            let from = framesHeard
+            var waited = 0.0
+            tapSwitch = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] timer in
+                guard let self else { return timer.invalidate() }
+                waited += 0.25
+                guard framesHeard >= from + UInt64(rate) || waited >= 10 else { return }
+                timer.invalidate()
+                tapSwitch = nil
+                stemsLog(String(format: "pitch change: hearing only Muskey Player, after %.2f s", waited))
+                rebuild()
+            }
         }
     }
+    /// The switch to the tap of Muskey Player, which waits for its song to be heard.
+    private var tapSwitch: Timer?
     private static var defaultOutputAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
         mScope: kAudioObjectPropertyScopeGlobal,
@@ -246,6 +268,8 @@ final class PitchChanger {
     func stop(waiting: Bool = false) {
         stopTimer?.invalidate()
         stopTimer = nil
+        tapSwitch?.invalidate()
+        tapSwitch = nil
         if let outputListener {
             AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &Self.defaultOutputAddress, .main, outputListener)
         }

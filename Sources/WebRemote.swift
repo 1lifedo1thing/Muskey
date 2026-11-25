@@ -42,6 +42,8 @@ struct WebNotes: Encodable {
     var mute: (Bool) -> Void = { _ in }
     /// Plays or pauses the song that plays on the Mac, or moves it, as the HUD's Space and arrow keys do.
     var transport: (WebTransport) -> Void = { _ in }
+    /// The phone shows the song that plays, where a tap on an instrument can come at any moment.
+    var songShown: () -> Void = {}
     /// Muskey's log, which also gets what the page reports: failed requests, audio errors and plays that iOS refused.
     var log: (String) -> Void = { _ in }
     private var pageLines: [Date] = []
@@ -260,6 +262,7 @@ struct WebNotes: Encodable {
             guard reads, parts.count == 2, let url = Bundle.main.url(forResource: parts[1], withExtension: nil, subdirectory: "Web") else { return .notFound }
             return WebLinks.file(url.path, request: request, extra: [("Cache-Control", "no-cache")])
         case "api/state" where reads && parts.count == 2:
+            if request.query["view"] == "song" { await MainActor.run { shared.songShown() } }
             guard var state = await MainActor.run(body: { shared.state() }) else { return .notFound }
             if let file = state.file { state.song = await shared.songID(file: file) }
             state.listeners = WebStream.shared.listeners

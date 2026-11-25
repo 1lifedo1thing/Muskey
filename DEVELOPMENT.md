@@ -14,7 +14,7 @@ Muskey finds the key with [Essentia](https://essentia.upf.edu)'s KeyExtractor an
 
 A second process tap mutes every app except Muskey. Muskey sends that audio through [Rubber Band](https://breakfastquay.com/rubberband/)'s R3 engine and a limiter, then plays the result on the default output.
 
-While Muskey Player plays the song, the tap hears and mutes only Muskey Player, so other sounds play as they are. Muskey builds the tap again when the song moves between Muskey Player and another player, which starts the stems over.
+While Muskey Player plays the song, the tap hears and mutes only Muskey Player, so other sounds play as they are. Muskey builds the tap again when the song moves between Muskey Player and another player, which starts the stems over. A tap of Muskey Player that is made while its song starts stalls its sound for 5 to 15 seconds, so when the pitch change already runs, the tap of every app stays until the new song has been heard for a second.
 
 The tap is private to Muskey. When Muskey quits or crashes, the Mac plays its audio unchanged again.
 
@@ -279,6 +279,8 @@ The home view opens songs on the Mac in three more ways:
 - `/api/files` lists the songs in the folders that Settings > Remote names. The folders are walked off the main thread, and the list is kept for a minute. The walk leaves out the Music app's library, which would bring up a prompt for access, and stops at 20 000 songs.
 
 **Output** picks where the song is heard. With **Phone**, the page opens `/api/stream`, and the Mac mutes its sound output and keeps the pitch change running. The pitch change copies its output into a ring (`ps_stream_*` in `pitch.cpp`), written on the audio thread without locks, and `WebStream` sends the frames to every listening phone as 16-bit stereo PCM every 20 ms, at the rate in the `X-Sample-Rate` header. The page plays them with Web Audio about a quarter of a second behind the Mac, so a change of key, tempo or instruments is heard on the phone as it is on the Mac. While the pitch change doesn't run, the stream carries silence at the same pace. A phone that falls 2 MB behind is sent away and connects again, and so is one that listens at another rate after the output device changed. Four seconds after the last phone leaves, the Mac's sound output is back as it was. For a player other than Muskey Player, the pitch change hears the whole Mac, so the phone hears every sound that the Mac plays.
+
+While the song view shows, the page asks for the state with `view=song`, and Muskey loads the stems model as it does for a pointer over the HUD, so a tap on an instrument doesn't wait for it. The position on the phone is the one that is heard, which runs behind the player while the stems play, as the lyrics do.
 
 The page reports what goes wrong on the phone to `/api/log`, which writes it into Muskey's log as `remote page:` lines (at most 30 a minute), and every 10 seconds while it listens, the seconds of audio received, their peak level and how far ahead the phone plays.
 

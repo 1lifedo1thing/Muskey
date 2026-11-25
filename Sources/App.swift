@@ -3135,6 +3135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.nowCover = { [weak self] in self?.model.artwork }
         WebRemote.shared.mute = { [weak self] in self?.setOutputMuted($0) }
         WebRemote.shared.transport = { [weak self] in self?.remoteTransport($0) }
+        WebRemote.shared.songShown = { [weak self] in self?.remoteSongShown() }
         WebRemote.shared.log = { [weak self] in self?.log($0) }
         WebStream.shared.log = { [weak self] line in DispatchQueue.main.async { self?.log(line) } }
         WebStream.shared.onListening = { [weak self] on in self?.phoneListens(on) }
@@ -3303,7 +3304,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             listening: state != .idle && model.phase == .listening, key: model.key?.code, shift: model.shift, relative: model.relative,
             bpm: model.tempo?.bpm, speed: currentSpeed, cover: model.artwork != nil, muted: OutputMute.muted,
             relativeKeys: prefs.relativeKeys, file: playsInFilePlayer ? filePlayer.current?.path : nil,
-            position: seeked ?? track?.position(at: Date()), duration: track?.duration, seekable: model.seekable, mac: Self.macName,
+            // While the stems play seconds behind the player, the phone shows the moment that is heard, as the lyrics do.
+            position: seeked ?? track?.position(at: Date()).map { max(0, $0 - pitch.stemsDelay) }, duration: track?.duration,
+            seekable: model.seekable, mac: Self.macName,
             mutedStems: model.stemsMuted.map { $0.name.lowercased() }.sorted()
         )
     }
@@ -3340,6 +3343,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restoreRemoteMute()
             stopPitchIfUnwanted()
         }
+    }
+
+    private var remoteWarmedAt = Date.distantPast
+
+    /// A phone shows the song, so the stems model is loaded as it is for a pointer over the HUD, and a tap on an
+    /// instrument starts the stems in a second instead of waiting for the model. It is freed 15 minutes after the
+    /// phone stops asking, as after the HUD closes.
+    @MainActor private func remoteSongShown() {
+        guard Date().timeIntervalSince(remoteWarmedAt) > 60 else { return }
+        remoteWarmedAt = Date()
+        guard StemModel.installed, pitch.stemsFeed == nil else { return }
+        StemModel.warmUp()
+        if !model.shown { prepareStemModel(shown: false) }
     }
 
     /// The Mac's name as Settings > General > Sharing shows it, read once without a lookup on the network.
@@ -4899,7 +4915,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         raisedForOpening = false
         // The HUD that showed the song while it opened, or that offered to open one, goes on to the listen.
         guard state == .idle || (state == .showing && model.phase == .idle && model.shown) else { return }
-        (pitch.running && pitchWanted) || keptKey != nil ? pickKey() : start()
+        (pitch.running && changesNeedPitch) || keptKey != nil ? pickKey() : start()
     }
 
     @objc private func stopPlaying() { filePlayer.close() }
@@ -5115,7 +5131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// While a pitch change runs or a key is kept, the hotkey opens the key picker instead of starting another listen.
     private func toggle() {
         switch state {
-        case .idle: (pitch.running && pitchWanted) || keptKey != nil ? pickKey() : start()
+        case .idle: (pitch.running && changesNeedPitch) || keptKey != nil ? pickKey() : start()
         case .listening, .showing: dismiss()
         }
     }
@@ -8266,8 +8282,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The slowing of another player's song needs the pitch change until the output has caught up with the player.
-    private var pitchWanted: Bool {
-        model.shift != 0 || model.stemsEngaged || lyricsDelayed || pitch.correction != 0 || slow.active || phoneListening
+    private var pitchWanted: Bool { changesNeedPitch || phoneListening }
+    /// A change to the song needs the pitch change: a key, instruments, delayed lyrics, a tempo correction or a slowed
+    /// song. A phone that listens keeps it running without a change, and a new song then gets its key read.
+    private var changesNeedPitch: Bool {
+        model.shift != 0 || model.stemsEngaged || lyricsDelayed || pitch.correction != 0 || slow.active
     }
 
     /// The speed of the song as the tap hears it: Muskey Player's speed while its song is the one that plays. A song

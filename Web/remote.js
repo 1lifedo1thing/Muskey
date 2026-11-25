@@ -129,7 +129,7 @@
                 body: JSON.stringify(body),
             });
         } catch (error) {
-            if (path !== "/api/state") report(`${path} unreachable: ${error.message}`);
+            if (!path.startsWith("/api/state")) report(`${path} unreachable: ${error.message}`);
             throw error;
         }
         if (!response.ok) {
@@ -275,7 +275,8 @@
     async function refreshState() {
         const asked = performance.now();
         try {
-            const next = await api("/api/state");
+            // The song view asks with view=song, which loads the stems model on the Mac for a tap on an instrument.
+            const next = await api(open ? "/api/state?view=song" : "/api/state");
             // An answer to a request sent before the last play, pause or seek doesn't know about it yet.
             if (asked < transportAt && state && next.title === state.title) {
                 next.playing = state.playing;
