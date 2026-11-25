@@ -337,8 +337,7 @@
     // MARK: Song view
 
     function show(view) {
-        $("home").hidden = view !== "home";
-        $("song").hidden = view !== "song";
+        for (const name of ["home", "files", "song"]) $(name).hidden = view !== name;
         scrollTo(0, 0);
     }
 
@@ -361,9 +360,11 @@
         centerKeys();
     }
 
+    /** Back to the view that opened the song: the home view or the files of the Mac. */
     function closeSong() {
         open = false;
         closeSheet();
+        if (history.state?.files === true) return show("files");
         show("home");
         loadSongs();
     }
@@ -831,32 +832,137 @@
         $("sheet").hidden = true;
     }
 
-    // MARK: Spotify
+    // MARK: Open
 
-    async function playSpotify(event) {
+    /** A link of Spotify or of any site that yt-dlp reads plays on the Mac. */
+    async function playLink(event) {
         event.preventDefault();
-        const button = $("spotify-play");
-        const link = $("spotify-link").value.trim();
-        if (!link) return $("spotify-link").focus();
+        const button = $("link-play");
+        let link = $("link").value.trim();
+        if (!link) return $("link").focus();
+        // A link copied without its scheme, like youtube.com/watch?v=…, is a web link.
+        if (!/^[a-z][a-z0-9+.-]*:/i.test(link) && /^[\w-]+(\.[\w-]+)+(\/|$)/.test(link)) link = `https://${link}`;
         clearFailures();
         button.disabled = true;
         try {
-            await follow(await api("/api/spotify", { link }), button);
-            $("spotify-link").value = "";
+            await follow(await api("/api/open", { link }), button);
+            $("link").value = "";
             await refreshState();
             openSong();
         } catch (error) {
-            if (error.message !== "Stopped") fail(button, $("spotify-error"), error);
+            if (error.message !== "Stopped") fail(button, $("open-error"), error);
         } finally {
-            button.disabled = !$("spotify-link").value.trim();
+            button.disabled = !$("link").value.trim();
         }
+    }
+
+    /** The file of the last upload that failed, which Retry sends again. */
+    let uploadFile = null;
+
+    function chooseFile() {
+        const row = $("upload");
+        if (row.classList.contains("working")) return;
+        if (row.classList.contains("failed") && uploadFile) return sendFile(uploadFile);
+        $("upload-file").value = "";
+        $("upload-file").click();
+    }
+
+    /** A file of this phone is sent to the Mac, with its progress as a fill in the row, and plays there. */
+    async function sendFile(file) {
+        const row = $("upload");
+        uploadFile = file;
+        clearFailures();
+        progress(row, 0);
+        report(`sending ${file.name} (${(file.size / 1e6).toFixed(1)} MB)`);
+        try {
+            const job = await new Promise((resolve, reject) => {
+                const request = new XMLHttpRequest();
+                request.open("POST", "/api/upload");
+                request.setRequestHeader("Content-Type", "application/octet-stream");
+                request.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+                request.upload.onprogress = (event) => {
+                    if (event.lengthComputable) progress(row, event.loaded / event.total);
+                };
+                request.onload = () => {
+                    if (request.status === 200) return resolve(JSON.parse(request.responseText));
+                    reject(new Error(request.responseText || `The Mac answered ${request.status}`));
+                };
+                request.onerror = () => reject(new Error("The file didn't reach the Mac"));
+                request.send(file);
+            });
+            progress(row, undefined);
+            await follow(job, row);
+            uploadFile = null;
+            await refreshState();
+            openSong();
+        } catch (error) {
+            if (error.message === "Stopped") return;
+            report(`sending ${file.name} failed: ${error.message}`);
+            fail(row, $("open-error"), error);
+        }
+    }
+
+    // MARK: Files on the Mac
+
+    let filesQuery = null;
+    let filesTimer = 0;
+
+    function openFiles() {
+        clearFailures();
+        show("files");
+        if (history.state?.files !== true) history.pushState({ files: true }, "");
+        loadFiles();
+    }
+
+    async function loadFiles() {
+        const query = $("files-search").value.trim();
+        filesQuery = query;
+        const list = $("files-list");
+        let answer;
+        try {
+            answer = await api(`/api/files?q=${encodeURIComponent(query)}`);
+        } catch (error) {
+            answer = { folders: -1, files: [], more: false, error: error.message };
+        }
+        if (query !== filesQuery) return;
+        $("files-more").hidden = !answer.more;
+        if (!answer.files.length) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = answer.error ?? (answer.folders === 0 ? "Add folders in Muskey's Settings > Remote to list their songs here" : "No songs match");
+            list.replaceChildren(empty);
+            return;
+        }
+        list.replaceChildren(...answer.files.map((file) => {
+            const row = document.createElement("button");
+            row.className = "row song-row file-row";
+            const texts = document.createElement("div");
+            texts.className = "grow";
+            const title = document.createElement("div");
+            title.className = "song-title";
+            title.textContent = file.title;
+            const folder = document.createElement("div");
+            folder.className = "song-artist";
+            folder.textContent = file.folder;
+            texts.append(title, folder);
+            row.append(icon("music.note"), texts);
+            row.onclick = () => playSong(file, row);
+            return row;
+        }));
     }
 
     // MARK: Wiring
 
     $("now").onclick = openSong;
     $("close").onclick = $("top-close").onclick = () => history.back();
-    addEventListener("popstate", () => { if (open) closeSong(); });
+    addEventListener("popstate", () => {
+        if (open && history.state?.song !== true) closeSong();
+        else if (!open && history.state?.files !== true && !$("files").hidden) {
+            show("home");
+            loadSongs();
+        }
+    });
+    $("files-close").onclick = () => history.back();
     $("key-down").onclick = () => setKey(shift - 1, relative);
     $("key-up").onclick = () => setKey(shift + 1, relative);
     $("speed-down").onclick = () => setSpeed(speed - 0.05);
@@ -864,12 +970,22 @@
     $("speed-value").onclick = () => setSpeed(1);
     $("play-all").onclick = () => setStems(new Set());
     $("transcribe").onclick = transcribe;
-    $("spotify-form").onsubmit = playSpotify;
-    $("spotify-link").oninput = () => {
+    $("link-form").onsubmit = playLink;
+    $("link").oninput = () => {
         clearFailures();
-        $("spotify-play").disabled = !$("spotify-link").value.trim();
+        $("link-play").disabled = !$("link").value.trim();
     };
-    $("spotify-play").disabled = true;
+    $("link-play").disabled = true;
+    $("upload").onclick = chooseFile;
+    $("upload-file").onchange = () => {
+        const file = $("upload-file").files[0];
+        if (file) sendFile(file);
+    };
+    $("mac-files").onclick = openFiles;
+    $("files-search").oninput = () => {
+        clearTimeout(filesTimer);
+        filesTimer = setTimeout(loadFiles, 200);
+    };
     $("out-mac").onclick = () => setOutput("mac");
     $("out-phone").onclick = () => setOutput("phone");
     $("mac-play").onclick = () => {
@@ -905,6 +1021,8 @@
         new Image().src = `/api/symbol/${name}`;
     }
 
+    // A reload keeps the history entry of the view that was open, and the page always starts on the home view.
+    if (history.state !== null) history.replaceState(null, "");
     loadSongs();
     refreshState();
     setInterval(() => { if (document.visibilityState === "visible") refreshState(); }, 1500);

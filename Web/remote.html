@@ -39,18 +39,36 @@
     </section>
 
     <section class="section">
-        <div class="label">Spotify</div>
-        <form class="card row" id="spotify-form">
-            <input class="field" id="spotify-link" type="url" inputmode="url" placeholder="Spotify link" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Spotify link">
-            <button class="button primary" id="spotify-play" type="submit"><span class="label-text">Play</span></button>
-        </form>
-        <div class="error-line" id="spotify-error" hidden></div>
+        <div class="label">Open</div>
+        <div class="card">
+            <form class="row" id="link-form" novalidate>
+                <input class="field" id="link" type="url" inputmode="url" placeholder="Spotify, YouTube or other link" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Link">
+                <button class="button primary" id="link-play" type="submit"><span class="label-text">Play</span></button>
+            </form>
+            <button class="row open-row" id="upload"><span class="icon" style="--symbol: url(/api/symbol/iphone)"></span><span class="grow label-text">File from this phone</span><span class="icon chevron"></span></button>
+            <button class="row open-row" id="mac-files"><span class="icon" style="--symbol: url(/api/symbol/macbook)"></span><span class="grow">Files on the Mac</span><span class="icon chevron"></span></button>
+        </div>
+        <input type="file" id="upload-file" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav,.aif,.aiff,.flac,.ogg,.opus,.mp4,.mov,.mkv,.webm" hidden>
+        <div class="error-line" id="open-error" hidden></div>
     </section>
 
     <section class="section">
         <div class="label">Recent songs</div>
         <div class="card" id="songs"></div>
     </section>
+</div>
+
+<div class="view" id="files" hidden>
+    <header class="files-top">
+        <div class="files-bar">
+            <button class="back" id="files-close" aria-label="Close files"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
+            <h2>Files on the Mac</h2>
+            <div class="spacer"></div>
+        </div>
+        <input class="field" id="files-search" type="search" placeholder="Search" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search">
+    </header>
+    <div class="card" id="files-list"></div>
+    <div class="empty" id="files-more" hidden>Search to find more</div>
 </div>
 
 <div class="view" id="song" hidden>

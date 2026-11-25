@@ -249,7 +249,7 @@ The `muskey` tool lives in `Contents/Helpers`, and Settings > Remote links it in
 
 A Spotify link (`spotify:track:…` or `https://open.spotify.com/…/track/…`, and the same for albums, playlists, artists and episodes) is played by Spotify's AppleScript command `play track`, after Muskey opens Spotify when it isn't running. Muskey then listens to the song as the hotkey does and applies the changes. The first time, macOS shows a dialog to allow Muskey to control Spotify. Nobody may be at the Mac to click it, so the job fails at once with a message and the dialog stays on the Mac's screen.
 
-A link sent from the web remote, or by the tool over SSH (`SSH_CONNECTION` is set), mutes the Mac's sound output first: the device's mute, or its volume set to zero when it has no mute. The process tap still hears the song. **Mac sound** on the remote unmutes it, and so does the hotkey, which means that someone is at the Mac. The HUD closing doesn't, since nobody may be there to hear it.
+A link sent by the tool over SSH (`SSH_CONNECTION` is set) mutes the Mac's sound output first: the device's mute, or its volume set to zero when it has no mute. The process tap still hears the song. The hotkey unmutes it, since it means that someone is at the Mac. The HUD closing doesn't, since nobody may be there to hear it. The web remote leaves the sound output to its **Output** control.
 
 Spotify plays on the device that Spotify Connect has picked. When that is another device, the Mac plays nothing and Muskey doesn't find a key.
 
@@ -271,6 +271,12 @@ While **Web remote** is on in Settings > Remote, the same server answers a page 
 The page (`Web/remote.html`, `remote.js` and `remote.css`) has the HUD's key row with both modes, tempo and instruments, drawn with the HUD's colours and with SF Symbols that the app renders as PNG masks (`/api/symbol/<name>`, from a fixed list). It asks for the HUD's state every 1.5 seconds: the song that plays, its position, its key, the change, the tempo and the muted instruments. A change to the song that plays is sent at once, as a play without an input. The buttons under the song send `/api/transport`, which plays, pauses and seeks the way Space, ← and → do over the HUD.
 
 The Mac always plays. A tap on a song of Recents plays it there through `CLIService`, the way the tool does, and the song view shows the song that plays. The page lists Recents by an ID made from each song's URL, never by a path. The notes come from a write job in JSON, and `Web/sheet.js` draws them as the notes window does, with its line on the Mac's position.
+
+The home view opens songs on the Mac in three more ways:
+
+- A link of Spotify or of any site that yt-dlp reads is sent to `/api/open`. Its job follows the download in Muskey Player, so the phone shows its steps and its failure.
+- A file from the phone is the body of `POST /api/upload`. The server checks the pairing and the origin on the headers alone, then writes the body straight into `~/Library/Caches/Muskey/Uploads/<token>/` as it arrives, up to 2 GB. Uploads are deleted after a week.
+- `/api/files` lists the songs in the folders that Settings > Remote names. The folders are walked off the main thread, and the list is kept for a minute. The walk leaves out the Music app's library, which would bring up a prompt for access, and stops at 20 000 songs.
 
 **Output** picks where the song is heard. With **Phone**, the page opens `/api/stream`, and the Mac mutes its sound output and keeps the pitch change running. The pitch change copies its output into a ring (`ps_stream_*` in `pitch.cpp`), written on the audio thread without locks, and `WebStream` sends the frames to every listening phone as 16-bit stereo PCM every 20 ms, at the rate in the `X-Sample-Rate` header. The page plays them with Web Audio about a quarter of a second behind the Mac, so a change of key, tempo or instruments is heard on the phone as it is on the Mac. While the pitch change doesn't run, the stream carries silence at the same pace. A phone that falls 2 MB behind is sent away and connects again, and so is one that listens at another rate after the output device changed. Four seconds after the last phone leaves, the Mac's sound output is back as it was. For a player other than Muskey Player, the pitch change hears the whole Mac, so the phone hears every sound that the Mac plays.
 

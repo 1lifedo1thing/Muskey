@@ -17,6 +17,15 @@ struct WebRequest {
     /// Names lowercased.
     let headers: [String: String]
     let body: Data
+    /// The body of an upload, which went straight to this file as it arrived instead of into `body`.
+    var bodyFile: URL?
+}
+
+/// Where the body of a request goes when it is an upload: a file, for a request that `WebUploads.target` accepts from
+/// its method, path and headers alone, before any of the body is read.
+enum WebUploads {
+    nonisolated(unsafe) static var target: (_ method: String, _ path: String, _ headers: [String: String], _ length: Int) -> URL? = { _, _, _, _ in nil }
+    static let maxLength = 2_000_000_000
 }
 
 struct WebResponse {
@@ -170,13 +179,60 @@ private final class WebConnection: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + Self.idle, execute: timer)
     }
 
+    /// An upload under way: the file that gets the body, and how many bytes of it are still to come.
+    private struct Upload {
+        let file: URL
+        var remaining: Int
+        let method: String
+        let target: String
+        let headers: [String: String]
+        var handle: FileHandle?
+    }
+
+    private var upload: Upload?
+
+    /// Writes bytes of an upload's body, and gives the request once all of it arrived.
+    private func take(_ data: Data) -> WebRequest? {
+        guard var current = upload else { return nil }
+        let part = data.prefix(current.remaining)
+        do {
+            try current.handle?.write(contentsOf: part)
+        } catch {
+            try? current.handle?.close()
+            try? FileManager.default.removeItem(at: current.file)
+            upload = nil
+            close()
+            return nil
+        }
+        current.remaining -= part.count
+        upload = current
+        guard current.remaining == 0 else { return nil }
+        try? current.handle?.close()
+        upload = nil
+        buffer = Data(data.dropFirst(part.count))
+        let pathPart = current.target.split(separator: "?", maxSplits: 1).first.map(String.init) ?? "/"
+        var request = WebRequest(method: current.method, path: pathPart.removingPercentEncoding ?? pathPart, query: [:], headers: current.headers, body: Data())
+        request.bodyFile = current.file
+        return request
+    }
+
     private func receive() {
         guard !closed else { return }
-        if let request = parse() { return handle(request) }
+        if upload == nil, let request = parse() { return handle(request) }
         guard !closed else { return }
         armIdle()
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, complete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, complete, error in
             guard let self else { return }
+            if upload != nil {
+                if let data, !data.isEmpty, let request = take(data) { return handle(request) }
+                if error != nil || (complete && (data?.isEmpty ?? true)) {
+                    if let file = upload?.file { try? FileManager.default.removeItem(at: file) }
+                    try? upload?.handle?.close()
+                    upload = nil
+                    return close()
+                }
+                return receive()
+            }
             if let data, !data.isEmpty { buffer.append(data) }
             if error != nil || (complete && (data?.isEmpty ?? true)) { return close() }
             if buffer.count > Self.maxHeader + Self.maxBody { return close() }
@@ -206,6 +262,19 @@ private final class WebConnection: @unchecked Sendable {
             headers[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
         let length = Int(headers["content-length"] ?? "0") ?? 0
+        let uploadPath = String(parts[1]).split(separator: "?", maxSplits: 1).first.map(String.init) ?? "/"
+        if length > 0, length <= WebUploads.maxLength, let file = WebUploads.target(String(parts[0]), uploadPath.removingPercentEncoding ?? uploadPath, headers, length) {
+            // The body goes to the file as it arrives, so a song of hundreds of megabytes never sits in memory.
+            let rest = Data(buffer[end.upperBound...])
+            buffer = Data()
+            upload = Upload(file: file, remaining: length, method: String(parts[0]), target: String(parts[1]), headers: headers)
+            guard FileManager.default.createFile(atPath: file.path, contents: nil), let handle = try? FileHandle(forWritingTo: file) else {
+                close()
+                return nil
+            }
+            upload?.handle = handle
+            return take(rest)
+        }
         guard (0 ... Self.maxBody).contains(length) else {
             close()
             return nil

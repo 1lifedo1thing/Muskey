@@ -129,9 +129,41 @@ struct WebNotes: Encodable {
 
     /// Starts the server when the remote is on, and stops it when nothing else needs it.
     func update() {
+        WebUploads.target = Self.uploadTarget
+        Task.detached(priority: .background) { Self.removeOldUploads() }
         guard Self.enabled else { return WebLinks.shared.stopIfIdle() }
         if Self.storedKey == nil { reset() }
         WebLinks.shared.start()
+    }
+
+    /// Songs sent from a phone, each in a folder named by a random token, kept like the songs downloaded from links.
+    nonisolated static let uploads = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "Muskey/Uploads")
+
+    /// Songs sent from a phone are deleted after a week.
+    nonisolated static func removeOldUploads() {
+        let fm = FileManager.default
+        let weekAgo = Date().addingTimeInterval(-7 * 24 * 3600)
+        for folder in (try? fm.contentsOfDirectory(at: uploads, includingPropertiesForKeys: [.creationDateKey])) ?? [] {
+            let created = (try? folder.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            if created < weekAgo { try? fm.removeItem(at: folder) }
+        }
+    }
+
+    /// The file that the body of `POST /api/upload` goes to, for a paired phone of the remote's own page. The checks
+    /// run on the headers alone, before any of the body is read.
+    nonisolated static func uploadTarget(method: String, path: String, headers: [String: String], length: Int) -> URL? {
+        guard method == "POST", path == "/api/upload", enabled, let key = storedKey,
+              let host = host(headers["host"])?.lowercased(), WebAddresses.allowedHosts().contains(host),
+              same(cookieValue(headers) ?? "", key),
+              let origin = headers["origin"], origin == "http://\(headers["host"] ?? "")"
+        else { return nil }
+        let sent = (headers["x-file-name"]?.removingPercentEncoding ?? "song") as NSString
+        var name = String(sent.lastPathComponent.filter { !"/:\\\0".contains($0) }.prefix(180))
+        if name.isEmpty || name.hasPrefix(".") { name = "song" + name }
+        if !SongName.mediaExtensions.contains((name as NSString).pathExtension.lowercased()) { name += ".m4a" }
+        let folder = uploads.appending(path: randomHex())
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil else { return nil }
+        return folder.appending(path: name)
     }
 
     /// A new pairing key: the devices that opened the old link lose the remote.
@@ -176,7 +208,11 @@ struct WebNotes: Encodable {
     }
 
     nonisolated private static func cookieValue(_ request: WebRequest) -> String? {
-        for part in (request.headers["cookie"] ?? "").split(separator: ";") {
+        cookieValue(request.headers)
+    }
+
+    nonisolated private static func cookieValue(_ headers: [String: String]) -> String? {
+        for part in (headers["cookie"] ?? "").split(separator: ";") {
             let pair = part.trimmingCharacters(in: .whitespaces).split(separator: "=", maxSplits: 1)
             if pair.count == 2, pair[0] == cookie { return String(pair[1]) }
         }
@@ -234,6 +270,23 @@ struct WebNotes: Encodable {
         case "api/symbol" where reads:
             guard let id, let png = await MainActor.run(body: { shared.symbolPNG(id) }) else { return .notFound }
             return WebResponse(status: 200, headers: [("Content-Type", "image/png"), ("Cache-Control", "private, max-age=86400")], body: .data(png))
+        case "api/open" where request.method == "POST" && parts.count == 2:
+            // A link of any site that yt-dlp reads plays in Muskey Player, and a Spotify link plays in Spotify.
+            guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let link = body["link"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  Spotify.uri(from: link) != nil || URL(string: link).map({ ["http", "https"].contains($0.scheme?.lowercased() ?? "") && $0.host != nil }) == true
+            else {
+                return json(WebJob(CLIResponse(error: "That isn't a link to a song", done: true)))
+            }
+            let request = CLIRequest(command: .play, inputs: [link])
+            return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
+        case "api/upload" where request.method == "POST" && parts.count == 2:
+            guard let file = request.bodyFile else { return .text("Send the song as the body", status: 400) }
+            let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
+            await MainActor.run { shared.log(String(format: "remote: received %@ from a phone (%.1f MB)", file.lastPathComponent, Double(size) / 1_000_000)) }
+            let play = CLIRequest(command: .play, inputs: [file.path])
+            return json(WebJob(await MainActor.run { CLIService.shared.handle(play) }))
+        case "api/files" where reads && parts.count == 2:
+            return json(await shared.macFiles(matching: request.query["q"] ?? ""))
         case "api/spotify" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let link = body["link"], Spotify.uri(from: link) != nil else {
                 return json(WebJob(CLIResponse(error: "That isn't a Spotify link", done: true)))
@@ -410,7 +463,78 @@ struct WebNotes: Encodable {
     }
 
     private func item(_ id: String) async -> QueueItem? {
-        await songs().first { $0.song.id == id }?.item
+        if let item = await songs().first(where: { $0.song.id == id })?.item { return item }
+        guard let file = await folderFiles().first(where: { Self.id($0) == id }) else { return nil }
+        return QueueItem(url: file, cached: nil)
+    }
+
+    // MARK: Files on the Mac
+
+    struct WebFile: Encodable {
+        let id: String
+        let title: String
+        let folder: String
+    }
+
+    struct WebFiles: Encodable {
+        /// Settings > Remote > Folders names no folder.
+        let folders: Int
+        let files: [WebFile]
+        /// More files matched than the list holds.
+        let more: Bool
+    }
+
+    private var indexed: (folders: [String], at: Date, files: [URL])?
+    private var indexing: Task<[URL], Never>?
+
+    /// The songs in the folders of Settings > Remote, newest first, read again after a minute or a change of folders.
+    /// The walk runs off the main thread, skips hidden files, packages and the library of the Music app, and stops at
+    /// 20 000 songs.
+    private func folderFiles() async -> [URL] {
+        let folders = UserDefaults.standard.stringArray(forKey: "remoteFolders") ?? []
+        if let indexed, indexed.folders == folders, Date().timeIntervalSince(indexed.at) < 60 { return indexed.files }
+        if let indexing { return await indexing.value }
+        let task = Task.detached(priority: .utility) { Self.walk(folders) }
+        indexing = task
+        let files = await task.value
+        indexing = nil
+        indexed = (folders, Date(), files)
+        return files
+    }
+
+    nonisolated private static func walk(_ folders: [String]) -> [URL] {
+        let fm = FileManager.default
+        let extensions = SongName.mediaExtensions.subtracting(["mid", "midi"])
+        let musicLibrary = fm.urls(for: .musicDirectory, in: .userDomainMask)[0].appending(path: "Music").standardizedFileURL.path
+        var found: [(url: URL, date: Date)] = []
+        for folder in folders {
+            guard let walker = fm.enumerator(at: URL(fileURLWithPath: folder), includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
+                                             options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            for case let url as URL in walker {
+                if url.standardizedFileURL.path == musicLibrary {
+                    walker.skipDescendants()
+                    continue
+                }
+                guard extensions.contains(url.pathExtension.lowercased()) else { continue }
+                let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                found.append((url, date))
+                if found.count >= 20000 { break }
+            }
+        }
+        return found.sorted { $0.date > $1.date }.map(\.url)
+    }
+
+    /// Up to 300 songs of the folders whose name has every word of `query`, newest first.
+    private func macFiles(matching query: String) async -> WebFiles {
+        let folders = UserDefaults.standard.stringArray(forKey: "remoteFolders") ?? []
+        let words = query.lowercased().split(separator: " ").map(String.init)
+        let matches = await folderFiles().filter { url in
+            let name = url.deletingPathExtension().lastPathComponent.lowercased()
+            return words.allSatisfy { name.contains($0) }
+        }
+        return WebFiles(folders: folders.count, files: matches.prefix(300).map {
+            WebFile(id: Self.id($0), title: $0.deletingPathExtension().lastPathComponent, folder: $0.deletingLastPathComponent().lastPathComponent)
+        }, more: matches.count > 300)
     }
 
     /// The ID in Recents of the song whose audio is `file`: the file's own, or the link's that it was downloaded from.
@@ -438,7 +562,7 @@ struct WebNotes: Encodable {
         if let from = action.from, let to = action.to, to <= from { return Self.json(WebJob(CLIResponse(error: "The part ends before it starts", done: true))) }
         if (action.from ?? 0) < 0 || (action.to ?? 1) <= 0 { return .text("Wrong part", status: 400) }
         if let notes = action.notes, notes != "auto", !muskeyStemNames.contains(notes) || notes == "drums" { return .text("Wrong instrument", status: 400) }
-        guard let item = await item(action.song) else { return Self.json(WebJob(CLIResponse(error: "That song is no longer in Recents", done: true))) }
+        guard let item = await item(action.song) else { return Self.json(WebJob(CLIResponse(error: "That song is no longer on the Mac", done: true))) }
         var request = CLIRequest(command: write ? .write : .play)
         // A link plays from its download, which Muskey Player keeps in the cache.
         request.inputs = [item.url.isFileURL ? item.url.path : item.url.absoluteString]

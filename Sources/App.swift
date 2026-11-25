@@ -3167,11 +3167,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let before = filePlayer.current?.path
         let opened = Date()
+        // A failure that the HUD showed before this song opened isn't this song's failure.
+        let staleActivity = openActivity
+        var fresh = false
         open(urls)
+        if let link = urls.first(where: { !$0.isFileURL }), !LinkDownload.directExtensions.contains(link.pathExtension.lowercased()), Downloader.find() == nil {
+            return job.fail("links of this site need yt-dlp. Click Install yt-dlp in Muskey's HUD on the Mac")
+        }
         job.step = urls[0].isFileURL ? "Opening" : "Downloading"
         // Muskey Player names the new song once it plays it. The same file opened again plays as the song that was there.
         cliWait(job, seconds: urls[0].isFileURL ? 60 : 900, until: { [weak self] in
-            guard let self, playsInFilePlayer, let path = filePlayer.current?.path else { return false }
+            guard let self else { return false }
+            // A link that downloads keeps the song that played before it in Muskey Player until the download ends.
+            if openActivity != staleActivity { fresh = true }
+            switch openActivity {
+            case let .opening(step, _, _, progress):
+                fresh = true
+                job.step = switch step {
+                case .reading: "Reading the link"
+                case .downloading: "Downloading"
+                case .converting: "Converting"
+                case .updating: "Updating yt-dlp"
+                }
+                job.progress = progress
+                return false
+            case .installing:
+                fresh = true
+                job.step = "Installing yt-dlp"
+                return false
+            case .failed where fresh:
+                job.fail("the link couldn't be downloaded")
+                return false
+            case .installFailed where fresh:
+                job.fail("yt-dlp couldn't be installed")
+                return false
+            case .unplayable where fresh:
+                job.fail("Muskey can't play that file")
+                return false
+            default: break
+            }
+            guard playsInFilePlayer, let path = filePlayer.current?.path else { return false }
             if job.step != "Reading the key", path != before || Date().timeIntervalSince(opened) > 3 { job.step = "Reading the key" }
             return (path != before || Date().timeIntervalSince(opened) > 3) && ready()
         }) { [weak self] in self?.cliApply(request, job: job) }
@@ -3330,7 +3365,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             let deadline = Date().addingTimeInterval(seconds)
             while !until() {
-                guard !job.cancelled else { return }
+                guard !job.cancelled, !job.done else { return }
                 guard Date() < deadline else { return job.fail(job.step == "Listening" ? "no key was found for the song that plays" : "the song didn't play in Muskey") }
                 try? await Task.sleep(for: .seconds(0.25))
             }
