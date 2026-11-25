@@ -1,8 +1,9 @@
 import Foundation
 
 /// The Mac's output for the phones that picked **Phone** in the web remote. The pitch change copies what it plays into
-/// a ring, and every 20 ms the frames written since are sent to each phone as 16-bit stereo PCM, which the page
-/// plays with Web Audio about a quarter of a second later. While the pitch change doesn't run, silence goes out at the
+/// a ring, and every 20 ms the frames written since are sent to each phone as AAC in ADTS frames (about 160 kbps), or
+/// as 16-bit stereo PCM to a browser that can't decode AAC itself, which the page plays with Web Audio about a quarter
+/// of a second later. While the pitch change doesn't run, silence goes out at the
 /// same pace, so a phone never runs out.
 final class WebStream: @unchecked Sendable {
     static let shared = WebStream()
@@ -23,11 +24,11 @@ final class WebStream: @unchecked Sendable {
 
     var listeners: Int { queue.sync { sinks.count } }
 
-    func add(_ sink: WebSink) -> Double {
+    func add(_ sink: WebSink, aac: Bool = false) -> Double {
         let rate = rate
         queue.async { [self] in
             sink.ended = { [weak self, weak sink] in self?.queue.async { self?.drop(sink) } }
-            sinks.append((sink, rate))
+            sinks.append((sink, rate, aac))
             endWork?.cancel()
             endWork = nil
             if timer == nil {
@@ -46,7 +47,9 @@ final class WebStream: @unchecked Sendable {
     private let lock = NSLock()
     private var frameRate: Double = 48000
     private let queue = DispatchQueue(label: "muskey.web.stream", qos: .userInteractive)
-    private var sinks: [(sink: WebSink, rate: Double)] = []
+    private var sinks: [(sink: WebSink, rate: Double, aac: Bool)] = []
+    /// One encoder for every phone that takes AAC, made again when the rate changes.
+    private var encoder: ADTSEncoder?
     private var timer: DispatchSourceTimer?
     private var endWork: DispatchWorkItem?
     private var lastWritten: UInt64 = 0
@@ -109,6 +112,24 @@ final class WebStream: @unchecked Sendable {
             }
         }
         guard !chunk.isEmpty else { return }
-        for listener in sinks { listener.sink.send(chunk) }
+        var encoded: Data?
+        if sinks.contains(where: \.aac) {
+            if encoder?.rate != rate { encoder = ADTSEncoder(rate: rate) }
+            encoded = encoder.map { encoder in chunk.withUnsafeBytes { encoder.encode($0.bindMemory(to: Int16.self)) } }
+        } else {
+            encoder = nil
+        }
+        for listener in sinks {
+            if listener.aac {
+                // A rate that ADTS can't name closes the stream, and the page asks for PCM next.
+                guard let encoded else {
+                    listener.sink.close()
+                    continue
+                }
+                if !encoded.isEmpty { listener.sink.send(encoded) }
+            } else {
+                listener.sink.send(chunk)
+            }
+        }
     }
 }

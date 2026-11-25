@@ -927,24 +927,39 @@
 
     let output = "mac";
 
-    /** Plays /api/stream: 16-bit stereo PCM read from one long request and scheduled about a quarter of a second ahead
-     * in an AudioContext, which starts inside the tap, as iOS asks. */
+    /** Plays /api/stream, read from one long request and scheduled about a quarter of a second ahead in an AudioContext,
+     * which starts inside the tap, as iOS asks. The stream is AAC that WebCodecs decodes here, about 70 MB an hour, or
+     * 16-bit stereo PCM, ten times that, in a browser without the decoder. */
     const player = (() => {
         let context = null;
         let gain = null;
         let abort = null;
         let playAt = 0;
         let generation = 0;
-        // What arrived since the last report, for the Mac's log: seconds of audio and their loudest sample.
+        // What arrived since the last report, for the Mac's log: seconds of audio, their loudest sample, and the data.
         let receivedSeconds = 0;
+        let receivedBytes = 0;
         let peak = 0;
+        let format = "pcm";
         setInterval(() => {
             if (!context || abort === null) return;
             const db = peak > 0 ? Math.round(20 * Math.log10(peak)) : -Infinity;
-            report(`stream: ${receivedSeconds.toFixed(1)} s received in 10 s, peak ${db} dB, ${Math.round((playAt - context.currentTime) * 1000)} ms ahead`);
+            report(`stream: ${receivedSeconds.toFixed(1)} s received in 10 s as ${format} (${Math.round(receivedBytes / 1000)} kB), peak ${db} dB, ${Math.round((playAt - context.currentTime) * 1000)} ms ahead`);
             receivedSeconds = 0;
+            receivedBytes = 0;
             peak = 0;
         }, 10000);
+
+        /** WebCodecs can decode AAC in this browser. A decoder that fails once makes the page ask for PCM from then on. */
+        let aacFailed = false;
+        const decodesAAC = (async () => {
+            try {
+                if (typeof AudioDecoder !== "function") return false;
+                return (await AudioDecoder.isConfigSupported({ codec: "mp4a.40.2", sampleRate: 48000, numberOfChannels: 2 })).supported === true;
+            } catch {
+                return false;
+            }
+        })();
 
         function ensureContext() {
             if (!context) {
@@ -961,22 +976,29 @@
             while (mine === generation) {
                 abort = new AbortController();
                 try {
-                    const response = await fetch("/api/stream", { cache: "no-store", signal: abort.signal });
+                    const aac = !aacFailed && (await decodesAAC);
+                    const response = await fetch(aac ? "/api/stream?format=aac" : "/api/stream", { cache: "no-store", signal: abort.signal });
                     if (!response.ok) throw new Error(`the stream answered ${response.status}`);
                     const rate = Number(response.headers.get("X-Sample-Rate")) || 48000;
-                    report(`stream connected at ${rate} Hz, the context runs at ${context.sampleRate} Hz (${context.state})`);
+                    format = aac ? "aac" : "pcm";
+                    report(`stream connected at ${rate} Hz as ${format}, the context runs at ${context.sampleRate} Hz (${context.state})`);
                     const reader = response.body.getReader();
-                    let carry = new Uint8Array(0);
                     playAt = 0;
-                    for (;;) {
-                        const { value, done } = await reader.read();
-                        if (done || mine !== generation) break;
-                        const bytes = new Uint8Array(carry.length + value.length);
-                        bytes.set(carry);
-                        bytes.set(value, carry.length);
-                        const usable = bytes.length - (bytes.length % 4);
-                        carry = bytes.slice(usable);
-                        schedule(new DataView(bytes.buffer, 0, usable), usable / 4, rate);
+                    if (aac) {
+                        await readAAC(reader, rate, mine);
+                    } else {
+                        let carry = new Uint8Array(0);
+                        for (;;) {
+                            const { value, done } = await reader.read();
+                            if (done || mine !== generation) break;
+                            receivedBytes += value.length;
+                            const bytes = new Uint8Array(carry.length + value.length);
+                            bytes.set(carry);
+                            bytes.set(value, carry.length);
+                            const usable = bytes.length - (bytes.length % 4);
+                            carry = bytes.slice(usable);
+                            schedule(new DataView(bytes.buffer, 0, usable), usable / 4, rate);
+                        }
                     }
                 } catch (error) {
                     if (mine !== generation) return;
@@ -985,6 +1007,72 @@
                 // The Mac closes the stream when its output changes rate, and the page connects again at once.
                 if (mine === generation) await new Promise((resolve) => setTimeout(resolve, 300));
             }
+        }
+
+        /** Splits the stream into its ADTS frames, which carry their length, and decodes them in order. */
+        async function readAAC(reader, rate, mine) {
+            let failed = null;
+            const decoder = new AudioDecoder({
+                output: (data) => {
+                    try {
+                        scheduleDecoded(data);
+                    } finally {
+                        data.close();
+                    }
+                },
+                error: (error) => (failed = error),
+            });
+            decoder.configure({ codec: "mp4a.40.2", sampleRate: rate, numberOfChannels: 2 });
+            let carry = new Uint8Array(0);
+            let timestamp = 0;
+            try {
+                for (;;) {
+                    const { value, done } = await reader.read();
+                    if (done || mine !== generation) break;
+                    if (failed) {
+                        aacFailed = true;
+                        throw new Error(`the AAC decoder failed (${failed.message}), switching to PCM`);
+                    }
+                    receivedBytes += value.length;
+                    const bytes = new Uint8Array(carry.length + value.length);
+                    bytes.set(carry);
+                    bytes.set(value, carry.length);
+                    let at = 0;
+                    while (bytes.length - at >= 7) {
+                        // A frame starts with 12 bits set; anything else is skipped until the next one.
+                        if (bytes[at] !== 0xff || (bytes[at + 1] & 0xf0) !== 0xf0) {
+                            at++;
+                            continue;
+                        }
+                        const length = ((bytes[at + 3] & 0x03) << 11) | (bytes[at + 4] << 3) | (bytes[at + 5] >> 5);
+                        if (length < 7) {
+                            at++;
+                            continue;
+                        }
+                        if (bytes.length - at < length) break;
+                        decoder.decode(new EncodedAudioChunk({ type: "key", timestamp, data: bytes.slice(at, at + length) }));
+                        timestamp += (1024 / rate) * 1e6;
+                        at += length;
+                    }
+                    carry = bytes.slice(at);
+                }
+            } finally {
+                if (decoder.state !== "closed") decoder.close();
+            }
+        }
+
+        function scheduleDecoded(data) {
+            const frames = data.numberOfFrames;
+            if (!frames || !context) return;
+            const buffer = context.createBuffer(2, frames, data.sampleRate);
+            for (let channel = 0; channel < 2; channel++) {
+                data.copyTo(buffer.getChannelData(channel), { planeIndex: Math.min(channel, data.numberOfChannels - 1), format: "f32-planar" });
+            }
+            let loudest = 0;
+            for (const samples of [buffer.getChannelData(0), buffer.getChannelData(1)]) {
+                for (let i = 0; i < frames; i++) loudest = Math.max(loudest, Math.abs(samples[i]));
+            }
+            queue(buffer, loudest);
         }
 
         function schedule(view, frames, rate) {
@@ -998,7 +1086,11 @@
                 right[i] = view.getInt16(i * 4 + 2, true) / 32768;
                 loudest = Math.max(loudest, Math.abs(left[i]), Math.abs(right[i]));
             }
-            receivedSeconds += frames / rate;
+            queue(buffer, loudest);
+        }
+
+        function queue(buffer, loudest) {
+            receivedSeconds += buffer.duration;
             peak = Math.max(peak, loudest);
             const now = context.currentTime;
             // Too close to the speaker after a gap, or too far after a burst: start again a quarter second ahead.
@@ -1026,7 +1118,8 @@
             },
             /** Seconds between the Mac playing a moment and this phone playing it. */
             lag() {
-                return context && playAt ? Math.max(0, playAt - context.currentTime) + 0.05 : 0;
+                // The encoder on the Mac holds back about 60 ms of AAC.
+                return context && playAt ? Math.max(0, playAt - context.currentTime) + (format === "aac" ? 0.11 : 0.05) : 0;
             },
         };
     })();

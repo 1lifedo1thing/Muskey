@@ -323,11 +323,13 @@ struct WebNotes: Encodable {
             let request = play
             return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
         case "api/stream" where request.method == "GET" && parts.count == 2:
-            // The Mac's output as 16-bit stereo PCM with no end, at the rate in the header.
+            // The Mac's output with no end, at the rate in the header: AAC in ADTS frames with `format=aac`, or 16-bit
+            // stereo PCM.
             let rate = WebStream.shared.rate
+            let aac = request.query["format"] == "aac"
             return WebResponse(status: 200, headers: [
-                ("Content-Type", "application/octet-stream"), ("Cache-Control", "no-store"), ("X-Sample-Rate", String(Int(rate))),
-            ], body: .stream { sink in _ = WebStream.shared.add(sink) })
+                ("Content-Type", aac ? "audio/aac" : "application/octet-stream"), ("Cache-Control", "no-store"), ("X-Sample-Rate", String(Int(rate))),
+            ], body: .stream { sink in _ = WebStream.shared.add(sink, aac: aac) })
         case "api/log" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let message = body["message"] else {
                 return .text("Unreadable request", status: 400)
