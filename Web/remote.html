@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -84,9 +84,12 @@
         <div class="grow" style="min-width: 0">
             <div class="song-title" id="song-title"></div>
             <div class="song-artist" id="song-artist"></div>
-            <div class="pills" id="song-pills"></div>
+            <div class="pills" id="song-pills" hidden></div>
         </div>
+        <button class="button compact" id="save" hidden><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Save</span></button>
+        <a class="button compact primary" id="save-link" hidden><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Download</span></a>
     </div>
+    <div class="error-line" id="save-error" hidden></div>
 
     <section class="section">
         <div class="label">Key <span class="pill" id="change-pill" hidden></span></div>
@@ -114,15 +117,6 @@
     <section class="section">
         <div class="label">Instruments <button class="small-button" id="play-all" hidden>Play all</button></div>
         <div class="card padded"><div class="stems" id="stems" role="group" aria-label="Instruments"></div></div>
-    </section>
-
-    <section class="section" id="save-section">
-        <div class="label">Save</div>
-        <div class="card padded">
-            <button class="button big" id="save" style="width: 100%"><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Save song</span></button>
-            <a class="button big primary" id="save-link" style="width: 100%" hidden><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Download</span></a>
-            <div class="error-line" id="save-error" hidden></div>
-        </div>
     </section>
 
     <section class="section" id="notes-section">

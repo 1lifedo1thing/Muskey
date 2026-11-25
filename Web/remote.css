@@ -56,7 +56,8 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
-html { background: var(--bg); }
+/* The page scrolls and never zooms: a double tap or a pinch zoomed it, as it would a document. */
+html { background: var(--bg); touch-action: pan-x pan-y; }
 body {
     min-height: 100dvh;
     color: var(--ink);
@@ -69,7 +70,13 @@ body {
     text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior-y: none;
+    /* Holding a control, like a nudge button, selected the text around it, and iOS then kept the touch for the
+       selection. Only the fields select text. */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
 }
+input, textarea { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; border: 0; background: none; padding: 0; touch-action: manipulation; }
 button:disabled { cursor: default; }
@@ -265,6 +272,7 @@ button:disabled { cursor: default; }
 .empty { padding: 18px 14px; text-align: center; color: color-mix(in srgb, var(--muted) 70%, transparent); font-size: 15px; }
 .head { display: flex; gap: 10px; align-items: center; padding: calc(10px + env(safe-area-inset-top)) 0 0; }
 .head #song-cover { flex: none; }
+.head .grow { flex: 1; min-width: 0; }
 .head .song-title { font-size: 20px; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
 /* Fields */
@@ -299,7 +307,9 @@ button:disabled { cursor: default; }
 }
 .button.primary { background: var(--honey); color: var(--honey-ink); }
 a.button { text-decoration: none; }
-#save-link { margin-top: 10px; }
+/* Save sits beside the title, since saving is rare: it shows only once the song has a change to keep. */
+.button.compact { flex: none; height: 34px; padding: 0 12px; border-radius: 17px; gap: 5px; font-size: 14px; }
+#save-error { margin-top: 10px; }
 .button.big { height: 52px; border-radius: 16px; font-size: 17px; }
 #link-play { min-width: 84px; }
 .open-row { width: 100%; text-align: left; font-size: 17px; font-weight: 500; }
@@ -517,8 +527,9 @@ a.button { text-decoration: none; }
 /* Play, pause and seek of the song that plays on the Mac */
 .transport { display: grid; gap: 4px; }
 
-/* The waveform takes the place of a seek bar: a tap moves the song there, a drag across it makes a region loop, and
-   the A and B tabs of the loop move its ends. It takes every touch, so a drag never scrolls the page. */
+/* The waveform takes the place of a seek bar: a tap or a slide moves the song there, a hold and then a slide makes a
+   region loop, and the A and B tabs of the loop move its ends. It takes every touch, so a drag never scrolls the
+   page. */
 .wave { position: relative; height: 64px; margin-top: 18px; touch-action: none; user-select: none; -webkit-user-select: none; }
 .wave canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .transport.unknown .wave, .transport.unknown .clocks { display: none; }
@@ -546,6 +557,14 @@ a.button { text-decoration: none; }
 .loop-end[data-end="end"] { margin-left: -6px; align-items: flex-start; }
 .loop-end[data-end="end"]::after { margin-left: 5px; }
 .loop-end[data-end="end"] .tab { margin-left: 6px; border-bottom-left-radius: 0; }
+/* At an edge of the waveform, as for a loop of the whole song, the tab goes to the inner side of its line, where the
+   screen has room for it. */
+.loop-end.flip[data-end="start"] { margin-left: -6px; align-items: flex-start; }
+.loop-end.flip[data-end="start"]::after { margin-right: 0; margin-left: 5px; }
+.loop-end.flip[data-end="start"] .tab { margin-right: 0; margin-left: 6px; border-bottom-right-radius: 6px; border-bottom-left-radius: 0; }
+.loop-end.flip[data-end="end"] { margin-left: -38px; align-items: flex-end; }
+.loop-end.flip[data-end="end"]::after { margin-left: 0; margin-right: 5px; }
+.loop-end.flip[data-end="end"] .tab { margin-left: 0; margin-right: 6px; border-bottom-left-radius: 6px; border-bottom-right-radius: 0; }
 .loop-end.selected .tab { width: 28px; height: 20px; box-shadow: 0 0 0 3px var(--honey-tint); }
 .loop-end.selected::after { width: 3px; }
 .clocks { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }

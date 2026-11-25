@@ -108,6 +108,8 @@
         fetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: String(message), level }) }).catch(() => {});
     }
     addEventListener("error", (event) => report(`script error: ${event.message} at ${event.filename}:${event.lineno}`));
+    // The page doesn't zoom (touch-action in the CSS), but Safari on iOS zooms on its own gesture events regardless.
+    for (const type of ["gesturestart", "gesturechange"]) document.addEventListener(type, (event) => event.preventDefault(), { passive: false });
     addEventListener("unhandledrejection", (event) => report(`unhandled: ${event.reason?.message || event.reason}`));
 
     // The tests on a simulator open the page with ?testmute, which keeps the stream at zero volume, so that the Mac
@@ -376,14 +378,18 @@
     function drawSong() {
         $("song-title").textContent = $("bar-title").textContent = state.title || "Nothing playing";
         $("song-artist").textContent = state.artist || "";
-        nowPills($("song-pills"), false);
+        // Only the title and the artist, and a pill while the Mac listens for the key.
+        const pills = $("song-pills");
+        pills.replaceChildren(...(state.listening ? [pill("Listening", "listening")] : []));
+        pills.hidden = !state.listening;
         const source = state.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : null;
         if (source !== songCover) {
             songCover = source;
             $("song-cover").replaceChildren(cover(source, true));
         }
         // The notes need the song's file, which links and files have, and other players' songs don't.
-        $("notes-section").hidden = $("save-section").hidden = !state.song;
+        $("notes-section").hidden = !state.song;
+        drawSaveAndNotes();
         drawTransport();
         drawOutput();
         // The Mac's state wins, unless a change was just made here and the Mac hasn't applied it yet.
@@ -404,6 +410,7 @@
         drawSpeed();
         drawStems();
         drawNotesPicker();
+        drawSaveAndNotes();
     }
 
     // MARK: Key
@@ -587,6 +594,7 @@
     /** Sends a change to the Mac a moment after the last tap, so a run of taps sends one request. */
     function live(change) {
         touched = Date.now();
+        drawSaveAndNotes();
         livePending = { ...livePending, ...change };
         clearTimeout(liveTimer);
         liveTimer = setTimeout(async () => {
@@ -607,7 +615,10 @@
     // MARK: Play, pause and seek on the Mac
 
     /** The player's position, moved on from the last state by the time since, while the song plays. */
+    /** Where a finger that slides over the waveform shows the song, until it lifts and the song moves there. */
+    let scrubTime = null;
     function macPosition() {
+        if (scrubTime != null) return scrubTime;
         if (state?.position == null) return null;
         const since = state.playing ? ((performance.now() - stateAt) / 1000) * (state.speed || 1) : 0;
         return Math.min(state.position + since, state.duration ?? Infinity);
@@ -797,7 +808,9 @@
             const time = loop ? (end === "start" ? loop.start : loop.end) : null;
             element.hidden = time == null;
             if (time == null) continue;
-            element.style.left = `${(time / duration) * width}px`;
+            const x = (time / duration) * width;
+            element.style.left = `${x}px`;
+            element.classList.toggle("flip", end === "start" ? x < 24 : x > width - 24);
             element.classList.toggle("selected", pickedEnd === end);
         }
     }
@@ -824,40 +837,61 @@
         return Math.min(1, Math.max(0, (clientX - box.left) / box.width)) * songDuration();
     }
 
-    // A tap moves the song there, a drag across the waveform makes a loop of the part it covers, and a drag on a tab
-    // moves that end. A tap on a tab picks it for the buttons beside play, and a second tap lets it go.
+    // A tap moves the song there, and so does a slide, with the playhead under the finger until it lifts. Holding still
+    // for a moment and then sliding makes a loop of the part that the finger covers. A drag on a tab moves that end,
+    // and a tap on a tab picks it for the buttons beside play, and a second tap lets it go.
     let gesture = null;
+    const HOLD_TO_LOOP = 400;
+    function showSelection(from, to) {
+        const box = $("wave").getBoundingClientRect();
+        const a = Math.max(box.left, Math.min(from, to)), b = Math.min(box.right, Math.max(from, to));
+        const selection = $("wave-selection");
+        selection.hidden = false;
+        selection.style.left = `${a - box.left}px`;
+        selection.style.width = `${Math.max(2, b - a)}px`;
+    }
     $("wave").addEventListener("pointerdown", (event) => {
         if (!state?.seekable || !songDuration() || event.button > 0) return;
         const end = event.target.closest(".loop-end")?.dataset.end ?? null;
         $("wave").setPointerCapture(event.pointerId);
-        gesture = { id: event.pointerId, x: event.clientX, end, moved: false };
+        gesture = { id: event.pointerId, x: event.clientX, end, moved: false, mode: end ? "end" : "tap", hold: 0 };
+        if (!end) {
+            const mine = gesture;
+            mine.hold = setTimeout(() => {
+                if (gesture !== mine || mine.mode !== "tap") return;
+                mine.mode = "select";
+                showSelection(mine.x, mine.x);
+            }, HOLD_TO_LOOP);
+        }
         event.preventDefault();
     });
     $("wave").addEventListener("pointermove", (event) => {
         if (!gesture || event.pointerId !== gesture.id) return;
         if (!gesture.moved && Math.abs(event.clientX - gesture.x) < 6) return;
         gesture.moved = true;
-        if (gesture.end) return moveEnd(gesture.end, timeAt(event.clientX), false);
-        const box = $("wave").getBoundingClientRect();
-        const a = Math.max(box.left, Math.min(gesture.x, event.clientX)), b = Math.min(box.right, Math.max(gesture.x, event.clientX));
-        const selection = $("wave-selection");
-        selection.hidden = false;
-        selection.style.left = `${a - box.left}px`;
-        selection.style.width = `${b - a}px`;
+        if (gesture.mode === "end") return moveEnd(gesture.end, timeAt(event.clientX), false);
+        if (gesture.mode === "tap") {
+            clearTimeout(gesture.hold);
+            gesture.mode = "scrub";
+        }
+        if (gesture.mode === "select") return showSelection(gesture.x, event.clientX);
+        scrubTime = timeAt(event.clientX);
+        tick();
     });
     const endGesture = (event, cancelled) => {
         if (!gesture || event.pointerId !== gesture.id) return;
-        const { x, end, moved } = gesture;
+        const { x, end, moved, mode, hold } = gesture;
         gesture = null;
+        clearTimeout(hold);
+        scrubTime = null;
         $("wave-selection").hidden = true;
-        if (cancelled) return;
-        if (end) {
+        if (cancelled) return drawWave(true);
+        if (mode === "end") {
             if (moved) return moveEnd(end, timeAt(event.clientX), true);
             pickedEnd = pickedEnd === end ? null : end;
             return drawTransport();
         }
-        if (moved) {
+        if (mode === "select") {
             const a = timeAt(Math.min(x, event.clientX)), b = timeAt(Math.max(x, event.clientX));
             if (b - a < 0.25) return;
             pickedEnd = null;
@@ -875,6 +909,41 @@
     $("wave").addEventListener("pointerup", (event) => endGesture(event, false));
     $("wave").addEventListener("pointercancel", (event) => endGesture(event, true));
     addEventListener("resize", () => drawWave(true));
+
+    /** A long press on the loop button loops the whole song, which repeats it. */
+    function loopWholeSong() {
+        const duration = songDuration();
+        if (!duration) return;
+        // A hair before the end, so that another player loops before it moves on to the next song.
+        const end = Math.max(0.3, duration - 0.1);
+        pickedEnd = null;
+        changeLoop({ start: 0, end });
+        api("/api/loop", { action: "set", start: 0, end }).catch((error) => failIcon($("loop-button"), error));
+    }
+
+    function loopButton() {
+        const button = $("loop-button");
+        let held = 0;
+        let wholeSong = false;
+        button.addEventListener("pointerdown", () => {
+            if (button.disabled) return;
+            wholeSong = false;
+            clearTimeout(held);
+            held = setTimeout(() => {
+                wholeSong = true;
+                loopWholeSong();
+            }, 500);
+        });
+        for (const name of ["pointerup", "pointercancel", "pointerleave"]) button.addEventListener(name, () => clearTimeout(held));
+        button.addEventListener("contextmenu", (event) => event.preventDefault());
+        button.addEventListener("click", () => {
+            if (wholeSong) {
+                wholeSong = false;
+                return;
+            }
+            pressLoop();
+        });
+    }
 
     /** The loop button works as R does on the Mac: it starts the loop where the song is, ends it, then clears it. */
     function pressLoop() {
@@ -895,30 +964,42 @@
         const button = $(id);
         let delay = 0;
         let repeat = 0;
+        // The finger that holds the button, and when it went down. Any release stops the nudges: on the button, after
+        // it moved off the button, or one that the page never heard because the page went away.
+        let finger = null;
+        let since = 0;
         const stop = () => {
             clearTimeout(delay);
             clearInterval(repeat);
+            delay = repeat = 0;
+        };
+        const release = (event) => {
+            if (finger == null || (event?.pointerId != null && event.pointerId !== finger)) return;
+            finger = null;
+            stop();
+            const loop = currentLoop();
+            if (loop && pickedEnd) moveEnd(pickedEnd, pickedEnd === "start" ? loop.start : loop.end, true);
         };
         const nudge = () => {
             const loop = currentLoop();
-            if (!loop || !pickedEnd) return stop();
+            if (finger == null || !loop || !pickedEnd || performance.now() - since > 15000) return release();
             const time = pickedEnd === "start" ? loop.start : loop.end;
             moveEnd(pickedEnd, time + direction * 0.02, false);
         };
-        button.addEventListener("pointerdown", () => {
+        button.addEventListener("pointerdown", (event) => {
             if (!pickedEnd || button.disabled) return;
+            stop();
+            finger = event.pointerId;
+            since = performance.now();
+            button.setPointerCapture?.(event.pointerId);
             nudge();
             delay = setTimeout(() => (repeat = setInterval(nudge, 60)), 400);
         });
-        for (const name of ["pointerup", "pointerleave", "pointercancel"]) {
-            button.addEventListener(name, () => {
-                if (!delay && !repeat) return;
-                stop();
-                delay = repeat = 0;
-                const loop = currentLoop();
-                if (loop && pickedEnd) moveEnd(pickedEnd, pickedEnd === "start" ? loop.start : loop.end, true);
-            });
-        }
+        for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(name, release);
+        for (const name of ["pointerup", "pointercancel"]) addEventListener(name, release);
+        for (const name of ["touchend", "touchcancel", "blur"]) addEventListener(name, () => release());
+        document.addEventListener("visibilitychange", () => release());
+        button.addEventListener("contextmenu", (event) => event.preventDefault());
         button.addEventListener("click", () => {
             if (!pickedEnd) transport({ action: direction < 0 ? "back" : "forward" });
         });
@@ -1166,12 +1247,23 @@
     // MARK: Save
 
     /** Save and Transcribe take the loop once it has an end, and the whole song otherwise. */
+    /** What a save would write: the key, the tempo, the instruments and the loop. */
+    function saveSettings() {
+        const loop = currentLoop();
+        return JSON.stringify([shift, speed, [...muted].sort(), loop?.end != null ? [loop.start, loop.end] : null]);
+    }
+    let savedSettings = null;
+
+    /** Save shows once the song has a change: a key, a tempo, an instrument turned off or a loop. Download takes its
+     * place after a save, until the change is another one. */
     function drawSaveAndNotes() {
         const looped = currentLoop()?.end != null;
-        const save = $("save");
-        if (!save.classList.contains("failed") && !save.classList.contains("working")) {
-            save.querySelector(".label-text").textContent = looped ? "Save loop" : "Save song";
-        }
+        const save = $("save"), link = $("save-link");
+        const busy = save.classList.contains("failed") || save.classList.contains("working");
+        if (!link.hidden && saveSettings() !== savedSettings) link.hidden = true;
+        const changed = shift !== 0 || Math.abs(speed - 1) > 0.001 || muted.size > 0 || looped;
+        save.hidden = !state?.song || !link.hidden || !(changed || busy);
+        if (!busy) save.querySelector(".label-text").textContent = looped ? "Save loop" : "Save";
         drawTranscribeLabel();
     }
 
@@ -1192,11 +1284,14 @@
             ...(loop?.end != null ? { from: loop.start, to: loop.end } : {}),
         };
         try {
+            const settings = saveSettings();
             const job = await follow(await api("/api/write", body), button);
             const link = $("save-link");
             link.href = job.file;
             link.setAttribute("download", "");
             link.hidden = false;
+            savedSettings = settings;
+            drawSaveAndNotes();
         } catch (error) {
             if (error.message !== "Stopped") fail(button, $("save-error"), error);
         }
@@ -1449,7 +1544,7 @@
     document.addEventListener("pointerdown", (event) => {
         if (!$("output-menu").hidden && !event.target.closest("#output-menu, #output-button")) showOutputMenu(false);
     });
-    $("loop-button").onclick = pressLoop;
+    loopButton();
     stepButton("mac-back", -1);
     stepButton("mac-forward", 1);
     $("save").onclick = save;
