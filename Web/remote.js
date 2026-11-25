@@ -977,9 +977,11 @@
             while (mine === generation) {
                 abort = new AbortController();
                 try {
-                    const aac = !aacFailed && (await decodesAAC);
-                    const response = await fetch(aac ? "/api/stream?format=aac" : "/api/stream", { cache: "no-store", signal: abort.signal });
+                    const asked = !aacFailed && (await decodesAAC);
+                    const response = await fetch(asked ? "/api/stream?format=aac" : "/api/stream", { cache: "no-store", signal: abort.signal });
                     if (!response.ok) throw new Error(`the stream answered ${response.status}`);
+                    // The Mac sends PCM when it can't encode AAC at its output's rate.
+                    const aac = (response.headers.get("Content-Type") || "").startsWith("audio/aac");
                     const rate = Number(response.headers.get("X-Sample-Rate")) || 48000;
                     format = aac ? "aac" : "pcm";
                     report(`stream connected at ${rate} Hz as ${format}, the context runs at ${context.sampleRate} Hz (${context.state})`, "info");

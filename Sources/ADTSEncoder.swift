@@ -33,6 +33,12 @@ final class ADTSEncoder {
         packet = [UInt8](repeating: 0, count: Int(max(largest, 1536)))
     }
 
+    /// AAC can be encoded at `rate`. AudioToolbox has no AAC encoder above 48 kHz, and below 32 kHz, as on a headset
+    /// in a call, the converter takes the bit rate but writes no packets, so those rates get PCM.
+    static func supports(_ rate: Double) -> Bool {
+        (32000 ... 48000).contains(rate) && ADTSEncoder(rate: rate) != nil
+    }
+
     deinit {
         AudioConverterDispose(converter)
         feed.deallocate()

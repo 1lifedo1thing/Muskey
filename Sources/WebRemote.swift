@@ -330,9 +330,10 @@ struct WebNotes: Encodable {
             return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
         case "api/stream" where request.method == "GET" && parts.count == 2:
             // The Mac's output with no end, at the rate in the header: AAC in ADTS frames with `format=aac`, or 16-bit
-            // stereo PCM.
+            // stereo PCM, also for a page that asked for AAC at a rate that AAC can't be encoded at. The page reads the
+            // format from the Content-Type.
             let rate = WebStream.shared.rate
-            let aac = request.query["format"] == "aac"
+            let aac = request.query["format"] == "aac" && ADTSEncoder.supports(rate)
             return WebResponse(status: 200, headers: [
                 ("Content-Type", aac ? "audio/aac" : "application/octet-stream"), ("Cache-Control", "no-store"), ("X-Sample-Rate", String(Int(rate))),
             ], body: .stream { sink in _ = WebStream.shared.add(sink, aac: aac) })
