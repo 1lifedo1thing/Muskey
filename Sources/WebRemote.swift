@@ -200,11 +200,18 @@ struct WebNotes: Encodable {
             guard request.method == "GET", same(parts[1], key) else { return .notFound }
             return WebResponse(status: 303, headers: [
                 ("Location", "/"), ("Cache-Control", "no-store"),
-                ("Set-Cookie", "\(cookie)=\(key); Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict"),
+                ("Set-Cookie", "\(cookie)=\(key); Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"),
             ])
         }
         let paired = same(cookieValue(request) ?? "", key)
-        if parts.isEmpty, request.method == "GET" || request.method == "HEAD" { return page(paired ? "remote" : "pair") }
+        if parts.isEmpty, request.method == "GET" || request.method == "HEAD" {
+            guard paired else { return page("pair") }
+            // Phones paired by the first builds hold a Strict cookie, which Safari leaves out when the page opens from a
+            // QR code or another app, so the cookie is set again as Lax.
+            var response = page("remote")
+            response.headers.append(("Set-Cookie", "\(cookie)=\(key); Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"))
+            return response
+        }
         guard paired else { return .text("This device isn't paired", status: 403) }
         if request.method == "POST" {
             guard let origin = request.headers["origin"], origin == "http://\(request.headers["host"] ?? "")" else {

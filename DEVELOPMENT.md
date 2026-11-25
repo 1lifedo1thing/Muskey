@@ -261,7 +261,7 @@ The server in `WebServer.swift` listens on port 25471 of each private address of
 
 #### Web remote
 
-While **Web remote** is on in Settings > General, the same server answers a page at `/` for paired devices. The pairing link (`/pair/<key>`, with 128 random bits) sets a cookie with `SameSite=Strict`, and **Reset** makes a new key, which unpairs every device. The server also refuses a request when:
+While **Web remote** is on in Settings > General, the same server answers a page at `/` for paired devices. The pairing link (`/pair/<key>`, with 128 random bits) sets a cookie with `SameSite=Lax`, which Safari sends when the page is opened from a QR code or another app (it never sends it with a request from another site), and **Reset** makes a new key, which unpairs every device. The server also refuses a request when:
 
 - its Host isn't one of the Mac's addresses, which stops a web page elsewhere from reaching the remote through a DNS name that resolves to the Mac
 - it changes something, and its Origin isn't the address of the remote
