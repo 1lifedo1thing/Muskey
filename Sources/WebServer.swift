@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import os.log
+import SystemConfiguration
 
 // A small HTTP/1.1 server on Network.framework for the links that `muskey --link` prints. It listens on the private
 // addresses of this Mac (the local network, Tailscale and other VPNs) and never on 0.0.0.0, so nothing outside those
@@ -329,14 +330,148 @@ enum WebAddresses {
         var host: String { address.contains(":") ? "[\(address)]" : address }
     }
 
+    /// The defaults key of the host that Settings > Remote > Address picked, as it goes in a URL. Absent means Automatic.
+    static let choiceKey = "remoteAddress"
+    static var choice: String? { UserDefaults.standard.string(forKey: choiceKey)?.lowercased() }
+
+    /// The names that a request's Host may carry: the Mac's addresses, localhost, and the DNS name picked in Settings,
+    /// exactly that one. Any other name is refused, so that a web page elsewhere can't reach the remote through a DNS
+    /// name that resolves to the Mac.
+    static func allowedHosts() -> [String] {
+        var hosts = current().map(\.address) + ["localhost"]
+        if let choice, isName(choice) { hosts.append(choice) }
+        return hosts
+    }
+
+    /// The host that the pairing link and the links of `muskey --link` carry: the one picked in Settings while it reaches
+    /// this Mac, or else Tailscale's address, then the local network's. A picked address that went away is kept for
+    /// when it comes back.
+    static func linkHost() -> String? {
+        let addresses = current()
+        if let choice {
+            if isName(choice) {
+                // A Tailscale name leads here only while Tailscale is up.
+                if !choice.hasSuffix(".ts.net") || addresses.contains(where: \.tailscale) { return choice }
+            } else if addresses.contains(where: { $0.host.lowercased() == choice }) {
+                return choice
+            }
+        }
+        return (addresses.first(where: { !$0.interface.hasPrefix("lo") }) ?? addresses.first)?.host
+    }
+
+    /// A DNS name, as opposed to an IPv4 or IPv6 address.
+    static func isName(_ host: String) -> Bool {
+        guard !host.contains(":"), !host.hasPrefix("[") else { return false }
+        var address = in_addr()
+        return inet_pton(AF_INET, host, &address) != 1
+    }
+
+    /// One way that another device reaches this Mac, for Settings > Remote > Address: an address, or a DNS name that
+    /// leads back to one.
+    struct Choice: Hashable, Identifiable {
+        /// As it goes in a URL: a name, an IPv4 address, or an IPv6 one in brackets.
+        let host: String
+        /// The network and the host, like `Wi-Fi · 192.168.1.5`.
+        let title: String
+        var id: String { host }
+    }
+
+    /// Each address with the name of its network, after the DNS name that leads back to it, then the Mac's local
+    /// hostname. With `lookUp`, it waits on the network's DNS for the names, so it runs off the main thread then.
+    static func choices(lookUp: Bool) -> [Choice] {
+        let addresses = current().filter { !$0.interface.hasPrefix("lo") }
+        let interfaces = interfaceNames()
+        let vpns = vpnNames()
+        let ours = Set(addresses.map(\.address))
+        var choices: [Choice] = []
+        for address in addresses {
+            let label: String = if address.tailscale {
+                "Tailscale"
+            } else if ["utun", "ipsec", "ppp"].contains(where: { address.interface.hasPrefix($0) }) {
+                vpns[address.interface] ?? "VPN"
+            } else {
+                interfaces[address.interface] ?? address.interface
+            }
+            // A name counts only when it leads back to one of these addresses, since DNS can keep a name for an
+            // address that moved, and only with a dot, since a bare name may resolve on this Mac alone.
+            if lookUp, let name = reverseLookup(address.address), name.contains("."), !name.hasSuffix(".arpa"),
+               !forwardLookup(name).isDisjoint(with: ours), !choices.contains(where: { $0.host == name })
+            {
+                choices.append(Choice(host: name, title: "\(label) · \(name)"))
+            }
+            choices.append(Choice(host: address.host.lowercased(), title: "\(label) · \(address.address)"))
+        }
+        if let local = SCDynamicStoreCopyLocalHostName(nil) as String?, !local.isEmpty {
+            let name = "\(local).local".lowercased()
+            if !choices.contains(where: { $0.host == name }) { choices.append(Choice(host: name, title: "Local hostname · \(name)")) }
+        }
+        return choices
+    }
+
+    /// The names that System Settings > Network gives the interfaces, like Wi-Fi and Ethernet, by BSD name.
+    private static func interfaceNames() -> [String: String] {
+        guard let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else { return [:] }
+        var names: [String: String] = [:]
+        for interface in all {
+            if let bsd = SCNetworkInterfaceGetBSDName(interface) as String?, let name = SCNetworkInterfaceGetLocalizedDisplayName(interface) as String? {
+                names[bsd] = name
+            }
+        }
+        return names
+    }
+
+    /// The name of each connected VPN as System Settings > VPN shows it, by tunnel interface.
+    private static func vpnNames() -> [String: String] {
+        let patterns = ["State:/Network/Service/[^/]+/IPv[46]", "Setup:/Network/Service/[^/]+", "Setup:/Network/Service/[^/]+/Interface"]
+        guard let store = SCDynamicStoreCreate(nil, "Muskey" as CFString, nil, nil),
+              let values = SCDynamicStoreCopyMultiple(store, nil, patterns as CFArray) as? [String: Any]
+        else { return [:] }
+        var names: [String: String] = [:]
+        for (key, value) in values where key.hasPrefix("State:") {
+            let parts = key.split(separator: "/")
+            guard parts.count == 5, let interface = (value as? [String: Any])?["InterfaceName"] as? String else { continue }
+            let setup = "Setup:/Network/Service/\(parts[3])"
+            let provider = (values[setup + "/Interface"] as? [String: Any])?["SubType"] as? String ?? ""
+            if provider.hasPrefix("io.tailscale.") {
+                names[interface] = "Tailscale"
+            } else if let name = (values[setup] as? [String: Any])?["UserDefinedName"] as? String, !name.isEmpty {
+                names[interface] = name
+            }
+        }
+        return names
+    }
+
+    private static func reverseLookup(_ address: String) -> String? {
+        var hints = addrinfo()
+        hints.ai_flags = AI_NUMERICHOST
+        var info: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(address, nil, &hints, &info) == 0, let info else { return nil }
+        defer { freeaddrinfo(info) }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard getnameinfo(info.pointee.ai_addr, info.pointee.ai_addrlen, &host, socklen_t(host.count), nil, 0, NI_NAMEREQD) == 0 else { return nil }
+        let name = String(cString: host).lowercased()
+        return name.hasSuffix(".") ? String(name.dropLast()) : name
+    }
+
+    private static func forwardLookup(_ name: String) -> Set<String> {
+        var hints = addrinfo()
+        hints.ai_socktype = SOCK_STREAM
+        var info: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(name, nil, &hints, &info) == 0, let first = info else { return [] }
+        defer { freeaddrinfo(info) }
+        var found = Set<String>()
+        for entry in sequence(first: first, next: { $0.pointee.ai_next }) {
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(entry.pointee.ai_addr, entry.pointee.ai_addrlen, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                found.insert(String(cString: host))
+            }
+        }
+        return found
+    }
+
     /// The private addresses that a browser on the same network or VPN can reach: RFC 1918, link-local IPv4, the
     /// 100.64/10 range on a tunnel (Tailscale and other VPNs), IPv6 unique-local, and 127.0.0.1. The most useful first:
     /// Tailscale, then Wi-Fi or Ethernet, then other VPNs, then this Mac.
-    /// The names that a request's Host may carry: the Mac's addresses and localhost. Any other name is refused, so that a
-    /// web page elsewhere can't reach the remote through a DNS name that resolves to the Mac.
-    static func allowedHosts() -> [String] {
-        current().map(\.address) + ["localhost"]
-    }
 
     static func current() -> [Address] {
         var head: UnsafeMutablePointer<ifaddrs>?

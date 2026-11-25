@@ -42,11 +42,11 @@ import Network
         return "\(base)/l/\(token)/\(encoded)"
     }
 
-    /// The start of a link at the address that reaches the furthest: Tailscale's, then the local network's.
+    /// The start of a link, at the host picked in Settings > Remote > Address, or else at the address that reaches the
+    /// furthest: Tailscale's, then the local network's.
     nonisolated static var base: String? {
-        let addresses = WebAddresses.current()
-        guard let address = addresses.first(where: { !$0.interface.hasPrefix("lo") }) ?? addresses.first else { return nil }
-        return "http://\(address.host):\(port)"
+        guard let host = WebAddresses.linkHost() else { return nil }
+        return "http://\(host):\(port)"
     }
 
     private var server: WebServer?

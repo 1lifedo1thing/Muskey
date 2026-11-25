@@ -32,7 +32,7 @@
 - Songs from files and links
     > Drop an audio or video file on Muskey, or a link to a song on YouTube or any other site that [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports, and Muskey plays it with everything above.
 - Command line tool
-    > Install `muskey` from Settings > General to play a song in another key, tempo or set of instruments from a terminal, or to write the changed song or its notes to a file. Add `--link` to get a private link to the file for your phone, over the local network or Tailscale.
+    > Install `muskey` from Settings > Remote to play a song in another key, tempo or set of instruments from a terminal, or to write the changed song or its notes to a file. Add `--link` to get a private link to the file for your phone, over the local network or Tailscale.
 
     ```sh
     muskey song.mp3 --key Am --stems vocals,piano
@@ -40,7 +40,7 @@
     muskey song.mp3 --notes guitar --capo 2 -o sheet.html
     ```
 - Web remote
-    > Turn on **Web remote** in Settings > General and open the pairing link on your phone to play songs from Recents on the Mac or on the phone, in another key, tempo or set of instruments, and to read their notes as tab, sheet music or a piano roll.
+    > Turn on **Web remote** in Settings > Remote and scan its QR code with your phone to play songs from Recents on the Mac or on the phone, in another key, tempo or set of instruments, and to read their notes as tab, sheet music or a piano roll.
     >
     > A Spotify link sent from the phone plays in Spotify on the Mac with the Mac's sound muted, and the phone shows its key.
 

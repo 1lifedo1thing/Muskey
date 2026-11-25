@@ -1,9 +1,11 @@
 import Carbon.HIToolbox
+import CoreImage.CIFilterBuiltins
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The panes of Settings, in the sidebar's order.
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, hud, mini, listening, lyrics, stems, permissions, updates, about
+    case general, hud, mini, listening, remote, lyrics, stems, permissions, updates, about
 
     var id: String { rawValue }
 
@@ -13,6 +15,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .hud: "HUD"
         case .mini: "Mini player"
         case .listening: "Listening"
+        case .remote: "Remote"
         case .lyrics: "Lyrics"
         case .stems: "Instruments and vocals"
         case .permissions: "Permissions"
@@ -27,6 +30,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .hud: "rectangle.on.rectangle"
         case .mini: "record.circle"
         case .listening: "ear"
+        case .remote: "iphone.and.arrow.forward"
         case .lyrics: "quote.bubble"
         case .stems: "slider.vertical.3"
         case .permissions: "hand.raised"
@@ -41,6 +45,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .hud: .skin
         case .mini: .teal
         case .listening: .dustyBlue
+        case .remote: .periwinkle
         case .lyrics: .plum
         case .stems: .sage
         case .permissions: .terracotta
@@ -55,6 +60,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 struct SidebarHue {
     static let sage = rgb(0.39, 0.49, 0.26, 0.60, 0.66, 0.50)
     static let dustyBlue = rgb(0.24, 0.43, 0.63, 0.53, 0.64, 0.75)
+    static let periwinkle = rgb(0.41, 0.37, 0.68, 0.62, 0.60, 0.80)
     static let terracotta = rgb(0.74, 0.35, 0.23, 0.82, 0.52, 0.40)
     static let skin = rgb(0.74, 0.47, 0.30, 0.80, 0.64, 0.52)
     static let plum = rgb(0.58, 0.30, 0.55, 0.68, 0.55, 0.67)
@@ -156,6 +162,7 @@ struct SettingsView: View {
                     row(.hud)
                     row(.mini)
                     row(.listening)
+                    row(.remote)
                 }
                 Section("Music") {
                     row(.lyrics)
@@ -177,6 +184,7 @@ struct SettingsView: View {
                 case .hud: HUDPane(prefs: prefs, hud: hud, setLayout: setLayout)
                 case .mini: MiniPlayerPane(prefs: prefs)
                 case .listening: ListeningPane(prefs: prefs, keyCache: keyCache)
+                case .remote: RemotePane(prefs: prefs)
                 case .lyrics: LyricsPane(prefs: prefs)
                 case .stems: StemsPane(prefs: prefs)
                 case .permissions: PermissionsPane()
@@ -260,15 +268,6 @@ private struct GeneralPane: View {
             Section("Menu bar icon") {
                 MenuBarIconTiles(icon: $prefs.menuBarIcon)
             }
-            Section("Command line") {
-                CLIToolRow()
-            }
-            Section("Remote") {
-                Toggle("Web remote", isOn: $prefs.webRemote)
-                if prefs.webRemote {
-                    LabeledContent("Pairing link") { PairingLinkControls() }
-                }
-            }
             Section("Startup") {
                 Toggle("Launch at login", isOn: $prefs.launchAtLogin)
             }
@@ -286,17 +285,65 @@ private struct GeneralPane: View {
     }
 }
 
-/// The link that pairs a phone or a computer with the web remote: the pill copies it, QR Code shows it for a phone's
-/// camera, and Reset makes a new one, which unpairs every device that opened the old one.
-private struct PairingLinkControls: View {
+/// Settings > Remote: the `muskey` tool, the web remote with its address and pairing code, and the folders whose songs
+/// the web remote lists.
+private struct RemotePane: View {
+    @ObservedObject var prefs: Preferences
+
+    var body: some View {
+        Form {
+            Section("Command line") {
+                CLIToolRow()
+            }
+            Section("Web remote") {
+                Toggle("Web remote", isOn: $prefs.webRemote)
+                if prefs.webRemote {
+                    PairingControls(prefs: prefs)
+                }
+            }
+            if prefs.webRemote {
+                Section("Folders") {
+                    RemoteFolders(prefs: prefs)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// The address that the link carries, the link as a QR code for a phone's camera, the link in a pill that copies it,
+/// and Reset Link, which makes a new one and unpairs every device that opened the old one.
+private struct PairingControls: View {
+    @ObservedObject var prefs: Preferences
     @State private var link: String?
+    @State private var choices = WebAddresses.choices(lookUp: false)
     @State private var copied = false
-    @State private var showsCode = false
     @State private var confirmsReset = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        LabeledContent("Address") {
+            Picker("Address", selection: Binding(get: { prefs.remoteAddress ?? "" }, set: { prefs.remoteAddress = $0.isEmpty ? nil : $0 })) {
+                Text("Automatic").tag("")
+                ForEach(choices) { Text(verbatim: $0.title).tag($0.host) }
+                // A picked address that went away stays picked, for when it comes back.
+                if let picked = prefs.remoteAddress, !choices.contains(where: { $0.host == picked }) {
+                    Text(verbatim: "Not connected · \(picked)").tag(picked)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
+        .task {
+            // Reverse lookups wait on the network's DNS, so the names arrive after the addresses.
+            let named = await Task.detached(priority: .userInitiated) { WebAddresses.choices(lookUp: true) }.value
+            choices = named
+        }
+        .onChange(of: prefs.remoteAddress) { refresh() }
+
+        VStack(spacing: 12) {
             if let link {
+                PairingCode(text: link)
+                    .frame(width: 168, height: 168)
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(link, forType: .string)
@@ -307,38 +354,178 @@ private struct PairingLinkControls: View {
                         .font(.system(size: 11, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .frame(maxWidth: 190)
+                        .frame(maxWidth: 330)
                         .opacity(copied ? 0 : 1)
                         .overlay { Text("Copied").font(.system(size: 11, weight: .semibold, design: .rounded)).opacity(copied ? 1 : 0) }
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
                         .background(Capsule().fill(.quaternary))
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .help("Copy the pairing link")
-                Button("QR Code") { showsCode = true }
-                    .popover(isPresented: $showsCode) {
-                        if let image = WebRemote.qrCode(link) {
-                            Image(nsImage: image).interpolation(.none).resizable().frame(width: 220, height: 220).padding(14)
-                        }
-                    }
             } else {
                 Text("No network").foregroundStyle(.secondary)
             }
-            Button("Reset") { confirmsReset = true }
+            Button("Reset Link") { confirmsReset = true }
+                .controlSize(.small)
         }
-        .onAppear { link = WebRemote.shared.pairingLink }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .onAppear(perform: refresh)
         .alert("Reset the pairing link?", isPresented: $confirmsReset) {
             Button("Reset Link", role: .destructive) {
                 WebRemote.shared.reset()
-                link = WebRemote.shared.pairingLink
+                refresh()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Devices that opened the old link lose access to the remote")
         }
+    }
+
+    private func refresh() {
+        link = WebRemote.shared.pairingLink
+    }
+}
+
+/// The pairing link as a QR code in the ink of the HUD on a warm white, which phone cameras read as well as black on
+/// white. It keeps the light background in dark mode too, since scanners need dark modules on a light ground.
+private struct PairingCode: View {
+    let text: String
+
+    var body: some View {
+        if let image = Self.image(text) {
+            Image(decorative: image, scale: 1)
+                .interpolation(.none)
+                .resizable()
+                .aspectRatio(1, contentMode: .fit)
+                .padding(10)
+                .background(Color(.sRGB, red: 0.98, green: 0.957, blue: 0.94), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.black.opacity(0.08), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
+        }
+    }
+
+    private static let context = CIContext()
+
+    private static func image(_ text: String) -> CGImage? {
+        let code = CIFilter.qrCodeGenerator()
+        code.message = Data(text.utf8)
+        code.correctionLevel = "M"
+        let colours = CIFilter.falseColor()
+        colours.inputImage = code.outputImage
+        colours.color0 = CIColor(red: 0.13, green: 0.078, blue: 0.10)
+        colours.color1 = CIColor(red: 0.98, green: 0.957, blue: 0.94)
+        guard let output = colours.outputImage else { return nil }
+        return context.createCGImage(output, from: output.extent)
+    }
+}
+
+/// The folders whose songs the web remote lists, each with the count of its songs. The count is made off the main
+/// thread while the pane shows, which also asks macOS for access to a protected folder while someone is at the Mac.
+private struct RemoteFolders: View {
+    @ObservedObject var prefs: Preferences
+    @State private var counts: [String: Int] = [:]
+
+    /// Past this many songs, a folder shows a count with a plus.
+    private static let countLimit = 10000
+
+    var body: some View {
+        if prefs.remoteFolders.isEmpty {
+            Text("No folders").foregroundStyle(.secondary)
+        }
+        ForEach(prefs.remoteFolders, id: \.self) { path in
+            HStack(spacing: 10) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: path))
+                    .resizable()
+                    .frame(width: 22, height: 22)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(verbatim: (path as NSString).lastPathComponent)
+                    Text(verbatim: (path as NSString).abbreviatingWithTildeInPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                if let count = counts[path] {
+                    Text(verbatim: Self.songs(count))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(.quaternary))
+                        .fixedSize()
+                }
+                Button {
+                    prefs.remoteFolders.removeAll { $0 == path }
+                } label: {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Remove the folder")
+            }
+            .task(id: path) {
+                let count = await Task.detached(priority: .utility) { Self.count(path) }.value
+                counts[path] = count
+            }
+        }
+        HStack {
+            Spacer()
+            Button("Add Folder…", action: add)
+        }
+    }
+
+    private func add() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Folders whose songs the web remote lists"
+        guard panel.runModal() == .OK else { return }
+        let paths = panel.urls.map(\.path).filter { !prefs.remoteFolders.contains($0) }
+        prefs.remoteFolders.append(contentsOf: paths)
+    }
+
+    /// The audio files in a folder and the folders inside it, up to `countLimit` and one more.
+    nonisolated private static func count(_ path: String) -> Int {
+        guard let walker = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: path), includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return 0 }
+        var found = 0
+        for case let url as URL in walker {
+            guard !Task.isCancelled else { break }
+            if let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .audio) {
+                found += 1
+                if found > countLimit { break }
+            }
+        }
+        return found
+    }
+
+    /// `124 songs`, `10 000+ songs`, with a narrow no-break space in a count of five digits and more.
+    private static func songs(_ count: Int) -> String {
+        let shown = min(count, countLimit)
+        var digits = String(shown)
+        if digits.count >= 5 {
+            var groups: [String] = []
+            while digits.count > 3 {
+                groups.insert(String(digits.suffix(3)), at: 0)
+                digits.removeLast(3)
+            }
+            groups.insert(digits, at: 0)
+            digits = groups.joined(separator: "\u{202F}")
+        }
+        let plus = count > countLimit ? "+" : ""
+        return "\(digits)\(plus) \(shown == 1 && plus.isEmpty ? "song" : "songs")"
     }
 }
 

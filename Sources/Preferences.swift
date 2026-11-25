@@ -288,12 +288,27 @@ final class Preferences: ObservableObject {
     @Published var miniRecordScale: Double {
         didSet { defaults.set(miniRecordScale, forKey: "miniRecordScale") }
     }
-    /// Settings > General > Web remote: the page that paired devices open to play and change songs of Recents.
+    /// Settings > Remote > Web remote: the page that paired devices open to play and change songs of Recents.
     @Published var webRemote: Bool {
         didSet {
             defaults.set(webRemote, forKey: "webRemote")
             Task { @MainActor in WebRemote.shared.update() }
         }
+    }
+    /// Settings > Remote > Address: the host that the pairing link and the links of `muskey --link` carry, as it goes
+    /// in a URL. Nil picks Tailscale, then the local network (`WebAddresses.linkHost`).
+    @Published var remoteAddress: String? {
+        didSet {
+            if let remoteAddress {
+                defaults.set(remoteAddress, forKey: WebAddresses.choiceKey)
+            } else {
+                defaults.removeObject(forKey: WebAddresses.choiceKey)
+            }
+        }
+    }
+    /// Settings > Remote > Folders: the folders whose songs the web remote lists, by path.
+    @Published var remoteFolders: [String] {
+        didSet { defaults.set(remoteFolders, forKey: "remoteFolders") }
     }
     /// Settings > General > Send error reports. The key is the one that the other Low Tech Guys apps use.
     @Published var errorReports: Bool {
@@ -343,6 +358,8 @@ final class Preferences: ObservableObject {
         miniRecordScale = (defaults.object(forKey: "miniRecordScale") as? Double).map { min(max($0, scales.lowerBound), scales.upperBound) } ?? 1
         errorReports = defaults.bool(forKey: "enableSentry")
         webRemote = defaults.bool(forKey: "webRemote")
+        remoteAddress = defaults.string(forKey: WebAddresses.choiceKey)
+        remoteFolders = defaults.stringArray(forKey: "remoteFolders") ?? []
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }

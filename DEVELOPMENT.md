@@ -238,7 +238,7 @@ While **Send error reports** is on in Settings > General, Muskey sends its crash
 
 ### Command line
 
-The `muskey` tool lives in `Contents/Helpers`, and Settings > General links it into `~/.local/bin`. It reaches the app through a message port named `com.lowtechguys.Muskey.cli`, which only processes of the same user can open. Requests and answers are JSON, from `Shared/MuskeyIPC.swift`, which both are built with. When the port is missing, the tool opens Muskey in the background and waits up to 20 seconds for it.
+The `muskey` tool lives in `Contents/Helpers`, and Settings > Remote links it into `~/.local/bin`. It reaches the app through a message port named `com.lowtechguys.Muskey.cli`, which only processes of the same user can open. Requests and answers are JSON, from `Shared/MuskeyIPC.swift`, which both are built with. When the port is missing, the tool opens Muskey in the background and waits up to 20 seconds for it.
 
 - Without `-o`, a request plays its inputs in the HUD, or listens to the song that plays, and applies the changes once the song plays and its key is known.
 - With `-o`, the app starts a job that writes into `~/Library/Caches/Muskey/CLI/<job>/`. Jobs run one at a time, with a stems separation of their own, so a job never takes over the separation of the song in the HUD. The tool asks how the job goes four times a second, prints its step, and moves the file into place. Ctrl-C stops the job.
@@ -255,15 +255,17 @@ Spotify plays on the device that Spotify Connect has picked. When that is anothe
 
 #### Links
 
-`--link` copies the file into `~/Library/Caches/Muskey/Shared/<token>/`, where the token is 128 random bits, and prints `http://<address>:25471/l/<token>/<name>`. The address is Tailscale's when it is up, or else the local network's.
+`--link` copies the file into `~/Library/Caches/Muskey/Shared/<token>/`, where the token is 128 random bits, and prints `http://<address>:25471/l/<token>/<name>`. The address is the one picked in Settings > Remote > Address. **Automatic** picks Tailscale's when it is up, or else the local network's, and so does a picked address that is gone for now.
+
+The Address menu lists each private address with the name of its network (from System Settings > Network and > VPN), the DNS name that leads back to each one (Tailscale's MagicDNS name, or a router's), and the Mac's local hostname (`<name>.local`). A name is listed only when its forward lookup gives one of the Mac's addresses again.
 
 The server in `WebServer.swift` listens on port 25471 of each private address of the Mac, and never on all of them: RFC 1918 and link-local IPv4, 100.64/10 on a tunnel interface only (on Wi-Fi it is a carrier's shared range), IPv6 unique-local, and 127.0.0.1. A request names only a token, so no path from the network reaches the disk. Files go out with byte ranges, which Safari needs to play audio. The links keep working after a restart, and the folder's date ends them after three days.
 
 #### Web remote
 
-While **Web remote** is on in Settings > General, the same server answers a page at `/` for paired devices. The pairing link (`/pair/<key>`, with 128 random bits) sets a cookie with `SameSite=Lax`, which Safari sends when the page is opened from a QR code or another app (it never sends it with a request from another site), and **Reset** makes a new key, which unpairs every device. The server also refuses a request when:
+While **Web remote** is on in Settings > Remote, the same server answers a page at `/` for paired devices. The pairing link (`/pair/<key>`, with 128 random bits) sets a cookie with `SameSite=Lax`, Settings shows the link as a QR code, and **Reset Link** makes a new key, which unpairs every device. Safari sends a Lax cookie after a QR code scan or a link from another app, and never with a request from another site. The cookie belongs to the host in the link, so a device pairs again after the address changes. The server also refuses a request when:
 
-- its Host isn't one of the Mac's addresses, which stops a web page elsewhere from reaching the remote through a DNS name that resolves to the Mac
+- its Host isn't one of the Mac's addresses or the DNS name picked in Settings (exactly that one), which stops a web page elsewhere from reaching the remote through a DNS name that resolves to the Mac
 - it changes something, and its Origin isn't the address of the remote
 
 The page (`Web/remote.html`, `remote.js` and `remote.css`) has the HUD's key row, tempo and instruments, drawn with the HUD's colours and with SF Symbols that the app renders as PNG masks (`/api/symbol/<name>`, from a fixed list). It asks for the HUD's state every 1.5 seconds: the song that plays, its position, its key, the change, the tempo and whether the Mac's sound is muted. A change to the song that plays is sent at once, as a play without an input. The buttons under the song that plays send `/api/transport`, which plays, pauses and seeks the way Space, ← and → do over the HUD.
