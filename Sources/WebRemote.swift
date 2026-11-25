@@ -87,10 +87,14 @@ struct WebNotes: Encodable {
         var seekable: Bool
         /// The Mac's name, from Settings > General > Sharing.
         var mac: String
+        /// The instruments that don't play, by their names in lowercase.
+        var mutedStems: [String] = []
+        /// Phones that hear the Mac's output.
+        var listeners = 0
 
         enum CodingKeys: CodingKey {
             case title, artist, app, playing, listening, key, shift, relative, bpm, speed, cover, muted, relativeKeys, song, position, duration,
-                 seekable, mac
+                 seekable, mac, mutedStems, listeners
         }
     }
 
@@ -98,7 +102,7 @@ struct WebNotes: Encodable {
     nonisolated static let symbols: Set<String> = [
         "music.mic", "metronome.fill", "hifispeaker.fill", "guitars.fill", "pianokeys", "music.quarternote.3", "wind", "headphones",
         "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "speaker.wave.2.fill", "speaker.slash.fill",
-        "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear", "minus", "plus", "gobackward.5", "goforward.5",
+        "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear", "minus", "plus", "gobackward.5", "goforward.5", "iphone",
     ]
 
     /// A symbol as a black PNG at three times its point size, which the page uses as a mask to colour it.
@@ -221,7 +225,8 @@ struct WebNotes: Encodable {
             return WebLinks.file(url.path, request: request, extra: [("Cache-Control", "no-cache")])
         case "api/state" where reads && parts.count == 2:
             guard var state = await MainActor.run(body: { shared.state() }) else { return .notFound }
-            if let file = state.file { state.song = Self.id(URL(fileURLWithPath: file)) }
+            if let file = state.file { state.song = await shared.songID(file: file) }
+            state.listeners = WebStream.shared.listeners
             return json(state)
         case "api/nowcover" where reads && parts.count == 2:
             guard let jpeg = await MainActor.run(body: { SongTags.jpeg(shared.nowCover()) }) else { return .notFound }
@@ -233,9 +238,8 @@ struct WebNotes: Encodable {
             guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let link = body["link"], Spotify.uri(from: link) != nil else {
                 return json(WebJob(CLIResponse(error: "That isn't a Spotify link", done: true)))
             }
-            var play = CLIRequest(command: .play, inputs: [link])
-            play.remote = true
-            let request = play
+            // The Mac's sound follows the output picked on the phone, so the request itself doesn't mute it.
+            let request = CLIRequest(command: .play, inputs: [link])
             return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
         case "api/live" where request.method == "POST" && parts.count == 2:
             guard let action = try? JSONDecoder().decode(WebLive.self, from: request.body) else { return .text("Unreadable request", status: 400) }
@@ -246,9 +250,14 @@ struct WebNotes: Encodable {
             play.key = action.key
             play.speed = action.speed
             play.stems = action.stems
-            play.remote = true
             let request = play
             return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
+        case "api/stream" where request.method == "GET" && parts.count == 2:
+            // The Mac's output as 16-bit stereo PCM with no end, at the rate in the header.
+            let rate = WebStream.shared.rate
+            return WebResponse(status: 200, headers: [
+                ("Content-Type", "application/octet-stream"), ("Cache-Control", "no-store"), ("X-Sample-Rate", String(Int(rate))),
+            ], body: .stream { sink in _ = WebStream.shared.add(sink) })
         case "api/log" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let message = body["message"] else {
                 return .text("Unreadable request", status: 400)
@@ -402,6 +411,13 @@ struct WebNotes: Encodable {
 
     private func item(_ id: String) async -> QueueItem? {
         await songs().first { $0.song.id == id }?.item
+    }
+
+    /// The ID in Recents of the song whose audio is `file`: the file's own, or the link's that it was downloaded from.
+    func songID(file: String) async -> String {
+        let songs = await songs()
+        let url = URL(fileURLWithPath: file)
+        return songs.first { $0.item.file?.standardizedFileURL == url.standardizedFileURL }?.song.id ?? Self.id(url)
     }
 
     private func cover(_ id: String) async -> Data? {

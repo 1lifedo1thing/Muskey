@@ -32,6 +32,21 @@ float ps_playing_semitones(PSShifter *shifter);
 // `output` gets the shifted left and right on its first two channels, or their average on a mono device.
 void ps_process(PSShifter *shifter, const AudioBufferList *input, AudioBufferList *output);
 
+// The output copied for a listener elsewhere, like the web remote's phone: a ring of stereo frames that outlives every
+// shifter, written on the audio thread without locks or allocation and read by one other thread. Create it once and
+// never destroy it while a shifter may write to it.
+typedef struct PSStream PSStream;
+PSStream *ps_stream_create(size_t capacityFrames);
+// The shifter writes its output into `stream` (or stops, with NULL) from its next process call. Any thread.
+void ps_stream_attach(PSShifter *shifter, PSStream *stream);
+// Copies up to `maxFrames` of the oldest frames as interleaved 16-bit stereo into `out`, and gives how many. A reader
+// that fell more than the ring's capacity behind skips to the newest second.
+size_t ps_stream_read(PSStream *stream, int16_t *out, size_t maxFrames);
+// Frames written so far, for telling a running output from a stopped one.
+uint64_t ps_stream_written(PSStream *stream);
+// The reader skips what is in the ring, so the first listener starts with the newest frames.
+void ps_stream_skip(PSStream *stream);
+
 // Frames of non-silent audio received from the tap so far.
 uint64_t ps_frames_heard(PSShifter *shifter);
 

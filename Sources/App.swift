@@ -1763,7 +1763,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var pauseStopWaits: Bool {
         prefs.pauseStop && !model.shown && !(nowPlaying.player?.playing ?? false) && changesRun && songRecording == nil
-            && saveJob == nil && karaokeRestart == nil
+            && saveJob == nil && karaokeRestart == nil && !phoneListening
     }
 
     private func syncPauseStop() {
@@ -3136,6 +3136,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.mute = { [weak self] in self?.setOutputMuted($0) }
         WebRemote.shared.transport = { [weak self] in self?.remoteTransport($0) }
         WebRemote.shared.log = { [weak self] in self?.log($0) }
+        WebStream.shared.log = { [weak self] line in DispatchQueue.main.async { self?.log(line) } }
+        WebStream.shared.onListening = { [weak self] on in self?.phoneListens(on) }
+        pitch.stream = WebStream.shared.ring
         WebRemote.shared.update()
         cli.start()
     }
@@ -3265,7 +3268,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             listening: state != .idle && model.phase == .listening, key: model.key?.code, shift: model.shift, relative: model.relative,
             bpm: model.tempo?.bpm, speed: currentSpeed, cover: model.artwork != nil, muted: OutputMute.muted,
             relativeKeys: prefs.relativeKeys, file: playsInFilePlayer ? filePlayer.current?.path : nil,
-            position: seeked ?? track?.position(at: Date()), duration: track?.duration, seekable: model.seekable, mac: Self.macName
+            position: seeked ?? track?.position(at: Date()), duration: track?.duration, seekable: model.seekable, mac: Self.macName,
+            mutedStems: model.stemsMuted.map { $0.name.lowercased() }.sorted()
         )
     }
 
@@ -3273,6 +3277,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func remotePlaying(_ track: NowPlaying.Track?) -> Bool? {
         if let guess = playGuess, Date().timeIntervalSince(guess.at) < 1.5 { return guess.playing }
         return track?.playing
+    }
+
+    /// A phone picked **Phone** in the web remote: the Mac's output is muted, and the pitch change runs, since the
+    /// phone hears what it plays. The last phone leaving puts the sound back as it was.
+    private var phoneListening = false
+    private var phoneWatch: Timer?
+
+    @MainActor private func phoneListens(_ on: Bool) {
+        guard on != phoneListening else { return }
+        phoneListening = on
+        phoneWatch?.invalidate()
+        phoneWatch = nil
+        if on {
+            muteForRemote()
+            if !pitch.running { startPitch() }
+            // Anything that stopped the pitch change, like a device change or a failed start, is undone while the phone
+            // listens, or it would hear silence while the muted Mac plays.
+            phoneWatch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.phoneListening, !self.pitch.running, AudioCapturePermission.status == .granted else { return }
+                    self.startPitch()
+                }
+            }
+        } else {
+            log("remote: no phone listens, the Mac's sound is back as it was")
+            restoreRemoteMute()
+            stopPitchIfUnwanted()
+        }
     }
 
     /// The Mac's name as Settings > General > Sharing shows it, read once without a lookup on the network.
@@ -8199,7 +8231,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The slowing of another player's song needs the pitch change until the output has caught up with the player.
-    private var pitchWanted: Bool { model.shift != 0 || model.stemsEngaged || lyricsDelayed || pitch.correction != 0 || slow.active }
+    private var pitchWanted: Bool {
+        model.shift != 0 || model.stemsEngaged || lyricsDelayed || pitch.correction != 0 || slow.active || phoneListening
+    }
 
     /// The speed of the song as the tap hears it: Muskey Player's speed while its song is the one that plays. A song
     /// from another player plays at its own speed, and only the output slows it down.
@@ -8352,6 +8386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let started = CACurrentMediaTime()
                 pitch.heardProcess = heardProcess
                 try pitch.start()
+                WebStream.shared.rate = pitch.sampleRate
                 log(String(format: "pitch change started (%.0f ms to build%@)", (CACurrentMediaTime() - started) * 1000,
                            pitch.hearsOneProcess ? ", hearing only Muskey Player" : ""))
             } catch {

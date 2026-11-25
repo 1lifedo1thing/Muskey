@@ -40,7 +40,7 @@
     muskey song.mp3 --notes guitar --capo 2 -o sheet.html
     ```
 - Web remote
-    > Turn on **Web remote** in Settings > Remote and scan its QR code with your phone to play songs from Recents on the Mac or on the phone, in another key, tempo or set of instruments, and to read their notes as tab, sheet music or a piano roll.
+    > Turn on **Web remote** in Settings > Remote and scan its QR code with your phone to play songs from Recents on the Mac, change their key, tempo or instruments, hear them on the phone, and read their notes as tab, sheet music or a piano roll.
     >
     > A Spotify link sent from the phone plays in Spotify on the Mac with the Mac's sound muted, and the phone shows its key.
 

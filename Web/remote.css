@@ -91,40 +91,45 @@ button:disabled { cursor: default; }
 }
 
 /* Bars */
+/* A compact bar with the back button and the song's name, which slides in once the song's head scrolls away, and
+   takes no room before that. */
 .top {
-    position: sticky;
+    position: fixed;
     top: 0;
+    left: 0;
+    right: 0;
     z-index: 5;
     display: flex;
     align-items: center;
     gap: 8px;
     min-height: calc(52px + env(safe-area-inset-top));
-    margin: 0 calc(-1 * var(--gutter)) 8px;
     padding: env(safe-area-inset-top) var(--gutter) 0;
-    border-bottom: 0.5px solid transparent;
-}
-/* The bar turns solid, with a hairline and the song's name, once the song's head scrolls under it. */
-.top.scrolled {
     background: var(--bar);
     -webkit-backdrop-filter: saturate(1.6) blur(20px);
     backdrop-filter: saturate(1.6) blur(20px);
-    border-bottom-color: var(--sep);
+    border-bottom: 0.5px solid var(--sep);
+    transform: translateY(-100%);
+    visibility: hidden;
 }
-.top .title { flex: 1; text-align: center; font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0; }
-.top.scrolled .title { opacity: 1; }
+.top.scrolled { transform: none; visibility: visible; }
 @media (prefers-reduced-motion: no-preference) {
-    .top, .top .title { transition: opacity 160ms ease-out, background-color 160ms ease-out, border-color 160ms ease-out; }
+    .top { transition: transform 180ms ease-out, visibility 180ms; }
 }
-.top .spacer { width: 104px; flex: none; }
-.close {
+.top .title { flex: 1; text-align: center; font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top .spacer { width: 44px; flex: none; }
+/* Back: closes the song view. */
+.back {
     flex: none;
-    width: 104px;
-    height: 40px;
-    border-radius: 20px;
-    background: var(--fill);
-    font-weight: 600;
-    font-size: 15px;
+    width: 44px;
+    height: 44px;
+    margin-left: -6px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: var(--ink);
 }
+.back .icon { width: 20px; height: 20px; }
+.back:active { background: var(--fill); }
 .large-title {
     display: flex;
     align-items: center;
@@ -247,12 +252,16 @@ button:disabled { cursor: default; }
     display: block;
 }
 .cover.large { width: 64px; height: 64px; border-radius: 14px; }
+/* A song without a cover, or whose cover didn't load. */
+.cover.empty { display: grid; place-items: center; color: color-mix(in srgb, var(--muted) 55%, transparent); }
+.cover.empty .icon { width: 46%; height: 46%; }
 .song-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .song-artist { color: color-mix(in srgb, var(--muted) 80%, transparent); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .song-row .pills { margin: 0; flex-wrap: nowrap; }
 .chevron { --symbol: url(/api/symbol/chevron.right); width: 12px; height: 12px; color: color-mix(in srgb, var(--muted) 45%, transparent); }
 .empty { padding: 18px 14px; text-align: center; color: color-mix(in srgb, var(--muted) 70%, transparent); font-size: 15px; }
-.head { display: flex; gap: 14px; align-items: center; padding: 6px 0 0; }
+.head { display: flex; gap: 10px; align-items: center; padding: calc(10px + env(safe-area-inset-top)) 0 0; }
+.head #song-cover { flex: none; }
 .head .song-title { font-size: 20px; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
 /* Spotify */
@@ -286,6 +295,16 @@ button:disabled { cursor: default; }
 .button.big { height: 52px; border-radius: 16px; font-size: 17px; }
 #spotify-play { min-width: 84px; }
 .button.failed { background: var(--failed); color: white; }
+/* The progress of the job that a button or a row started, as a fill inside it, or a shine while its share is unknown. */
+.working { background-image: linear-gradient(to right, var(--honey-tint) var(--done, 0%), transparent var(--done, 0%)); }
+.working.unknown { background-image: linear-gradient(100deg, transparent 30%, var(--honey-tint) 50%, transparent 70%); background-size: 250% 100%; }
+@media (prefers-reduced-motion: no-preference) {
+    .working.unknown { animation: shine 1.4s linear infinite; }
+}
+@keyframes shine { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+.song-row.failed .song-artist { color: var(--failed); font-weight: 600; }
+.error-line { padding: 6px 14px 0; font-size: 13px; font-weight: 600; color: var(--failed); }
+.dock .error-line { padding: 0 4px; text-align: center; }
 .button:disabled { opacity: 0.5; }
 .button:not(:disabled):active { filter: brightness(0.94); }
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -446,10 +465,17 @@ button:disabled { cursor: default; }
 .segments button { height: 40px; border-radius: 11px; display: grid; place-items: center; font-size: 14px; font-weight: 700; color: var(--muted); }
 .segments button .icon { width: 18px; height: 18px; }
 .segments button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); }
+/* Output: where the Mac's sound is heard. */
+.output .segments { flex: 1; margin-left: 8px; }
+.segments.two { grid-template-columns: 1fr 1fr; }
+.segments.two button { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: 15px; font-weight: 600; }
+.segments.two button .icon { width: 17px; height: 17px; }
+.segments button.failed { background: var(--failed); color: white; }
 @media (prefers-color-scheme: dark) {
     .segments button[aria-pressed="true"] { background: rgb(255 247 245 / 0.16); }
 }
-#sheet { height: min(80dvh, 760px); min-height: 460px; margin-top: 12px; border-radius: 16px; overflow: hidden; }
+/* The sheet fills the screen between the bar at the top and the transport at the bottom. */
+#sheet { height: calc(100dvh - 240px - env(safe-area-inset-bottom)); min-height: 380px; margin-top: 12px; border-radius: 16px; overflow: hidden; scroll-margin-top: 64px; }
 
 /* The player after Listen here */
 .player { display: flex; align-items: center; gap: 12px; }

@@ -22,6 +22,11 @@ final class PitchChanger {
 
     var running: Bool { aggregateID != kAudioObjectUnknown }
 
+    /// The ring that the web remote sends to phones, which every shifter writes its output into.
+    var stream: OpaquePointer? {
+        didSet { if let shifter { ps_stream_attach(shifter, stream) } }
+    }
+
     /// Callbacks since `start()` that ran out of shifted audio and played silence, for the log.
     private(set) var gaps: UInt64 = 0
 
@@ -324,6 +329,7 @@ final class PitchChanger {
         }
         self.shifter = shifter
         rate = sampleRate
+        ps_stream_attach(shifter, stream)
         ps_set_semitones(shifter, shifted)
         ps_set_paused(shifter, paused ? 1 : 0)
         ps_set_delay(shifter, lyricsDelay)

@@ -433,7 +433,51 @@ struct Slower {
 
 } // namespace
 
+struct PSStream {
+    std::vector<float> frames; // interleaved left and right
+    size_t capacity;
+    std::atomic<uint64_t> written{0};
+    uint64_t read = 0;
+
+    explicit PSStream(size_t capacity) : frames(capacity * 2), capacity(capacity) {}
+
+    // The audio thread, which is the only writer.
+    void write(const float *left, const float *right, size_t n) {
+        uint64_t at = written.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < n; i++) {
+            size_t slot = size_t((at + i) % capacity) * 2;
+            frames[slot] = left[i];
+            frames[slot + 1] = right[i];
+        }
+        written.store(at + n, std::memory_order_release);
+    }
+};
+
+PSStream *ps_stream_create(size_t capacityFrames) { return new PSStream(std::max<size_t>(capacityFrames, 4096)); }
+
+uint64_t ps_stream_written(PSStream *stream) { return stream->written.load(std::memory_order_acquire); }
+
+void ps_stream_skip(PSStream *stream) { stream->read = stream->written.load(std::memory_order_acquire); }
+
+size_t ps_stream_read(PSStream *stream, int16_t *out, size_t maxFrames) {
+    uint64_t end = stream->written.load(std::memory_order_acquire);
+    // A reader that fell behind by more than the ring holds would read frames that were written over.
+    if (end - stream->read > stream->capacity - 4096) stream->read = end > 48000 ? end - 48000 : 0;
+    size_t n = size_t(std::min<uint64_t>(end - stream->read, maxFrames));
+    for (size_t i = 0; i < n; i++) {
+        size_t slot = size_t((stream->read + i) % stream->capacity) * 2;
+        for (int c = 0; c < 2; c++) {
+            float sample = std::clamp(stream->frames[slot + c], -1.0f, 1.0f);
+            out[i * 2 + c] = int16_t(std::lrint(sample * 32767.0f));
+        }
+    }
+    stream->read += n;
+    return n;
+}
+
 struct PSShifter {
+    // The listener's copy of the output, when there is one.
+    std::atomic<PSStream *> stream{nullptr};
     bool planar;
     std::atomic<float> semitones{0};
 
@@ -1585,6 +1629,8 @@ size_t ps_recording(PSShifter *shifter, const float **pairs) {
     return shifter->recorded.load(std::memory_order_acquire);
 }
 
+void ps_stream_attach(PSShifter *shifter, PSStream *stream) { shifter->stream.store(stream, std::memory_order_release); }
+
 void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *output) {
     // Turning the stems or the delay on starts a new timeline, and so does a song that changed during a pause or that
     // karaoke started over. Stems that play fade out first, so they don't stop with a click.
@@ -1657,6 +1703,7 @@ void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *out
         s->limiter.process(s->outLeft.data(), s->outRight.data(), n);
         s->cutPauseTail(n);
         if (!s->recording.empty()) s->record(n);
+        if (PSStream *stream = s->stream.load(std::memory_order_acquire)) stream->write(s->outLeft.data(), s->outRight.data(), n);
 
         // Spread left and right over the output device's channels, interleaved within each buffer.
         size_t channelBase = 0;

@@ -25,6 +25,9 @@ struct WebResponse {
         /// A part of a file, read a chunk at a time.
         case file(String, ClosedRange<UInt64>?)
         case empty
+        /// A body with no end, sent through the sink that the closure gets once the headers left, until the phone
+        /// closes the connection.
+        case stream(@Sendable (WebSink) -> Void)
     }
 
     var status: Int
@@ -253,6 +256,8 @@ private final class WebConnection: @unchecked Sendable {
             file = (handle, length)
         case .empty:
             break
+        case let .stream(start):
+            return sendStream(response, start: start)
         }
         headers.append(("Content-Length", String(length)))
         headers.append(("Connection", keepAlive ? "keep-alive" : "close"))
@@ -274,6 +279,27 @@ private final class WebConnection: @unchecked Sendable {
                 finish(keepAlive: keepAlive)
             }
         })
+    }
+
+    /// The headers of a body with no length, then the sink, which sends until the phone closes the connection. A read
+    /// that ends tells that the phone closed it.
+    private func sendStream(_ response: WebResponse, start: @escaping @Sendable (WebSink) -> Void) {
+        var text = "HTTP/1.1 \(response.status) \(Self.reason(response.status))\r\n"
+        for (name, value) in response.headers + [("Connection", "close")] { text += "\(name): \(value)\r\n" }
+        text += "\r\n"
+        let sink = WebSink(connection: connection, queue: queue) { [weak self] in self?.close() }
+        connection.send(content: Data(text.utf8), completion: .contentProcessed { [weak self] error in
+            guard let self, error == nil else { return sink.close() }
+            watchForEnd(sink)
+            start(sink)
+        })
+    }
+
+    private func watchForEnd(_ sink: WebSink) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, complete, error in
+            if error != nil || complete || data == nil { return sink.close() }
+            self?.watchForEnd(sink)
+        }
     }
 
     /// Sends the next chunk of a file once the one before it left, so a slow phone never makes the Mac read ahead.
@@ -314,6 +340,70 @@ private final class WebConnection: @unchecked Sendable {
         case 405: "Method Not Allowed"
         case 416: "Range Not Satisfiable"
         default: "Error"
+        }
+    }
+}
+
+/// Where a body with no end is sent: the audio stream of the web remote. Any thread.
+final class WebSink: @unchecked Sendable {
+    init(connection: NWConnection, queue: DispatchQueue, onClose: @escaping () -> Void) {
+        self.connection = connection
+        self.queue = queue
+        self.onClose = onClose
+    }
+
+    /// Called once, on the connection's queue, when the phone closed the connection or fell behind.
+    var ended: (() -> Void)? {
+        get { lock.withLock { endedHandler } }
+        set { lock.withLock { endedHandler = newValue } }
+    }
+
+    var closed: Bool { lock.withLock { isClosed } }
+
+    /// Sends the bytes, or ends the response when more than `limit` bytes still wait to leave, since the phone then
+    /// fell too far behind to catch up.
+    func send(_ data: Data, limit: Int = 2_000_000) {
+        let fresh = lock.withLock { () -> Bool in
+            guard !isClosed else { return false }
+            pending += data.count
+            return pending <= limit
+        }
+        guard fresh else { return close() }
+        connection.send(content: data, completion: .contentProcessed { [weak self] error in
+            guard let self else { return }
+            lock.withLock { self.pending -= data.count }
+            if error != nil { close() }
+        })
+    }
+
+    func close() {
+        let handler = lock.withLock { () -> (() -> Void)? in
+            guard !isClosed else { return nil }
+            isClosed = true
+            defer { endedHandler = nil }
+            return endedHandler
+        }
+        guard !closedOnce() else { return }
+        queue.async { [onClose] in
+            handler?()
+            onClose()
+        }
+    }
+
+    private let connection: NWConnection
+    private let queue: DispatchQueue
+    private let onClose: () -> Void
+    private let lock = NSLock()
+    private var isClosed = false
+    private var finished = false
+    private var pending = 0
+    private var endedHandler: (() -> Void)?
+
+    /// The close runs once, though the read that ends and a failed send can both call it.
+    private func closedOnce() -> Bool {
+        lock.withLock {
+            defer { finished = true }
+            return finished
         }
     }
 }

@@ -27,7 +27,7 @@
         <div class="label">Now playing</div>
         <div class="card" id="now-card">
             <button class="row song-row" id="now" disabled>
-                <img class="cover" id="now-cover" alt="">
+                <span id="now-cover"></span>
                 <div class="grow">
                     <div class="song-title" id="now-title">Nothing playing</div>
                     <div class="song-artist" id="now-artist"></div>
@@ -35,11 +35,6 @@
                 </div>
                 <span class="icon chevron" id="now-chevron" hidden></span>
             </button>
-            <label class="row" hidden>
-                <span class="icon" style="--symbol: url(/api/symbol/speaker.wave.2.fill)"></span>
-                <span class="grow row-label">Mac sound</span>
-                <span class="switch"><input type="checkbox" class="mac-sound" role="switch" aria-label="Mac sound"><span></span></span>
-            </label>
         </div>
     </section>
 
@@ -47,9 +42,9 @@
         <div class="label">Spotify</div>
         <form class="card row" id="spotify-form">
             <input class="field" id="spotify-link" type="url" inputmode="url" placeholder="Spotify link" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Spotify link">
-            <button class="button primary" id="spotify-play" type="submit">Play</button>
+            <button class="button primary" id="spotify-play" type="submit"><span class="label-text">Play</span></button>
         </form>
-        <div class="status" id="spotify-status"></div>
+        <div class="error-line" id="spotify-error" hidden></div>
     </section>
 
     <section class="section">
@@ -59,20 +54,31 @@
 </div>
 
 <div class="view" id="song" hidden>
-    <header class="top" id="top">
-        <button class="close" id="close">Close song</button>
+    <header class="top" id="top" aria-hidden="true">
+        <button class="back" id="top-close" aria-label="Close song" tabindex="-1"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
         <div class="title" id="bar-title"></div>
         <div class="spacer"></div>
     </header>
 
     <div class="head" id="head">
-        <img class="cover large" id="song-cover" alt="">
+        <button class="back" id="close" aria-label="Close song"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
+        <span id="song-cover"></span>
         <div class="grow" style="min-width: 0">
             <div class="song-title" id="song-title"></div>
             <div class="song-artist" id="song-artist"></div>
             <div class="pills" id="song-pills"></div>
         </div>
     </div>
+
+    <section class="section">
+        <div class="card row output" role="group" aria-label="Output">
+            <span class="row-label">Output</span>
+            <div class="segments two">
+                <button id="out-mac" aria-pressed="true"><span class="icon" style="--symbol: url(/api/symbol/macbook)"></span><span class="label-text">Mac</span></button>
+                <button id="out-phone" aria-pressed="false"><span class="icon" style="--symbol: url(/api/symbol/iphone)"></span><span class="label-text">Phone</span></button>
+            </div>
+        </div>
+    </section>
 
     <section class="section">
         <div class="label">Key <span class="pill" id="change-pill" hidden></span></div>
@@ -94,11 +100,6 @@
                     <button class="up" id="speed-up" aria-label="Faster"><span class="icon" style="--symbol: url(/api/symbol/plus)"></span></button>
                 </div>
             </div>
-            <div class="row" id="part-row">
-                <span class="row-label grow">Part</span>
-                <input class="time" id="from" inputmode="decimal" placeholder="Start" autocomplete="off" aria-label="From">
-                <input class="time" id="to" inputmode="decimal" placeholder="End" autocomplete="off" aria-label="To">
-            </div>
         </div>
     </section>
 
@@ -107,37 +108,19 @@
         <div class="card padded"><div class="stems" id="stems" role="group" aria-label="Instruments"></div></div>
     </section>
 
-    <section class="section" id="live-sound" hidden>
-        <label class="card row">
-            <span class="icon" style="--symbol: url(/api/symbol/speaker.wave.2.fill)"></span>
-            <span class="grow row-label">Mac sound</span>
-            <span class="switch"><input type="checkbox" class="mac-sound" role="switch" aria-label="Mac sound"><span></span></span>
-        </label>
-    </section>
-
     <section class="section" id="notes-section">
         <div class="label">Notes</div>
         <div class="card padded">
             <div class="segments" id="notes-stem" role="group" aria-label="Instrument to transcribe"></div>
             <button class="button big" id="transcribe" style="width: 100%; margin-top: 10px">Transcribe</button>
-            <div class="status" id="notes-status"></div>
+            <div class="error-line" id="notes-error" hidden></div>
         </div>
         <div id="sheet" hidden></div>
     </section>
 
     <footer class="dock">
-        <div class="status" id="status" aria-live="polite"></div>
-        <div class="bar-progress" id="progress" hidden><div></div></div>
-        <div class="player" id="player" hidden>
-            <button class="play" id="play-pause" aria-label="Play"><span class="icon" id="play-icon" style="--symbol: url(/api/symbol/play.fill)"></span></button>
-            <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Position">
-            <span class="clock" id="clock">0:00 / 0:00</span>
-        </div>
-        <div class="actions" id="file-actions">
-            <button class="button big" id="play-mac"><span class="icon" style="--symbol: url(/api/symbol/macbook)"></span><span>Play on Mac</span></button>
-            <button class="button big primary" id="listen"><span class="icon" style="--symbol: url(/api/symbol/headphones)"></span><span>Listen here</span></button>
-        </div>
-        <div class="transport" id="transport" hidden>
+        <div class="error-line" id="song-error" hidden></div>
+        <div class="transport" id="transport">
             <div class="scrub">
                 <span class="clock" id="mac-elapsed">0:00</span>
                 <input type="range" id="mac-seek" min="0" max="1000" value="0" aria-label="Position">
@@ -150,7 +133,6 @@
             </div>
         </div>
     </footer>
-    <audio id="audio" preload="auto"></audio>
 </div>
 
 <script src="/web/sheet.js"></script>

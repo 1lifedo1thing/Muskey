@@ -1,6 +1,7 @@
-// The web remote of Muskey: the songs of Recents and the song that plays on the Mac, with the HUD's key row, tempo
-// and instruments. A song of Recents is played on the Mac or rendered with its changes and heard here, and its notes
-// are drawn by the sheet of the notes window. The song that plays on the Mac changes at once.
+// The web remote of Muskey. The Mac always plays: a song of Recents or a link is played there, and the song view shows
+// the song that the Mac plays, with the HUD's key row, tempo and instruments, a transport, and the notes of the notes
+// window. Output picks where it is heard: the Mac, or this phone, which then gets the Mac's output as a live stream
+// played with Web Audio, so every change is heard on the phone as it is on the Mac.
 (() => {
     "use strict";
 
@@ -44,8 +45,9 @@
     };
     const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
     /** A shift as the HUD writes it, with a real minus sign. */
-    const shown = (n) => (n < 0 ? `\u2212${-n}` : signed(n));
+    const shown = (n) => (n < 0 ? `−${-n}` : signed(n));
     const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+    const heardOf = (key, by, other) => (other ? relativeOf(transpose(key, by)) : transpose(key, by));
 
     /** The tonic with its sharp or flat faded, and a small m for minor, as the HUD writes a key. */
     function keyName(key) {
@@ -80,6 +82,24 @@
         return span;
     }
 
+    /** A cover, or a note on a plain tile when the song has none or its picture doesn't load. */
+    function cover(source, large = false) {
+        const placeholder = () => {
+            const tile = document.createElement("span");
+            tile.className = `cover empty${large ? " large" : ""}`;
+            tile.append(icon("music.note"));
+            return tile;
+        };
+        if (!source) return placeholder();
+        const image = document.createElement("img");
+        image.className = `cover${large ? " large" : ""}`;
+        image.alt = "";
+        image.decoding = "async";
+        image.onerror = () => image.replaceWith(placeholder());
+        image.src = source;
+        return image;
+    }
+
     // MARK: Requests
 
     /** A line in Muskey's log on the Mac, for what goes wrong on the phone, where nobody can read the console. */
@@ -89,8 +109,8 @@
     addEventListener("error", (event) => report(`script error: ${event.message} at ${event.filename}:${event.lineno}`));
     addEventListener("unhandledrejection", (event) => report(`unhandled: ${event.reason?.message || event.reason}`));
 
-    // The tests on a simulator open the page with ?testmute, which mutes the audio right after each play starts, so
-    // that the Mac running the simulator stays quiet. iOS decides whether a play may start before the mute.
+    // The tests on a simulator open the page with ?testmute, which keeps the stream at zero volume, so that the Mac
+    // running the simulator stays quiet. iOS decides whether the sound may start before the volume matters.
     const testMute = (() => {
         try {
             if (new URLSearchParams(location.search).has("testmute")) sessionStorage.setItem("testmute", "1");
@@ -99,17 +119,6 @@
             return false;
         }
     })();
-
-    /** Starts the audio, and reports a play that iOS refused, which happens when it doesn't start from a tap. */
-    function startAudio(why) {
-        const audio = $("audio");
-        const started = audio.play();
-        if (testMute) audio.muted = true;
-        return started.catch((error) => {
-            report(`play refused (${why}): ${error.name} ${error.message}`);
-            throw error;
-        });
-    }
 
     async function api(path, body) {
         let response;
@@ -131,65 +140,54 @@
         return response.status === 204 ? null : response.json();
     }
 
-    /** Asks how a job goes until it is done, showing its step in `status`, and gives its last answer. */
-    async function follow(job, status) {
+    /** Asks how a job goes until it is done, showing its progress in `button`, and gives its last answer. */
+    async function follow(job, button) {
         const token = {};
-        status.token = token;
+        if (button) button.token = token;
         while (!job.done) {
-            showStep(status, job);
+            if (button) progress(button, job.progress);
             await new Promise((resolve) => setTimeout(resolve, 400));
-            if (status.token !== token) throw new Error("Stopped");
+            if (button && button.token !== token) throw new Error("Stopped");
             job = await api(`/api/job/${job.job}`);
         }
-        showStep(status, null);
-        if (job.error) throw new Error(job.error[0].toUpperCase() + job.error.slice(1));
+        if (button) progress(button, null);
+        if (job.error) {
+            report(`job failed: ${job.error}`);
+            throw new Error(job.error[0].toUpperCase() + job.error.slice(1));
+        }
         return job;
     }
 
-    function showStep(status, job) {
-        const step = job?.step;
-        status.classList.remove("error");
-        status.textContent = step ? (job.progress != null ? `${step} ${Math.round(job.progress * 100)}%` : step) : "";
-        if (status === $("status")) {
-            $("progress").hidden = !(step && job.progress != null);
-            if (step && job.progress != null) $("progress").firstElementChild.style.width = `${job.progress * 100}%`;
-        }
+    /** A job's progress as a fill inside the button that started it, or a moving shine while its share is unknown. */
+    function progress(button, share) {
+        button.classList.toggle("working", share !== null);
+        button.classList.toggle("unknown", share === undefined);
+        button.style.setProperty("--done", share == null ? "0%" : `${Math.round(share * 100)}%`);
     }
 
-    /** A failed action: its button turns red and reads Retry, and the error shows in its status line. */
-    function fail(button, status, error) {
-        const label = button.querySelector("span:last-child") || button;
+    /** A failed action: its button turns red and reads Retry, and the error shows under it. */
+    function fail(button, line, error) {
+        const label = button.querySelector(".label-text") || button;
         if (!button.dataset.label) button.dataset.label = label.textContent;
         label.textContent = "Retry";
-        const glyph = button.querySelector(".icon");
-        if (glyph && !button.dataset.symbol) {
-            button.dataset.symbol = glyph.style.getPropertyValue("--symbol");
-            glyph.style.setProperty("--symbol", symbol("arrow.clockwise"));
-        }
         button.classList.add("failed");
-        if (button.classList.contains("primary")) {
-            button.classList.remove("primary");
-            button.dataset.primary = "1";
+        progress(button, null);
+        if (line) {
+            line.textContent = error.message;
+            line.hidden = false;
         }
-        status.textContent = error.message;
-        status.classList.add("error");
-        if (status === $("status")) $("progress").hidden = true;
     }
 
     function clearFailures() {
-        for (const button of document.querySelectorAll(".button.failed")) {
-            const label = button.querySelector("span:last-child") || button;
-            label.textContent = button.dataset.label;
+        for (const button of document.querySelectorAll("button.failed")) {
+            const label = button.querySelector(".label-text") || button;
+            if (button.dataset.label) label.textContent = button.dataset.label;
             delete button.dataset.label;
             button.classList.remove("failed");
-            if (button.dataset.symbol) button.querySelector(".icon").style.setProperty("--symbol", button.dataset.symbol);
-            delete button.dataset.symbol;
-            if (button.dataset.primary) button.classList.add("primary");
-            delete button.dataset.primary;
         }
-        for (const status of document.querySelectorAll(".status.error")) {
-            status.classList.remove("error");
-            status.textContent = "";
+        for (const line of document.querySelectorAll(".error-line")) {
+            line.textContent = "";
+            line.hidden = true;
         }
     }
 
@@ -197,21 +195,20 @@
 
     let songs = [];
     let state = null;
-    /** "file" for a song of Recents, "live" for the song that plays on the Mac. */
-    let mode = null;
-    let song = null;
+    let stateAt = 0;
+    /** The song view is open. */
+    let open = false;
     let shift = 0;
     let relative = false;
     let speed = 1;
     let muted = new Set();
     let notesStem = "auto";
-    /** The changes of the audio that plays here, so the sheet's line lands on the same moment of the song. */
-    let heard = null;
     let sheet = null;
     /** A change made here a moment ago, which the next answers about the Mac's state don't undo. */
     let touched = 0;
+    let transportAt = 0;
 
-    const original = () => parseKey(mode === "live" ? state?.key : song?.key);
+    const original = () => parseKey(state?.key);
 
     // MARK: Home
 
@@ -232,11 +229,6 @@
         list.replaceChildren(...songs.map((item) => {
             const row = document.createElement("button");
             row.className = "row song-row";
-            const image = document.createElement("img");
-            image.className = "cover";
-            image.alt = "";
-            image.loading = "lazy";
-            if (item.cover) image.src = `/api/cover/${item.id}`;
             const texts = document.createElement("div");
             texts.className = "grow";
             const title = document.createElement("div");
@@ -252,10 +244,32 @@
             if (key) pills.append(pill(keyName(key)));
             const chevron = icon("chevron.right");
             chevron.classList.add("chevron");
-            row.append(image, texts, pills, chevron);
-            row.onclick = () => openSong(item);
+            row.append(cover(item.cover ? `/api/cover/${item.id}` : null), texts, pills, chevron);
+            row.onclick = () => playSong(item, row);
             return row;
         }));
+    }
+
+    /** A song of Recents plays on the Mac, and the song view opens on it once it plays. */
+    async function playSong(item, row) {
+        if (row.classList.contains("working")) return;
+        clearFailures();
+        const artist = row.querySelector(".song-artist");
+        try {
+            await follow(await api("/api/play", { song: item.id }), row);
+            await refreshState();
+            openSong();
+        } catch (error) {
+            if (error.message === "Stopped") return;
+            progress(row, null);
+            row.classList.add("failed");
+            artist.dataset.artist = artist.textContent;
+            artist.textContent = error.message;
+            setTimeout(() => {
+                row.classList.remove("failed");
+                artist.textContent = artist.dataset.artist;
+            }, 6000);
+        }
     }
 
     async function refreshState() {
@@ -277,20 +291,10 @@
         $("mac").classList.remove("offline");
         $("mac-name").textContent = state.mac;
         drawNow();
-        for (const toggle of document.querySelectorAll(".mac-sound")) toggle.checked = state.muted === false;
-        // A Mac without a sound output has nothing to mute, and the song view has the switch only for a live song.
-        document.querySelector("#now-card .mac-sound").closest(".row").hidden = state.muted == null;
-        $("live-sound").hidden = state.muted == null || mode !== "live";
-        if (mode === "live") drawLive();
-        // The second row follows Settings > HUD on the Mac.
-        if (mode && state.relativeKeys !== relativeKeys) drawKeys();
-        relativeKeys = state.relativeKeys;
+        if (open) drawSong();
     }
-    let relativeKeys = null;
-    let stateAt = 0;
-    let transportAt = 0;
 
-    /** The player and the key and tempo that the Mac plays. The song view leaves out the two that its rows show. */
+    /** The player, the key and the tempo that the Mac plays. The song view leaves out the two that its rows show. */
     function nowPills(target, full = true) {
         target.replaceChildren();
         if (state.app) target.append(pill(state.app));
@@ -314,7 +318,7 @@
         if (state.bpm) target.append(pill(`${Math.round(state.bpm * state.speed)} BPM`, state.speed < 0.999 ? "blue" : state.speed > 1.001 ? "honey" : ""));
     }
 
-    let coverTitle = null;
+    let nowCover;
     function drawNow() {
         const playing = Boolean(state?.title);
         $("now").disabled = !playing;
@@ -323,17 +327,14 @@
         $("now-artist").textContent = playing ? state.artist || "" : "";
         if (playing) nowPills($("now-pills"));
         else $("now-pills").replaceChildren();
-        const cover = state?.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : "";
-        if (cover !== coverTitle) {
-            coverTitle = cover;
-            if (cover) $("now-cover").src = cover;
-            else $("now-cover").removeAttribute("src");
+        const source = state?.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : null;
+        if (source !== nowCover) {
+            nowCover = source;
+            $("now-cover").replaceChildren(cover(source));
         }
     }
 
-    const heardOf = (key, by, other) => (other ? relativeOf(transpose(key, by)) : transpose(key, by));
-
-    // MARK: Song views
+    // MARK: Song view
 
     function show(view) {
         $("home").hidden = view !== "home";
@@ -341,90 +342,56 @@
         scrollTo(0, 0);
     }
 
-    function openSong(item) {
-        mode = "file";
-        song = item;
-        reset();
-        $("song-title").textContent = $("bar-title").textContent = item.title;
-        $("song-artist").textContent = item.artist || "";
-        $("song-pills").replaceChildren();
-        setCover($("song-cover"), item.cover ? `/api/cover/${item.id}` : null);
-        $("part-row").hidden = false;
-        $("notes-section").hidden = false;
-        $("file-actions").hidden = false;
-        $("transport").hidden = true;
-        $("live-sound").hidden = true;
-        drawAll();
-        show("song");
-        history.pushState({ song: item.id }, "");
-        centerKeys();
-    }
-
-    function openLive() {
+    let songCover;
+    function openSong() {
         if (!state?.title) return;
-        mode = "live";
-        song = null;
-        reset();
+        open = true;
+        closeSheet();
+        clearFailures();
         shift = state.shift;
         relative = state.relative;
         speed = state.speed;
-        $("part-row").hidden = true;
-        $("notes-section").hidden = true;
-        $("file-actions").hidden = true;
-        $("transport").hidden = false;
-        $("live-sound").hidden = state.muted == null;
-        drawLive();
+        muted = new Set(state.mutedStems || []);
+        touched = 0;
+        songCover = undefined;
+        drawSong();
         drawAll();
         show("song");
-        history.pushState({ live: true }, "");
+        if (history.state?.song !== true) history.pushState({ song: true }, "");
         centerKeys();
     }
 
-    function drawLive() {
+    function closeSong() {
+        open = false;
+        closeSheet();
+        show("home");
+        loadSongs();
+    }
+
+    function drawSong() {
         $("song-title").textContent = $("bar-title").textContent = state.title || "Nothing playing";
         $("song-artist").textContent = state.artist || "";
         nowPills($("song-pills"), false);
+        const source = state.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : null;
+        if (source !== songCover) {
+            songCover = source;
+            $("song-cover").replaceChildren(cover(source, true));
+        }
+        // The notes need the song's file, which links and files have, and other players' songs don't.
+        $("notes-section").hidden = !state.song;
         drawTransport();
-        setCover($("song-cover"), state.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : null);
+        drawOutput();
         // The Mac's state wins, unless a change was just made here and the Mac hasn't applied it yet.
         if (Date.now() - touched > 3000) {
-            const changed = shift !== state.shift || relative !== state.relative || Math.abs(speed - state.speed) > 0.001;
+            const stems = new Set(state.mutedStems || []);
+            const changed = shift !== state.shift || relative !== state.relative || Math.abs(speed - state.speed) > 0.001
+                || stems.size !== muted.size || [...stems].some((name) => !muted.has(name));
             shift = state.shift;
             relative = state.relative;
             speed = state.speed;
+            muted = stems;
             if (changed) drawAll();
         }
-    }
-
-    function setCover(image, source) {
-        image.style.visibility = source ? "visible" : "hidden";
-        if (source && image.getAttribute("src") !== source) image.src = source;
-    }
-
-    function reset() {
-        stopAudio();
-        closeSheet();
-        clearFailures();
-        shift = 0;
-        relative = false;
-        speed = 1;
-        muted = new Set();
-        heard = null;
-        $("from").value = "";
-        $("to").value = "";
-        $("status").textContent = "";
-        $("progress").hidden = true;
-        $("player").hidden = true;
-    }
-
-    function closeSong() {
-        $("status").token = null;
-        stopAudio();
-        closeSheet();
-        mode = null;
-        song = null;
-        show("home");
-        loadSongs();
     }
 
     function drawAll() {
@@ -438,7 +405,8 @@
 
     function drawKeys() {
         const key = original();
-        const both = Boolean(key && state?.relativeKeys);
+        // Both rows always: a phone has no Option key to reach the other mode.
+        const both = Boolean(key);
         const row = $("keys");
         row.classList.toggle("both", both);
         row.replaceChildren();
@@ -513,24 +481,22 @@
         drawKeys();
         centerKeys();
         if (sheet && (sheet.state.shift !== shift || sheet.state.relative !== relative)) sheet.set({ shift, relative });
-        if (mode === "live") {
-            const key = original();
-            // A number keeps the mode on the Mac, and a key's name moves to its mode.
-            const sent = key && relative !== previousRelative ? ascii(heardOf(key, shift, relative)) : signed(shift);
-            live({ key: sent });
-        }
+        const key = original();
+        // A number keeps the mode on the Mac, and a key's name moves to its mode.
+        live({ key: key && relative !== previousRelative ? ascii(heardOf(key, shift, relative)) : signed(shift) });
     }
 
     // MARK: Tempo
 
-    const fastest = () => (mode === "live" && state?.app !== "Muskey Player" ? 1 : 1.5);
+    /** Muskey Player plays a song faster too, and another player's song can only be slowed down. */
+    const fastest = () => (state?.app === "Muskey Player" ? 1.5 : 1);
 
     function drawSpeed() {
         const percent = Math.round(speed * 100);
         $("speed-value").textContent = `${percent}%`;
         $("speed-down").disabled = speed <= 0.5;
         $("speed-up").disabled = speed >= fastest() - 0.001;
-        const bpm = mode === "live" ? state?.bpm : song?.bpm;
+        const bpm = state?.bpm;
         $("bpm-pill").hidden = !bpm;
         if (bpm) {
             $("bpm-pill").textContent = `${Math.round(bpm * speed)} BPM`;
@@ -542,7 +508,7 @@
         speed = Math.round(Math.max(0.5, Math.min(fastest(), value)) * 20) / 20;
         clearFailures();
         drawSpeed();
-        if (mode === "live") live({ speed });
+        live({ speed });
     }
 
     // MARK: Instruments
@@ -606,10 +572,10 @@
         muted = next;
         clearFailures();
         drawStems();
-        if (mode === "live") live({ stems: STEMS.map((s) => s.name).filter((n) => !muted.has(n)) });
+        live({ stems: STEMS.map((s) => s.name).filter((n) => !muted.has(n)) });
     }
 
-    // MARK: The song that plays on the Mac
+    // MARK: Changes to the song that plays on the Mac
 
     let liveTimer = null;
     let livePending = {};
@@ -622,14 +588,13 @@
             const body = livePending;
             livePending = {};
             try {
-                await follow(await api("/api/live", body), $("status"));
-                $("status").textContent = "";
+                await follow(await api("/api/live", body));
                 touched = Date.now();
                 refreshState();
             } catch (error) {
                 if (error.message === "Stopped") return;
-                $("status").textContent = error.message;
-                $("status").classList.add("error");
+                $("song-error").textContent = error.message;
+                $("song-error").hidden = false;
             }
         }, 250);
     }
@@ -645,7 +610,7 @@
 
     let macSeeking = false;
     function drawTransport() {
-        if (mode !== "live" || !state) return;
+        if (!open || !state) return;
         $("mac-play-icon").style.setProperty("--symbol", symbol(state.playing ? "pause.fill" : "play.fill"));
         $("mac-play").setAttribute("aria-label", state.playing ? "Pause" : "Play");
         const position = macPosition();
@@ -653,11 +618,16 @@
         const known = position != null && duration > 0;
         $("transport").classList.toggle("unknown", !known);
         for (const id of ["mac-seek", "mac-back", "mac-forward"]) $(id).disabled = !known || !state.seekable;
-        if (!known) return;
-        if (!macSeeking) $("mac-seek").value = String(Math.round((position / duration) * 1000));
-        const shownAt = macSeeking ? (Number($("mac-seek").value) / 1000) * duration : position;
-        $("mac-elapsed").textContent = clock(shownAt);
-        $("mac-left").textContent = `\u2212${clock(duration - shownAt)}`;
+        if (known) {
+            if (!macSeeking) $("mac-seek").value = String(Math.round((position / duration) * 1000));
+            const at = macSeeking ? (Number($("mac-seek").value) / 1000) * duration : position;
+            $("mac-elapsed").textContent = clock(at);
+            $("mac-left").textContent = `−${clock(duration - at)}`;
+        }
+        if (sheet) {
+            sheet.setTime(Math.max(0, (position ?? 0) - (output === "phone" ? player.lag() : 0)));
+            sheet.setPlaying(Boolean(state.playing), speed);
+        }
     }
 
     async function transport(body) {
@@ -669,12 +639,147 @@
         }
     }
 
+    // MARK: Output: the Mac, or this phone through a live stream of the Mac's output
+
+    let output = "mac";
+
+    /** Plays /api/stream: 16-bit stereo PCM read from one long request and scheduled about a quarter of a second ahead
+     * in an AudioContext, which starts inside the tap, as iOS asks. */
+    const player = (() => {
+        let context = null;
+        let gain = null;
+        let abort = null;
+        let playAt = 0;
+        let generation = 0;
+        // What arrived since the last report, for the Mac's log: seconds of audio and their loudest sample.
+        let receivedSeconds = 0;
+        let peak = 0;
+        setInterval(() => {
+            if (!context || abort === null) return;
+            const db = peak > 0 ? Math.round(20 * Math.log10(peak)) : -Infinity;
+            report(`stream: ${receivedSeconds.toFixed(1)} s received in 10 s, peak ${db} dB, ${Math.round((playAt - context.currentTime) * 1000)} ms ahead`);
+            receivedSeconds = 0;
+            peak = 0;
+        }, 10000);
+
+        function ensureContext() {
+            if (!context) {
+                if (navigator.audioSession) navigator.audioSession.type = "playback";
+                context = new AudioContext();
+                gain = context.createGain();
+                gain.gain.value = testMute ? 0 : 1;
+                gain.connect(context.destination);
+            }
+            return context.resume();
+        }
+
+        async function run(mine) {
+            while (mine === generation) {
+                abort = new AbortController();
+                try {
+                    const response = await fetch("/api/stream", { cache: "no-store", signal: abort.signal });
+                    if (!response.ok) throw new Error(`the stream answered ${response.status}`);
+                    const rate = Number(response.headers.get("X-Sample-Rate")) || 48000;
+                    report(`stream connected at ${rate} Hz, the context runs at ${context.sampleRate} Hz (${context.state})`);
+                    const reader = response.body.getReader();
+                    let carry = new Uint8Array(0);
+                    playAt = 0;
+                    for (;;) {
+                        const { value, done } = await reader.read();
+                        if (done || mine !== generation) break;
+                        const bytes = new Uint8Array(carry.length + value.length);
+                        bytes.set(carry);
+                        bytes.set(value, carry.length);
+                        const usable = bytes.length - (bytes.length % 4);
+                        carry = bytes.slice(usable);
+                        schedule(new DataView(bytes.buffer, 0, usable), usable / 4, rate);
+                    }
+                } catch (error) {
+                    if (mine !== generation) return;
+                    report(`stream: ${error.message}`);
+                }
+                // The Mac closes the stream when its output changes rate, and the page connects again at once.
+                if (mine === generation) await new Promise((resolve) => setTimeout(resolve, 300));
+            }
+        }
+
+        function schedule(view, frames, rate) {
+            if (!frames || !context) return;
+            const buffer = context.createBuffer(2, frames, rate);
+            const left = buffer.getChannelData(0);
+            const right = buffer.getChannelData(1);
+            let loudest = 0;
+            for (let i = 0; i < frames; i++) {
+                left[i] = view.getInt16(i * 4, true) / 32768;
+                right[i] = view.getInt16(i * 4 + 2, true) / 32768;
+                loudest = Math.max(loudest, Math.abs(left[i]), Math.abs(right[i]));
+            }
+            receivedSeconds += frames / rate;
+            peak = Math.max(peak, loudest);
+            const now = context.currentTime;
+            // Too close to the speaker after a gap, or too far after a burst: start again a quarter second ahead.
+            if (playAt < now + 0.03 || playAt > now + 1.2) playAt = now + 0.25;
+            const source = context.createBufferSource();
+            source.buffer = buffer;
+            source.connect(gain);
+            source.start(playAt);
+            playAt += buffer.duration;
+        }
+
+        return {
+            /** Called from the tap on Phone. */
+            start() {
+                const mine = ++generation;
+                const resumed = ensureContext();
+                run(mine);
+                return resumed;
+            },
+            stop() {
+                generation++;
+                abort?.abort();
+                abort = null;
+                context?.suspend();
+            },
+            /** Seconds between the Mac playing a moment and this phone playing it. */
+            lag() {
+                return context && playAt ? Math.max(0, playAt - context.currentTime) + 0.05 : 0;
+            },
+        };
+    })();
+
+    function setOutput(next) {
+        if (next === output) return;
+        output = next;
+        clearFailures();
+        if (output === "phone") {
+            // Inside the tap: iOS lets Web Audio start only from one.
+            player.start().catch((error) => {
+                report(`audio refused: ${error.name} ${error.message}`);
+                player.stop();
+                output = "mac";
+                drawOutput();
+                fail($("out-phone"), $("song-error"), new Error("This phone refused to play the sound"));
+            });
+        } else {
+            player.stop();
+        }
+        drawOutput();
+        setTimeout(refreshState, 400);
+    }
+
+    function drawOutput() {
+        $("out-mac").setAttribute("aria-pressed", String(output === "mac"));
+        $("out-phone").setAttribute("aria-pressed", String(output === "phone"));
+    }
+
     // MARK: Notes
 
     function drawNotesPicker() {
         const options = [{ name: "auto", label: "Auto" }, ...STEMS.filter((s) => s.name !== "drums")];
         const picked = options.find((o) => o.name === notesStem);
-        if (!$("transcribe").classList.contains("failed")) $("transcribe").textContent = notesStem === "auto" ? "Transcribe" : `Transcribe ${picked.label.toLowerCase()}`;
+        if (!$("transcribe").classList.contains("failed")) {
+            $("transcribe").textContent = notesStem === "auto" ? "Transcribe" : `Transcribe ${picked.label.toLowerCase()}`;
+        }
         $("notes-stem").replaceChildren(...options.map((option) => {
             const button = document.createElement("button");
             button.setAttribute("aria-pressed", String(option.name === notesStem));
@@ -690,51 +795,30 @@
         }));
     }
 
-    function part() {
-        const seconds = (text) => {
-            const parts = text.trim().split(":");
-            if (!text.trim() || parts.length > 3 || parts.some((p) => !/^\d+(\.\d+)?$/.test(p))) return undefined;
-            return parts.reduce((total, p) => total * 60 + Number(p), 0);
-        };
-        return { from: seconds($("from").value), to: seconds($("to").value) };
-    }
-
-    function changes() {
-        return {
-            song: song.id,
-            key: shift === 0 ? undefined : signed(shift),
-            speed: speed === 1 ? undefined : speed,
-            stems: muted.size ? STEMS.map((s) => s.name).filter((n) => !muted.has(n)) : undefined,
-            ...part(),
-        };
-    }
-
     async function transcribe() {
         const button = $("transcribe");
         if (button.classList.contains("failed")) clearFailures();
+        if (!state?.song) return;
         button.disabled = true;
         try {
-            const job = await follow(await api("/api/write", { song: song.id, notes: notesStem, format: "json", ...part() }), $("notes-status"));
+            const job = await follow(await api("/api/write", { song: state.song, notes: notesStem, format: "json" }), button);
             const data = await (await fetch(job.file)).json();
             closeSheet();
             $("sheet").hidden = false;
-            const { from, to } = part();
             sheet = MuskeySheet.mount($("sheet"), data, {
                 shift,
                 relative,
-                transcribed: from !== undefined || to !== undefined ? [from ?? 0, to ?? data.duration] : undefined,
                 onSeek: (time) => {
-                    if (heard) $("audio").currentTime = Math.max(0, (time - heard.from) / heard.speed);
+                    if (state?.seekable) transport({ action: "seek", seconds: Math.max(0, time) });
                 },
-                // A key picked on the sheet is the key of the next render.
                 onChange: (next) => {
                     if (next.shift !== shift || next.relative !== relative) setKey(next.shift, next.relative);
                 },
             });
-            syncSheet();
+            drawTransport();
             $("sheet").scrollIntoView({ block: "start", behavior: "smooth" });
         } catch (error) {
-            if (error.message !== "Stopped") fail(button, $("notes-status"), error);
+            if (error.message !== "Stopped") fail(button, $("notes-error"), error);
         } finally {
             button.disabled = false;
         }
@@ -747,77 +831,6 @@
         $("sheet").hidden = true;
     }
 
-    // MARK: Playing
-
-    async function playOnMac() {
-        const button = $("play-mac");
-        clearFailures();
-        button.disabled = true;
-        try {
-            const job = await follow(await api("/api/play", changes()), $("status"));
-            $("status").textContent = job.message || "";
-        } catch (error) {
-            if (error.message !== "Stopped") fail(button, $("status"), error);
-        } finally {
-            button.disabled = false;
-        }
-    }
-
-    async function listenHere() {
-        const button = $("listen");
-        clearFailures();
-        button.disabled = true;
-        const wanted = changes();
-        const at = heard ? songTime() : null;
-        try {
-            let source;
-            if (!wanted.key && !wanted.speed && !wanted.stems && wanted.from === undefined && wanted.to === undefined) {
-                source = `/api/song/${song.id}`;
-            } else {
-                source = (await follow(await api("/api/write", { ...wanted, format: "m4a" }), $("status"))).file;
-            }
-            const audio = $("audio");
-            heard = { speed: wanted.speed || 1, from: wanted.from || 0 };
-            audio.src = source;
-            $("player").hidden = false;
-            if (at !== null) {
-                audio.addEventListener("loadedmetadata", () => { audio.currentTime = Math.max(0, (at - heard.from) / heard.speed); }, { once: true });
-            }
-            startAudio("listen here").catch(() => {});
-        } catch (error) {
-            if (error.message !== "Stopped") fail(button, $("status"), error);
-        } finally {
-            button.disabled = false;
-        }
-    }
-
-    const songTime = () => heard.from + $("audio").currentTime * heard.speed;
-
-    function stopAudio() {
-        const audio = $("audio");
-        audio.pause();
-        audio.removeAttribute("src");
-        audio.load();
-    }
-
-    function drawPlayer() {
-        const audio = $("audio");
-        $("play-icon").style.setProperty("--symbol", symbol(audio.paused ? "play.fill" : "pause.fill"));
-        $("play-pause").setAttribute("aria-label", audio.paused ? "Play" : "Pause");
-        const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
-        if (!seeking) $("seek").value = String(duration ? Math.round((audio.currentTime / duration) * 1000) : 0);
-        $("clock").textContent = `${clock(audio.currentTime)} / ${clock(duration)}`;
-        syncSheet();
-    }
-
-    function syncSheet() {
-        if (!sheet || !heard) return;
-        sheet.setTime(songTime());
-        sheet.setPlaying(!$("audio").paused, heard.speed);
-    }
-
-    let seeking = false;
-
     // MARK: Spotify
 
     async function playSpotify(event) {
@@ -828,12 +841,12 @@
         clearFailures();
         button.disabled = true;
         try {
-            await follow(await api("/api/spotify", { link }), $("spotify-status"));
+            await follow(await api("/api/spotify", { link }), button);
             $("spotify-link").value = "";
             await refreshState();
-            openLive();
+            openSong();
         } catch (error) {
-            if (error.message !== "Stopped") fail(button, $("spotify-status"), error);
+            if (error.message !== "Stopped") fail(button, $("spotify-error"), error);
         } finally {
             button.disabled = !$("spotify-link").value.trim();
         }
@@ -841,21 +854,24 @@
 
     // MARK: Wiring
 
-    $("now").onclick = openLive;
-    $("close").onclick = () => history.back();
-    addEventListener("popstate", () => { if (mode) closeSong(); });
+    $("now").onclick = openSong;
+    $("close").onclick = $("top-close").onclick = () => history.back();
+    addEventListener("popstate", () => { if (open) closeSong(); });
     $("key-down").onclick = () => setKey(shift - 1, relative);
     $("key-up").onclick = () => setKey(shift + 1, relative);
     $("speed-down").onclick = () => setSpeed(speed - 0.05);
     $("speed-up").onclick = () => setSpeed(speed + 0.05);
     $("speed-value").onclick = () => setSpeed(1);
     $("play-all").onclick = () => setStems(new Set());
-    $("from").oninput = $("to").oninput = clearFailures;
+    $("transcribe").onclick = transcribe;
+    $("spotify-form").onsubmit = playSpotify;
     $("spotify-link").oninput = () => {
         clearFailures();
         $("spotify-play").disabled = !$("spotify-link").value.trim();
     };
     $("spotify-play").disabled = true;
+    $("out-mac").onclick = () => setOutput("mac");
+    $("out-phone").onclick = () => setOutput("phone");
     $("mac-play").onclick = () => {
         if (!state) return;
         // The glyph changes at once, and the next state from the Mac confirms it.
@@ -879,42 +895,13 @@
         macSeeking = false;
         transport({ action: "seek", seconds });
     };
-    setInterval(() => { if (mode === "live" && document.visibilityState === "visible") drawTransport(); }, 250);
-    // The bar's title shows once the song's name scrolls under it, as a large title does.
-    new IntersectionObserver(([entry]) => $("top").classList.toggle("scrolled", !entry.isIntersecting), { rootMargin: "-60px 0px 0px 0px" })
+    setInterval(() => { if (open && document.visibilityState === "visible") drawTransport(); }, 250);
+    // A compact bar with the song's name and a back button shows once the song's head scrolls away.
+    new IntersectionObserver(([entry]) => $("top").classList.toggle("scrolled", !entry.isIntersecting), { rootMargin: "-20px 0px 0px 0px" })
         .observe($("head"));
-    $("transcribe").onclick = transcribe;
-    $("play-mac").onclick = playOnMac;
-    $("listen").onclick = listenHere;
-    $("spotify-form").onsubmit = playSpotify;
-    $("play-pause").onclick = () => {
-        const audio = $("audio");
-        audio.paused ? startAudio("play button").catch(() => {}) : audio.pause();
-    };
-    $("seek").oninput = () => {
-        seeking = true;
-        const audio = $("audio");
-        if (Number.isFinite(audio.duration)) audio.currentTime = (Number($("seek").value) / 1000) * audio.duration;
-    };
-    $("seek").onchange = () => { seeking = false; };
-    for (const name of ["play", "pause", "timeupdate", "seeked", "loadedmetadata", "ratechange"]) $("audio").addEventListener(name, drawPlayer);
-    $("audio").addEventListener("error", () => {
-        const audio = $("audio");
-        if (audio.getAttribute("src")) report(`audio error ${audio.error?.code}: ${audio.error?.message || ""} (${audio.currentSrc})`);
-    });
-    for (const toggle of document.querySelectorAll(".mac-sound")) {
-        toggle.onchange = async () => {
-            for (const other of document.querySelectorAll(".mac-sound")) other.checked = toggle.checked;
-            try {
-                await api("/api/mute", { muted: !toggle.checked });
-            } finally {
-                refreshState();
-            }
-        };
-    }
 
     // The song view's symbols are fetched while the home view shows, so that its icons are there when a song opens.
-    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "headphones", "speaker.wave.2.fill", "minus", "plus", "gobackward.5", "goforward.5", "arrow.clockwise"]) {
+    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "iphone", "music.note", "minus", "plus", "gobackward.5", "goforward.5"]) {
         new Image().src = `/api/symbol/${name}`;
     }
 
