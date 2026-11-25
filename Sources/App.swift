@@ -2517,6 +2517,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                cover: Self.stringOption("--render-cover").flatMap { SongTags.jpeg(NSImage(contentsOfFile: $0)) }))
         }
 
+        // Error reports start before anything else of a normal launch, so a crash while Muskey sets up is reported too.
+        ErrorReports.start()
         NSApp.mainMenu = mainMenu()
         hangWatch.start()
         if let seconds = Self.stringOption("--test-hang").flatMap(Double.init) {

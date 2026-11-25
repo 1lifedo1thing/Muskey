@@ -263,8 +263,52 @@ private struct GeneralPane: View {
             Section("Startup") {
                 Toggle("Launch at login", isOn: $prefs.launchAtLogin)
             }
+            Section("Privacy") {
+                Toggle(isOn: $prefs.errorReports) {
+                    Text("Send error reports")
+                    Text("Anonymous crash and hang reports sent to Sentry")
+                }
+                if prefs.errorReports {
+                    LabeledContent("Machine ID") { MachineIDPill() }
+                }
+            }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// The anonymous ID that the error reports of this Mac carry, which a click copies so that it can go in a bug report.
+/// "Copied" is drawn over the ID, so the pill keeps its width when it changes.
+private struct MachineIDPill: View {
+    @State private var copied = false
+    private let id = ErrorReports.machineID
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(id, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+        } label: {
+            HStack(spacing: 5) {
+                Text(verbatim: id)
+                    .font(.system(size: 11, design: .monospaced))
+                    .opacity(copied ? 0 : 1)
+                    .overlay { Text("Copied").font(.system(size: 11, weight: .semibold, design: .rounded)).opacity(copied ? 1 : 0) }
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 12)
+            }
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(.quaternary))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Copy the ID of this Mac's error reports")
     }
 }
 

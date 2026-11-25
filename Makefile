@@ -100,6 +100,26 @@ $(SPARKLE):
 	echo "$(SPARKLE_SHA256)  $@.tar.xz" | shasum -a 256 -c -
 	mkdir -p $@ && tar -xJf $@.tar.xz -C $@ && rm $@.tar.xz
 
+# Sentry receives the crash, hang and error reports. The release archive holds the framework for every Apple platform:
+# only the macOS one is kept, with the dSYM that names the frames inside it, and its code for Intel Macs is removed
+# because Muskey runs only on Apple silicon. It is unpacked into a temporary folder first, so a download that stops
+# halfway never leaves a folder that make takes as finished.
+SENTRY_VERSION := 9.32.0
+SENTRY_SHA256 := 4048a28ad13ee6dce70bc601c7b983280c8eb8f078b3d367f8b9f9bd25757326
+SENTRY := $(VENDOR)/Sentry-$(SENTRY_VERSION)
+SENTRY_FRAMEWORK := $(BUNDLE)/Contents/Frameworks/Sentry.framework
+SENTRY_SLICE := Sentry-Dynamic.xcframework/macos-arm64_x86_64
+APP_DSYM := $(BUILD)/$(APP).app.dSYM
+
+$(SENTRY):
+	rm -rf $@.tmp && mkdir -p $@.tmp
+	curl -fsSL -o $@.tmp/sentry.zip https://github.com/getsentry/sentry-cocoa/releases/download/$(SENTRY_VERSION)/Sentry-Dynamic.xcframework.zip
+	echo "$(SENTRY_SHA256)  $@.tmp/sentry.zip" | shasum -a 256 -c -
+	cd $@.tmp && unzip -q sentry.zip '$(SENTRY_SLICE)/*'
+	lipo $@.tmp/$(SENTRY_SLICE)/Sentry.framework/Versions/A/Sentry -thin arm64 -output $@.tmp/Sentry
+	mv $@.tmp/Sentry $@.tmp/$(SENTRY_SLICE)/Sentry.framework/Versions/A/Sentry
+	mv $@.tmp/$(SENTRY_SLICE) $@ && rm -rf $@.tmp
+
 # Reads the song that is playing through the private MediaRemote framework. mediaremoted answers only code signed
 # with a com.apple. identifier, so the helper is signed as one.
 HELPER := com.apple.controlcenter.Muskey.NowPlaying
@@ -122,14 +142,19 @@ $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 		--minimum-deployment-target $(MACOS) --output-partial-info-plist $(@D)/icon.plist >/dev/null
 
 $(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB) $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
-		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE)
-	rm -rf $@
+		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE) $(SENTRY)
+	rm -rf $@ $(APP_DSYM)
 	mkdir -p $@/Contents/MacOS $@/Contents/Helpers $@/Contents/Frameworks $@/Contents/Resources
-	swiftc -O -target $(TARGET) $(DEV) -parse-as-library -import-objc-header Sources/bridge.h $(WHISPER_INCLUDES) -Xcc -I$(LAME)/include \
-		-F $(SPARKLE) Sources/*.swift $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o $(ESSENTIA_LIB) $(WHISPER_LIBS) $(LAME_LIB) $(MPG123_LIB) \
-		-lc++ -framework Accelerate -framework Metal -framework MetalKit -framework Foundation -framework Sparkle \
+	# With -g, swiftc writes a dSYM next to the binary, which Sentry needs to name the functions in a crash or a hang.
+	swiftc -O -g -target $(TARGET) $(DEV) -parse-as-library -import-objc-header Sources/bridge.h $(WHISPER_INCLUDES) -Xcc -I$(LAME)/include \
+		-F $(SPARKLE) -F $(SENTRY) Sources/*.swift $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o $(ESSENTIA_LIB) $(WHISPER_LIBS) $(LAME_LIB) $(MPG123_LIB) \
+		-lc++ -framework Accelerate -framework Metal -framework MetalKit -framework Foundation -framework Sparkle -framework Sentry \
 		-Xlinker -rpath -Xlinker @executable_path/../Frameworks \
 		-o $@/Contents/MacOS/$(APP)
+	# The dSYM leaves the bundle, and the binary drops its debug map, which holds the paths of the build folders.
+	# The local symbols stay, so a sample of a hang still names Muskey's functions.
+	mv $@/Contents/MacOS/$(APP).dSYM $(APP_DSYM)
+	strip -S $@/Contents/MacOS/$(APP)
 	cp Info.plist $@/Contents/Info.plist
 	cp $(BUILD)/obj/Assets.car $(BUILD)/obj/muskey.icns $@/Contents/Resources/
 	ditto $(SPARKLE)/Sparkle.framework $(SPARKLE_FRAMEWORK)
@@ -138,6 +163,11 @@ $(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB
 	$(SIGN) $(SPARKLE_FRAMEWORK)/Versions/B/Autoupdate
 	$(SIGN) $(SPARKLE_FRAMEWORK)/Versions/B/Updater.app
 	$(SIGN) $(SPARKLE_FRAMEWORK)
+	ditto $(SENTRY)/Sentry.framework $(SENTRY_FRAMEWORK)
+	# The headers and the Swift module are only for building against it.
+	rm -rf $(SENTRY_FRAMEWORK)/Headers $(SENTRY_FRAMEWORK)/PrivateHeaders $(SENTRY_FRAMEWORK)/Modules \
+		$(SENTRY_FRAMEWORK)/Versions/A/Headers $(SENTRY_FRAMEWORK)/Versions/A/PrivateHeaders $(SENTRY_FRAMEWORK)/Versions/A/Modules
+	$(SIGN) $(SENTRY_FRAMEWORK)
 	cp $(BUILD)/obj/$(HELPER) $@/Contents/Helpers/
 	$(SIGN) --identifier com.apple.controlcenter.Muskey $@/Contents/Helpers/$(HELPER)
 	mkdir -p "$(PLAYER_APP)/Contents/MacOS" "$(PLAYER_APP)/Contents/Resources"
@@ -182,6 +212,11 @@ build: SHELL := fish
 build: setversion
 	rm -rf $(BUILD)
 	$(MAKE) $(BUNDLE) TIMESTAMP=--timestamp DEV=
+	# The dSYMs that `make sentry` uploads. Only this target writes them, so a build for testing made before the
+	# upload never swaps them for dSYMs that don't match the released app.
+	mkdir -p $(DSYM_DIR)
+	ditto $(APP_DSYM) $(DSYM_DIR)/$(APP).app.dSYM
+	ditto $(SENTRY)/dSYMs/Sentry.framework.dSYM $(DSYM_DIR)/Sentry.framework.dSYM
 	rm -rf /tmp/apps/$(APP).app
 	mkdir -p /tmp/apps Releases
 	ditto $(BUNDLE) /tmp/apps/$(APP).app
@@ -221,12 +256,66 @@ ifeq (, $(BETA))
 endif
 	$(UPLOAD_RSYNC) -vz Releases/appcast.xml Releases/changelog.html hetzner:/static/lowtechguys/muskey/
 	cfcli -d lowtechguys.com purge
+ifeq (, $(BETA))
+	$(MAKE) sentry
+endif
 
 release:
 	gh release create v$(VERSION) -F ReleaseNotes/$(VERSION).md "Releases/$(APP)-$(VERSION).dmg#$(APP).dmg"
 	git fetch --tags
 
-.PHONY: all install clean setversion build appcast upload release stems-model winds-model dettato-model aligner-model
+# Sentry
+
+# The organization's ID, the number after the `o` in the DSN, which sentry-cli and the API take as well as its name.
+SENTRY_ORG := 84592
+SENTRY_PROJECT := muskey
+DSYM_DIR := $(BUILD)/dSYMs
+DSYM_UUID_FILE := Releases/dsym-uuids.txt
+DSYM_OUT := /tmp/dsyms
+
+# Uploads the dSYMs of the last `make build`, so that Sentry can name the functions in the reports of that release.
+# The upload needs the classic `sentry-cli`, because the newer `sentry` has no upload for Apple debug files. The token
+# comes from ~/.sentryclirc, and an ambient SENTRY_AUTH_TOKEN is removed so that a stale one can't replace it.
+sentry:
+	env -u SENTRY_AUTH_TOKEN sentry-cli upload-dif --include-sources -o $(SENTRY_ORG) -p $(SENTRY_PROJECT) --wait -- $(DSYM_DIR)
+	$(MAKE) record-dsyms
+
+# Sentry keeps dSYMs by their debug ID (the UUID of the binary), not by version. This file maps each version to the
+# debug IDs of its dSYMs, which is how `make download-dsym VERSION=x.y.z` finds them later.
+record-dsyms:
+	@mkdir -p Releases
+	@uuids=$$(find "$(DSYM_DIR)" -name '*.dSYM' -exec dwarfdump --uuid {} + 2>/dev/null | awk '{print tolower($$2)}' | sort -u | tr '\n' ' ' | sed 's/  *$$//'); \
+	if [ -z "$$uuids" ]; then echo "record-dsyms: no dSYMs found under $(DSYM_DIR)"; exit 0; fi; \
+	touch $(DSYM_UUID_FILE); \
+	grep -v "^$(FULL_VERSION) =" $(DSYM_UUID_FILE) > $(DSYM_UUID_FILE).tmp 2>/dev/null || true; \
+	echo "$(FULL_VERSION) = $$uuids" >> $(DSYM_UUID_FILE).tmp; \
+	sort -Vr $(DSYM_UUID_FILE).tmp -o $(DSYM_UUID_FILE); rm -f $(DSYM_UUID_FILE).tmp; \
+	echo "record-dsyms: $(FULL_VERSION) -> $$uuids"
+
+# Downloads the dSYMs of a released version from Sentry into $(DSYM_OUT), to symbolicate a crash report by hand:
+#   make download-dsym VERSION=x.y.z
+download-dsym:
+	@test -n "$(VERSION)" || { echo "Usage: make download-dsym VERSION=x.y.z"; exit 1; }
+	@test -f $(DSYM_UUID_FILE) || { echo "No $(DSYM_UUID_FILE) yet; run 'make sentry' after a release build to record the UUIDs"; exit 1; }
+	@uuids=$$(awk -F' *= *' '$$1=="$(VERSION)"{print $$2}' $(DSYM_UUID_FILE)); \
+	if [ -z "$$uuids" ]; then echo "No dSYM UUIDs recorded for $(VERSION). Recorded versions:"; cut -d= -f1 $(DSYM_UUID_FILE) | sed 's/  *$$//; s/^/  /'; exit 1; fi; \
+	token=$$(sed -n 's/^ *token *= *//p' ~/.sentryclirc 2>/dev/null | head -1); \
+	[ -n "$$token" ] || token=$$SENTRY_AUTH_TOKEN; \
+	if [ -z "$$token" ]; then echo "No Sentry auth token found (~/.sentryclirc or \$$SENTRY_AUTH_TOKEN)"; exit 1; fi; \
+	out=$(DSYM_OUT)/$(SENTRY_PROJECT)-$(VERSION); mkdir -p "$$out"; \
+	api=https://sentry.io/api/0/projects/$(SENTRY_ORG)/$(SENTRY_PROJECT)/files/dsyms; \
+	for u in $$uuids; do \
+	  curl -fsSL -H "Authorization: Bearer $$token" "$$api/?debug_id=$$u" \
+	    | python3 -c 'import json,sys; [print(o["id"], o["objectName"], o["cpuName"], (o.get("data") or {}).get("type","dbg")) for o in json.load(sys.stdin)]' \
+	    | while read id obj cpu typ; do \
+	        ext=debug; [ "$$typ" = src ] && ext=zip; \
+	        echo "  $$obj ($$cpu, $$typ) [$$u] -> id $$id"; \
+	        curl -fsSL -H "Authorization: Bearer $$token" "$$api/?id=$$id" -o "$$out/$$obj-$$cpu-$$typ-$$id.$$ext"; \
+	      done; \
+	done; \
+	echo "Downloaded dSYMs for $(VERSION) to $$out"
+
+.PHONY: all install clean setversion build appcast upload release sentry record-dsyms download-dsym stems-model winds-model dettato-model aligner-model
 
 # The Core ML models behind the stems. Each prints the size and the SHA-256 of its zip, which go into ModelDownload.
 # stems-model: BS-Roformer-SW, from its checkpoint and YAML config.

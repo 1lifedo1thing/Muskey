@@ -288,9 +288,13 @@ final class Preferences: ObservableObject {
     @Published var miniRecordScale: Double {
         didSet { defaults.set(miniRecordScale, forKey: "miniRecordScale") }
     }
+    /// Settings > General > Send error reports. The key is the one that the other Low Tech Guys apps use.
+    @Published var errorReports: Bool {
+        didSet { defaults.set(errorReports, forKey: "enableSentry") }
+    }
 
     private init() {
-        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "lyricsLiveTiming": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true])
+        defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "lyricsLiveTiming": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true, "enableSentry": true])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always
@@ -330,6 +334,7 @@ final class Preferences: ObservableObject {
         defaults.removeObject(forKey: "miniSongOnRecord")
         let scales = MiniPlayerView.scales
         miniRecordScale = (defaults.object(forKey: "miniRecordScale") as? Double).map { min(max($0, scales.lowerBound), scales.upperBound) } ?? 1
+        errorReports = defaults.bool(forKey: "enableSentry")
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }
