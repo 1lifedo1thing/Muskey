@@ -411,14 +411,14 @@ struct WebNotes: Encodable {
     }
 }
 
-/// A play, pause or move of the song that plays on the Mac: `toggle`, `back`, `forward`, or `seek` to `seconds`.
+/// A play, pause or move of the song that plays on the Mac: `play`, `pause`, `back`, `forward`, or `seek` to `seconds`.
 struct WebTransport: Decodable {
     let action: String
     let seconds: Double?
 
     var valid: Bool {
         switch action {
-        case "toggle", "back", "forward": true
+        case "play", "pause", "back", "forward": true
         case "seek": seconds.map { $0.isFinite && $0 >= 0 } ?? false
         default: false
         }

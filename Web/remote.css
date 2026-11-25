@@ -473,7 +473,7 @@ button:disabled { cursor: default; }
 .scrub input[type="range"] { flex: 1; min-width: 0; height: 40px; margin: 0; }
 .scrub .clock { flex: none; width: 44px; font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--muted) 80%, transparent); }
 .scrub .clock:last-child { text-align: right; }
-.transport.unknown .scrub { visibility: hidden; }
+.transport.unknown .scrub { display: none; }
 .transport-buttons { display: flex; align-items: center; justify-content: center; gap: 36px; }
 .transport .round { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); }
 .transport .round .icon { width: 24px; height: 24px; }

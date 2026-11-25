@@ -220,8 +220,15 @@
     }
 
     async function refreshState() {
+        const asked = performance.now();
         try {
-            state = await api("/api/state");
+            const next = await api("/api/state");
+            // An answer to a request sent before the last play, pause or seek doesn't know about it yet.
+            if (asked < transportAt && state && next.title === state.title) {
+                next.playing = state.playing;
+                next.position = macPosition();
+            }
+            state = next;
             stateAt = performance.now();
         } catch {
             $("mac").classList.add("offline");
@@ -242,6 +249,7 @@
     }
     let relativeKeys = null;
     let stateAt = 0;
+    let transportAt = 0;
 
     /** The player and the key and tempo that the Mac plays. The song view leaves out the two that its rows show. */
     function nowPills(target, full = true) {
@@ -614,6 +622,7 @@
     }
 
     async function transport(body) {
+        transportAt = performance.now();
         try {
             await api("/api/transport", body);
         } finally {
@@ -811,11 +820,12 @@
     $("mac-play").onclick = () => {
         if (!state) return;
         // The glyph changes at once, and the next state from the Mac confirms it.
-        state.playing = !state.playing;
+        const action = state.playing ? "pause" : "play";
         state.position = macPosition();
+        state.playing = !state.playing;
         stateAt = performance.now();
         drawTransport();
-        transport({ action: "toggle" });
+        transport({ action });
     };
     $("mac-back").onclick = () => transport({ action: "back" });
     $("mac-forward").onclick = () => transport({ action: "forward" });

@@ -3254,13 +3254,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func remoteState() -> WebRemote.State {
         let track = model.track ?? nowPlaying.track
         let app = track?.bundleID.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first?.localizedName }
+        // A play, a pause or a seek that the player hasn't reported yet, as the HUD shows it.
+        let playing = remotePlaying(track) ?? false
+        let seeked = seekTarget.flatMap { target in
+            track.flatMap { target.song == $0.song && Date().timeIntervalSince(target.at) < 2 ? target.seconds + (playing ? Date().timeIntervalSince(target.at) : 0) : nil }
+        }
         return WebRemote.State(
-            title: track?.title, artist: track?.artist, app: playsInFilePlayer ? "Muskey Player" : app, playing: track?.playing ?? false,
+            title: track?.title, artist: track?.artist, app: playsInFilePlayer ? "Muskey Player" : app, playing: playing,
             listening: state != .idle && model.phase == .listening, key: model.key?.code, shift: model.shift, relative: model.relative,
             bpm: model.tempo?.bpm, speed: currentSpeed, cover: model.artwork != nil, muted: OutputMute.muted,
             relativeKeys: prefs.relativeKeys, file: playsInFilePlayer ? filePlayer.current?.path : nil,
-            position: track?.position(at: Date()), duration: track?.duration, seekable: model.seekable, mac: Self.macName
+            position: seeked ?? track?.position(at: Date()), duration: track?.duration, seekable: model.seekable, mac: Self.macName
         )
+    }
+
+    /// Whether the song plays, counting a play or pause asked for in the last 1.5 seconds that the player hasn't reported.
+    @MainActor private func remotePlaying(_ track: NowPlaying.Track?) -> Bool? {
+        if let guess = playGuess, Date().timeIntervalSince(guess.at) < 1.5 { return guess.playing }
+        return track?.playing
     }
 
     /// The Mac's name as Settings > General > Sharing shows it, read once without a lookup on the network.
@@ -3268,7 +3279,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor private func remoteTransport(_ request: WebTransport) {
         switch request.action {
-        case "toggle": playPause()
+        // The page asks for the state that its button shows the opposite of, so a tap on a page that is behind the
+        // Mac does nothing instead of the reverse.
+        case "play", "pause":
+            let playing = remotePlaying(nowPlaying.track) ?? false
+            if request.action == "play" ? !playing || model.phase == .idle : playing { playPause() }
         case "back": seek(by: -5)
         case "forward": seek(by: 5)
         case "seek":
