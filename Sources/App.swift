@@ -1276,6 +1276,7 @@ final class HUDPanel: NSPanel {
     /// `clickable` for a result with a Change Key button, `keyboard` while a key is being picked.
     /// The panel stops being key when it is ordered out after the fade.
     func setInteraction(clickable: Bool, keyboard: Bool) {
+        let clickable = clickable && !headless, keyboard = keyboard && !headless
         wantsClicks = clickable
         watchPointer(clickable)
         updatePassThrough()
@@ -1414,7 +1415,12 @@ final class HUDPanel: NSPanel {
         }
     }
 
+    /// The HUD runs without its window while a request from the phone runs, with Settings > Remote > Hide HUD for
+    /// phone actions on: the panel isn't ordered in, and takes neither clicks nor the keyboard.
+    var headless = false
+
     func present() {
+        guard !headless else { return }
         // Already up: leave it where it is, even if the pointer has moved to another screen or the glass was dragged.
         guard !isVisible || alphaValue < 1 else { return }
         let mouse = NSEvent.mouseLocation
@@ -3098,8 +3104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         open(urls)
     }
 
-    /// Plays files or links: dropped on the HUD, pasted, or picked with Open File… and Open URL….
-    private func open(_ urls: [URL]) {
+    /// Plays files or links: dropped on the HUD, pasted, or picked with Open File… and Open URL…, or sent by the tool
+    /// or the phone (`fromMac` false).
+    private func open(_ urls: [URL], fromMac: Bool = true) {
+        if fromMac { revealHeadless() }
         withFolders(urls) { [self] urls, folders in
             log("opening \(urls.count == 1 ? (urls[0].isFileURL ? "a file" : "a link") : "\(urls.count) items")\(folders.isEmpty ? "" : " from \(Set(folders.values).count == 1 ? "a folder" : "\(Set(folders.values).count) folders")")")
             // A song that a person opens shows, also over one that keeps opening in the background.
@@ -3136,6 +3144,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Plays the inputs of the tool in the HUD, or listens to the song that plays now, and applies the changes once
     /// the song plays and its key is known: the key, the speed, the region loop, the stems and the notes window.
     @MainActor private func cliPlay(_ request: CLIRequest, job: CLIJob) {
+        // From the phone with Settings > Remote > Hide HUD for phone actions on: the HUD runs without its window until the job ends,
+        // unless it was already up on the Mac.
+        if request.headless == true, state == .idle || panel.headless {
+            if !panel.headless { log("the HUD runs hidden for the phone") }
+            panel.headless = true
+            headlessJobs += 1
+            job.onEnd = { [weak self] in self?.endHeadlessJob() }
+        }
         if request.inputs.count == 1, let uri = Spotify.uri(from: request.inputs[0]) { return cliSpotify(uri, request: request, job: job) }
         if request.inputs.contains(where: Spotify.isLink) { return job.fail("that Spotify link names no song, album or playlist") }
         let urls = request.inputs.compactMap(FilePlayer.url(from:))
@@ -3160,7 +3176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A failure that the HUD showed before this song opened isn't this song's failure.
         let staleActivity = openActivity
         var fresh = false
-        open(urls)
+        open(urls, fromMac: false)
         if let link = urls.first(where: { !$0.isFileURL }), !LinkDownload.directExtensions.contains(link.pathExtension.lowercased()), Downloader.find() == nil {
             return job.fail("links of this site need yt-dlp. Click Install yt-dlp in Muskey's HUD on the Mac")
         }
@@ -3412,6 +3428,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seek(to: seconds, flash: "\(Int((seconds / duration * 100).rounded()))%")
         default: break
         }
+    }
+
+    /// Jobs from the phone that run with the HUD hidden.
+    private var headlessJobs = 0
+
+    /// The last job from the phone that ran with the HUD hidden ended: the hidden HUD closes, and the next request
+    /// starts a new one. The changes keep running, as after a HUD is closed on the Mac.
+    @MainActor private func endHeadlessJob() {
+        headlessJobs = max(0, headlessJobs - 1)
+        guard headlessJobs == 0, panel.headless else { return }
+        if state != .idle { dismiss() }
+        panel.headless = false
+    }
+
+    /// Someone at the Mac asked for the HUD while it ran hidden for the phone, so it shows from now on.
+    private func revealHeadless() {
+        guard panel.headless else { return }
+        panel.headless = false
+        log("the HUD that ran hidden for the phone shows")
+        guard state != .idle else { return }
+        panel.present()
+        panel.setInteraction(clickable: true, keyboard: model.picking)
     }
 
     @MainActor private func cliWait(_ job: CLIJob, seconds: Double, until: @escaping () -> Bool, then: @escaping () -> Void) {
@@ -5166,6 +5204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// While a pitch change runs or a key is kept, the hotkey opens the key picker instead of starting another listen.
     private func toggle() {
+        if state != .idle, panel.headless { return revealHeadless() }
         switch state {
         case .idle: (pitch.running && changesNeedPitch) || keptKey != nil ? pickKey() : start()
         case .listening, .showing: dismiss()
@@ -8597,7 +8636,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         redetecting = false
         model.pending = nil
         if model.picking {
-            if NSApp.isActive, let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
+            if !panel.headless, NSApp.isActive, let lastOtherApp, lastOtherApp != .current { lastOtherApp.activate() }
             if pitchWanted {
                 logShift()
             } else if pitch.running {

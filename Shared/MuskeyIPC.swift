@@ -63,6 +63,9 @@ struct CLIRequest: Codable {
     /// Sent from away from the Mac (the web remote, or the tool over SSH): a song that Spotify plays mutes the Mac's
     /// sound output.
     var remote = false
+    /// The HUD stays hidden on the Mac while the request runs, unless it was already up (Settings > Remote > Hide HUD
+    /// for phone actions, for the web remote).
+    var headless: Bool?
 }
 
 struct CLIResponse: Codable {

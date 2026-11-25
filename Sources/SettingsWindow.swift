@@ -305,6 +305,7 @@ private struct RemotePane: View {
                 }
                 if prefs.webRemote {
                     PairingControls(prefs: prefs)
+                    Toggle("Hide HUD for phone actions", isOn: $prefs.remoteHeadless)
                 }
             }
             if prefs.webRemote {

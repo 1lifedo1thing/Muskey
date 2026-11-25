@@ -1069,7 +1069,8 @@
     let output = "mac";
 
     /** The output that was picked by hand in the output menu, kept for the next visits. Without one, a phone plays every
-     * new song itself: a song of Recents or Files, a link, an upload, or Play on a paused song. */
+     * new song itself: a song of Recents or Files, a link, an upload, Play on a paused song, or the playing song that
+     * the Now row opens. */
     const OUTPUT_KEY = "muskey:output";
     function pickedOutput() {
         try {
@@ -1583,7 +1584,11 @@
 
     // MARK: Wiring
 
-    $("now").onclick = openSong;
+    // Opening the song that the Mac plays moves it to the phone, like a new one. A paused song moves on Play.
+    $("now").onclick = () => {
+        if (state?.playing) preferPhone();
+        openSong();
+    };
     $("close").onclick = $("top-close").onclick = () => history.back();
     addEventListener("popstate", () => {
         if (open && history.state?.song !== true) closeSong();

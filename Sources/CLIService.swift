@@ -25,12 +25,15 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "CLIService")
     private(set) var finishedAt: Date?
     /// Stops the work that runs for the job.
     var onCancel: () -> Void = {}
+    /// Runs once when the job is done, failed or stopped.
+    var onEnd: () -> Void = {}
 
     func finish(_ message: String? = nil) {
         guard !done else { return }
         self.message = message ?? self.message
         done = true
         finishedAt = Date()
+        onEnd()
     }
 
     func fail(_ error: String) {
@@ -38,6 +41,7 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "CLIService")
         self.error = error
         done = true
         finishedAt = Date()
+        onEnd()
     }
 
     func cancel() {

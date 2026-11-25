@@ -306,6 +306,11 @@ final class Preferences: ObservableObject {
             }
         }
     }
+    /// Settings > Remote > Hide HUD for phone actions: requests from the web remote run with the HUD hidden
+    /// (`WebRemote.headless`, which reads the key itself off the main thread).
+    @Published var remoteHeadless: Bool {
+        didSet { defaults.set(remoteHeadless, forKey: "remoteHeadless") }
+    }
     /// Settings > Remote > Folders: the folders whose songs the web remote lists, by path.
     @Published var remoteFolders: [String] {
         didSet { defaults.set(remoteFolders, forKey: "remoteFolders") }
@@ -360,6 +365,7 @@ final class Preferences: ObservableObject {
         webRemote = defaults.bool(forKey: "webRemote")
         remoteAddress = defaults.string(forKey: WebAddresses.choiceKey)
         remoteFolders = defaults.stringArray(forKey: "remoteFolders") ?? []
+        remoteHeadless = defaults.bool(forKey: "remoteHeadless")
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }

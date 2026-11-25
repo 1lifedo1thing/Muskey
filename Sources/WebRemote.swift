@@ -323,13 +323,13 @@ struct WebNotes: Encodable {
             else {
                 return json(WebJob(CLIResponse(error: "That isn't a link to a song", done: true)))
             }
-            let request = CLIRequest(command: .play, inputs: [link])
+            let request = CLIRequest(command: .play, inputs: [link], headless: WebRemote.headless)
             return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
         case "api/upload" where request.method == "POST" && parts.count == 2:
             guard let file = request.bodyFile else { return .text("Send the song as the body", status: 400) }
             let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
             log.info("\(String(format: "remote: received %@ from a phone (%.1f MB)", file.lastPathComponent, Double(size) / 1_000_000), privacy: .public)")
-            let play = CLIRequest(command: .play, inputs: [file.path])
+            let play = CLIRequest(command: .play, inputs: [file.path], headless: WebRemote.headless)
             return json(WebJob(await MainActor.run { CLIService.shared.handle(play) }))
         case "api/files" where reads && parts.count == 2:
             return json(await shared.macFiles(matching: request.query["q"] ?? ""))
@@ -338,14 +338,14 @@ struct WebNotes: Encodable {
                 return json(WebJob(CLIResponse(error: "That isn't a Spotify link", done: true)))
             }
             // The Mac's sound follows the output picked on the phone, so the request itself doesn't mute it.
-            let request = CLIRequest(command: .play, inputs: [link])
+            let request = CLIRequest(command: .play, inputs: [link], headless: WebRemote.headless)
             return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
         case "api/live" where request.method == "POST" && parts.count == 2:
             guard let action = try? JSONDecoder().decode(WebLive.self, from: request.body) else { return .text("Unreadable request", status: 400) }
             if let key = action.key, Int(key) == nil, key.range(of: #"^[A-G](#|b)?m?$"#, options: .regularExpression) == nil { return .text("Wrong key", status: 400) }
             if let speed = action.speed, !(0.5 ... 1.5).contains(speed) { return .text("Wrong speed", status: 400) }
             if let stems = action.stems, !stems.allSatisfy(muskeyStemNames.contains) { return .text("Wrong instruments", status: 400) }
-            var play = CLIRequest(command: .play)
+            var play = CLIRequest(command: .play, headless: WebRemote.headless)
             play.key = action.key
             play.speed = action.speed
             play.stems = action.stems
@@ -477,6 +477,8 @@ struct WebNotes: Encodable {
     }
 
     /// The name of this Mac, for the installed app's name.
+    /// Settings > Remote > Hide HUD for phone actions: the HUD stays hidden on the Mac while a request from the phone runs.
+    nonisolated static var headless: Bool? { UserDefaults.standard.bool(forKey: "remoteHeadless") ? true : nil }
     nonisolated private static let macName = Host.current().localizedName ?? "Mac"
 
     nonisolated private static func page(_ name: String) -> WebResponse {
@@ -676,7 +678,7 @@ struct WebNotes: Encodable {
         if (action.from ?? 0) < 0 || (action.to ?? 1) <= 0 { return .text("Wrong part", status: 400) }
         if let notes = action.notes, notes != "auto", !muskeyStemNames.contains(notes) || notes == "drums" { return .text("Wrong instrument", status: 400) }
         guard let item = await item(action.song) else { return Self.json(WebJob(CLIResponse(error: "That song is no longer on the Mac", done: true))) }
-        var request = CLIRequest(command: write ? .write : .play)
+        var request = CLIRequest(command: write ? .write : .play, headless: WebRemote.headless)
         // A link plays from its download, which Muskey Player keeps in the cache.
         request.inputs = [item.url.isFileURL ? item.url.path : item.url.absoluteString]
         request.key = action.key
