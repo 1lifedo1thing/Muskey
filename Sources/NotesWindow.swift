@@ -889,6 +889,65 @@ struct NotesPainter {
         }
     }
 
+    // MARK: Note names
+
+    /// A note under the pointer: where it is drawn, its name in the key, and in sheet music the string and the fret
+    /// that the tab gives it.
+    struct NamedNote: Equatable {
+        let center: CGPoint
+        let name: String
+        var fret: String?
+    }
+
+    /// The note drawn nearest to a point of a line, if the point is on it: on its head, its fret number or its bar in
+    /// the piano roll.
+    func note(near point: CGPoint, page: Int, row: Int) -> NamedNote? {
+        let line = page * layout.linesPerPage + row
+        let first = line * layout.barsPerLine
+        guard first < score.bars.count else { return nil }
+        let lineTop = layout.top(ofRow: row)
+        let top = lineTop + staff.linesTop
+        let spelling = Spelling(key: score.key)
+        let clefs = staff.view == .sheet ? clefs(top: top) : []
+        let lift = score.stem == .guitar || score.stem == .bass ? 12 : 0
+        var best: (distance: CGFloat, note: NamedNote)?
+        for bar in first ..< min(score.bars.count, first + layout.barsPerLine) where !faint(bar) {
+            for note in byBar[bar] where !note.drum {
+                let center: CGPoint
+                let reach: CGSize
+                switch staff.view {
+                case .tab:
+                    guard let string = note.string else { continue }
+                    center = CGPoint(x: noteX(bar, first, beat: note.beat), y: top + NotesStaff.tabGap * CGFloat(staff.strings - 1 - string))
+                    reach = CGSize(width: 7, height: 5.5)
+                case .sheet:
+                    let clef = clefs.count == 1 || note.pitch >= 60 ? clefs[0] : clefs[1]
+                    let step = spelling.spell(note.pitch + lift).step
+                    center = CGPoint(x: noteX(bar, first, beat: note.beat, pad: 14), y: clef.bottom - CGFloat(step - clef.step) * NotesStaff.staffGap / 2)
+                    reach = CGSize(width: 6, height: 3.5)
+                case .roll:
+                    let pitch = min(staff.high, max(staff.low, note.pitch))
+                    let x = barX(bar, first) + layout.barWidth * CGFloat(note.beat / Double(Score.beatsPerBar))
+                    let width = max(3, layout.barWidth * CGFloat(note.length / Double(Score.beatsPerBar)) - 1.5)
+                    // The bar of a note is a target along its whole length, and its name shows over the pointer.
+                    guard point.x >= x - 1, point.x <= x + width + 1 else { continue }
+                    center = CGPoint(x: point.x, y: top + (CGFloat(staff.high - pitch) + 0.5) * NotesStaff.rowHeight)
+                    reach = CGSize(width: 1, height: NotesStaff.rowHeight / 2 + 1)
+                }
+                let dx = abs(center.x - point.x), dy = abs(center.y - point.y)
+                guard dx <= reach.width, dy <= reach.height else { continue }
+                let distance = hypot(dx, dy)
+                guard distance < best?.distance ?? .infinity else { continue }
+                var named = NamedNote(center: center, name: spelling.name(note.pitch))
+                if staff.view == .sheet, let string = note.string, let fret = note.fret {
+                    named.fret = "string \(staff.strings - string) · fret \(fret)"
+                }
+                best = (distance, named)
+            }
+        }
+        return best?.note
+    }
+
     // MARK: Light
 
     /// A place where notes start on a line: the bar and the sixteenth as a key, the line, and the x where the playhead
@@ -1669,9 +1728,12 @@ private struct NotesPageView: View {
                     pageLabel(pages.top).offset(y: 4)
                     pageLabel(pages.bottom).offset(y: layout.middle + 6)
                 }
-                if model.done, !renderingPreview {
+                if model.done, !renderingPreview || notesHoverPointInRenders != nil {
                     NotesHoverLine(layout: layout, palette: palette, hidden: drag != nil || !turning.isEmpty) { point in
                         target(at: point, layout).map { (x: $0.x, row: $0.row, time: model.score.time(at: $0.position)) }
+                    } note: { point in
+                        let top = point.y < layout.middle
+                        return painter.note(near: point, page: top ? pages.top : pages.bottom, row: layout.row(at: point, top: top))
                     }
                 }
             }
@@ -2025,13 +2087,16 @@ private struct NotesPlayhead: View {
     }
 }
 
-/// A faint line where the pointer is over the notes, with the time that a click moves the song to.
+/// A faint line where the pointer is over the notes, with the time that a click moves the song to. Over a note, its
+/// name shows in a pill above it, for reading the notes while learning them.
+/// `--notes-hover-note X,Y` renders the pill of the note at that point of the window's page.
 private struct NotesHoverLine: View {
     let layout: NotesLayout
     let palette: Palette
     let hidden: Bool
     let target: (CGPoint) -> (x: CGFloat, row: Int, time: Double)?
-    @State private var point: CGPoint?
+    let note: (CGPoint) -> NotesPainter.NamedNote?
+    @State private var point: CGPoint? = notesHoverPointInRenders
 
     var body: some View {
         Color.clear
@@ -2042,25 +2107,62 @@ private struct NotesHoverLine: View {
             .overlay(alignment: .topLeading) {
                 if !hidden, let point, let spot = target(point) {
                     let top = layout.top(ofRow: spot.row) + layout.staff.linesTop - 7
+                    let named = note(point)
                     ZStack(alignment: .topLeading) {
                         RoundedRectangle(cornerRadius: 1)
                             .fill(palette.ink.opacity(0.4))
                             .frame(width: 1.5, height: layout.staff.linesHeight + 14)
                             .position(x: spot.x, y: top + (layout.staff.linesHeight + 14) / 2)
-                        Text(NotesTime.time(spot.time))
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(palette.ink.opacity(0.8))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(palette.ink.opacity(0.1)))
-                            .fixedSize()
-                            .position(x: spot.x, y: top - 9)
+                        // Over a note, its name takes the place of the time, which a note near the top would cover.
+                        if named == nil {
+                            Text(NotesTime.time(spot.time))
+                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(palette.ink.opacity(0.8))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(palette.ink.opacity(0.1)))
+                                .fixedSize()
+                                .position(x: spot.x, y: top - 9)
+                        }
+                        if let named {
+                            NoteNamePill(note: named, palette: palette)
+                                .position(x: named.center.x, y: named.center.y - 17)
+                        }
                     }
                     .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)
                     .allowsHitTesting(false)
                 }
             }
+    }
+}
+
+/// `--notes-hover-note X,Y`: a pointer at that point of the page in renders.
+nonisolated(unsafe) var notesHoverPointInRenders: CGPoint?
+
+/// The name of the note under the pointer, and in sheet music the string and the fret that play it.
+private struct NoteNamePill: View {
+    let note: NotesPainter.NamedNote
+    let palette: Palette
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // The sharp or the flat in full ink: it is half of what the pill says.
+            Text(note.name)
+                .font(.system(size: 13, weight: .heavy, design: .rounded))
+            if let fret = note.fret {
+                Text(fret)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(palette.muted)
+            }
+        }
+        .foregroundStyle(palette.ink)
+        .padding(.horizontal, 8)
+        .frame(height: 22)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(palette.ink.opacity(0.12), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+        .fixedSize()
     }
 }
 
@@ -2783,6 +2885,11 @@ extension NotesModel {
     let at = TestFlags.value("--notes-at").flatMap(Double.init) ?? 40
     model.now = { at }
     notesFoldInRenders = TestFlags.value("--notes-fold").flatMap(Double.init)
+    if let point = TestFlags.value("--notes-hover-note")?.split(separator: ",").compactMap({ Double($0) }), point.count == 2 {
+        notesHoverPointInRenders = CGPoint(x: point[0], y: point[1])
+    }
+    // `--notes-relative` names the key in the other mode, as the HUD does after a key was picked in it.
+    if TestFlags.has("--notes-relative") { model.relative = true }
     if let shift = TestFlags.value("--notes-shift").flatMap(Int.init) { model.shift = shift }
     if let capo = TestFlags.value("--notes-capo").flatMap(Int.init) { model.capo = capo }
     if let speed = TestFlags.value("--notes-speed").flatMap(Double.init) {
