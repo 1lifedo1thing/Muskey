@@ -121,7 +121,7 @@ final class NotesModel: ObservableObject {
     @Published var speedAdjustable = false
     @Published var fastestSpeed = 1.5
     /// The HUD names the key in the other mode than the song's, as the key row's second row does.
-    @Published var relative = false
+    @Published var relative = false { didSet { if relative != oldValue { rebuild() } } }
     /// The key picker shows the second row with the other mode, as the HUD's does with "Both modes" in Settings.
     @Published var relativeKeys = false
     /// The page that the song is on, counted from 0, and how many pages the notes take in this view and window size.
@@ -325,7 +325,10 @@ final class NotesModel: ObservableObject {
     /// The score of the notes moved by the pitch change, in the key that the song plays in after it.
     private func rebuild() {
         let moved = shift == 0 ? notes : notes.map { TranscribedNote(start: $0.start, end: $0.end, pitch: $0.pitch + shift, program: $0.program, drum: $0.drum) }
-        fullScore = Score(notes: moved, stem: stem, beats: beats, bpm: bpm, key: key?.transposed(by: shift), duration: duration, capo: hasTab ? capo : 0)
+        // The key in the mode that the HUD names it: the signature is the same, and a minor key writes its leading tone
+        // on the letter under the tonic.
+        let shown = key.map { relative ? $0.transposed(by: shift).relative : $0.transposed(by: shift) }
+        fullScore = Score(notes: moved, stem: stem, beats: beats, bpm: bpm, key: shown, duration: duration, capo: hasTab ? capo : 0)
         // Until the notes are done, the faint page under the progress shows every bar.
         score = notes.isEmpty ? fullScore : fullScore.collapsingRests()
     }
@@ -786,9 +789,10 @@ struct NotesPainter {
         var signs: [(index: Int, sign: String, column: Int)] = []
         for index in spelled.indices.sorted(by: { spelled[$0].step > spelled[$1].step }) {
             let note = spelled[index]
-            // An accidental once per step in a bar, and a natural for a step that had one.
+            // An accidental once per step in a bar. A note in the key, on a step that had another sign in the bar,
+            // takes the key's sign again: the flat or the sharp of the signature, or a natural.
             var sign = note.accidental
-            if sign == nil, shown[note.step] != nil { sign = "♮" }
+            if sign == nil, shown[note.step] != nil { sign = spelling.keySign(step: note.step) }
             guard let sign, shown[note.step] != sign else { continue }
             shown[note.step] = sign
             let column = columns.firstIndex { $0.allSatisfy { abs($0 - note.step) > 5 } } ?? columns.count

@@ -297,12 +297,20 @@ struct Score: Sendable {
 
 /// Note names in the key of the song: its key signature, and the letter, accidental and staff step of each pitch.
 struct Spelling {
-    /// Pitch classes that the key signature raises or lowers, and whether it uses flats.
+    /// Whether the key signature uses flats, and the pitch classes that it raises or lowers, in the order that they
+    /// are written: B♭ is 10 and F♯ is 6.
     let flats: Bool
     let signature: [Int]
+    /// The pitch class of each letter in this key, from C to B: 10 for the B of a key with B♭.
+    private let letterPitches: [Int]
+    /// In a minor key, the note a semitone under the tonic, written on the letter under the tonic's letter: C♯ in
+    /// D minor, not D♭.
+    private let leadingTone: (pitchClass: Int, letter: Int)?
 
-    private static let sharpOrder = [5, 0, 7, 2, 9, 4, 11]
-    private static let flatOrder = [11, 4, 9, 2, 7, 0, 5]
+    private static let sharpOrder = [6, 1, 8, 3, 10, 5, 0]
+    private static let flatOrder = [10, 3, 8, 1, 6, 11, 4]
+    /// The pitch class of each letter without a sharp or a flat, from C to B.
+    private static let naturals = [0, 2, 4, 5, 7, 9, 11]
 
     init(key: DetectedKey?) {
         // The major key with the same notes: the relative major of a minor key.
@@ -316,26 +324,70 @@ struct Spelling {
             self.flats = true
             signature = Array(Self.flatOrder.prefix(flats[major] ?? 0))
         }
+        var letters = Self.naturals
+        for pitchClass in signature {
+            // A flat lowers the letter above its pitch class, and a sharp raises the letter under it.
+            let letter = Self.naturals.firstIndex(of: (pitchClass + (self.flats ? 1 : 11)) % 12)!
+            letters[letter] = pitchClass
+        }
+        letterPitches = letters
+        if let key, key.minor, let tonic = letters.firstIndex(of: key.pitchClass) {
+            let letter = (tonic + 6) % 7
+            let pitchClass = (key.pitchClass + 11) % 12
+            // A leading tone two semitones over its letter would need a double sharp, which is written as the next letter.
+            let over = (pitchClass - Self.naturals[letter] + 12) % 12
+            leadingTone = over <= 1 ? (pitchClass, letter) : nil
+        } else {
+            leadingTone = nil
+        }
     }
 
-    /// The letter (0 = C .. 6 = B) and the octave of `pitch`, and the accidental it needs in this key: nil for none,
-    /// "♯", "♭" or "♮".
+    /// The staff step of `pitch` (its octave times 7 plus its letter, 0 = C .. 6 = B), and the accidental that it
+    /// needs in this key: nil for none, "♯", "♭" or "♮".
     func spell(_ pitch: Int) -> (step: Int, accidental: String?) {
         let pitchClass = ((pitch % 12) + 12) % 12
-        let octave = pitch / 12 - 1
-        let naturals = [0: 0, 2: 1, 4: 2, 5: 3, 7: 4, 9: 5, 11: 6]
-        if let letter = naturals[pitchClass] {
-            // A natural note whose letter the signature alters needs a natural sign.
-            let altered = signature.contains { flats ? ($0 + 1) % 12 == pitchClass : ($0 + 11) % 12 == pitchClass }
-            return (octave * 7 + letter, altered ? "♮" : nil)
+        let (letter, accidental) = letter(of: pitchClass)
+        // A B♯ is written in the octave under its sound, and a C♭ in the octave over it.
+        var octave = Int((Double(pitch) / 12).rounded(.down)) - 1
+        if letter == 6, pitchClass < 3 { octave -= 1 }
+        if letter == 0, pitchClass > 9 { octave += 1 }
+        return (octave * 7 + letter, accidental)
+    }
+
+    private func letter(of pitchClass: Int) -> (Int, String?) {
+        if let letter = letterPitches.firstIndex(of: pitchClass) { return (letter, nil) }
+        if let leadingTone, leadingTone.pitchClass == pitchClass {
+            return (leadingTone.letter, pitchClass == Self.naturals[leadingTone.letter] ? "♮" : "♯")
         }
-        let inSignature = signature.contains(pitchClass)
-        if flats {
-            let letter = naturals[(pitchClass + 1) % 12]!
-            return (octave * 7 + letter, inSignature ? nil : "♭")
+        // A white key that the signature changes needs a natural sign.
+        if let letter = Self.naturals.firstIndex(of: pitchClass) { return (letter, "♮") }
+        // A black key outside the key: a flat on the letter above in a key with flats, a sharp on the letter under it
+        // otherwise.
+        if flats { return (Self.naturals.firstIndex(of: (pitchClass + 1) % 12)!, "♭") }
+        return (Self.naturals.firstIndex(of: (pitchClass + 11) % 12)!, "♯")
+    }
+
+    /// The name of a note as it is written in this key, with the flat or sharp that the signature gives it: D♭ in
+    /// B♭ minor, C♯ in A major.
+    func name(_ pitch: Int) -> String {
+        let (step, accidental) = spell(pitch)
+        let letter = ["C", "D", "E", "F", "G", "A", "B"][((step % 7) + 7) % 7]
+        switch accidental {
+        case "♮": return letter
+        case nil: return keySign(step: step) == "♮" ? letter : letter + keySign(step: step)
+        case let sign?: return letter + sign
         }
-        let letter = naturals[(pitchClass + 11) % 12]!
-        return (octave * 7 + letter, inSignature ? nil : "♯")
+    }
+
+    /// The sign that brings a staff step back to the key after another accidental on it in the same bar: the
+    /// signature's flat or sharp for its letter, or a natural.
+    func keySign(step: Int) -> String {
+        let letter = ((step % 7) + 7) % 7
+        switch (letterPitches[letter] - Self.naturals[letter] + 12) % 12 {
+        case 1: return "♯"
+        case 11: return "♭"
+        default: return "♮"
+        }
     }
 }
 
