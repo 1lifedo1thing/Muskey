@@ -252,7 +252,7 @@ To read the last 10 minutes of it:
 log show --predicate 'subsystem == "com.lowtechguys.Muskey"' --info --debug --last 10m
 ```
 
-Add `AND category == "SlowStream"` to the predicate to read a single file's lines.
+Add `AND category == "SlowStream"` to the predicate to read a single file's lines. To see the lines in the terminal that runs `Muskey.app/Contents/MacOS/Muskey` with a flag for testing, set `OS_ACTIVITY_DT_MODE=YES` in its environment.
 
 Each line has a level:
 
