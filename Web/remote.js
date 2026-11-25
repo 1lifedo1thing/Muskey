@@ -256,6 +256,7 @@
     /** A song of Recents plays on the Mac, and the song view opens on it once it plays. */
     async function playSong(item, row) {
         if (row.classList.contains("working")) return;
+        preferPhone();
         clearFailures();
         const artist = row.querySelector(".song-artist");
         try {
@@ -1067,6 +1068,31 @@
 
     let output = "mac";
 
+    /** The output that was picked by hand in the output menu, kept for the next visits. Without one, a phone plays every
+     * new song itself: a song of Recents or Files, a link, an upload, or Play on a paused song. */
+    const OUTPUT_KEY = "muskey:output";
+    function pickedOutput() {
+        try {
+            return localStorage.getItem(OUTPUT_KEY);
+        } catch {
+            return null;
+        }
+    }
+    function pickOutput(next) {
+        try {
+            localStorage.setItem(OUTPUT_KEY, next);
+        } catch {}
+        setOutput(next);
+    }
+    /** This page plays new songs on the phone: a touch screen, and Mac never picked by hand. */
+    function phoneByDefault() {
+        return pickedOutput() !== "mac" && matchMedia("(pointer: coarse)").matches;
+    }
+    /** Called first in a tap that starts a song, since iOS lets Web Audio start only inside one. */
+    function preferPhone() {
+        if (output !== "phone" && phoneByDefault()) setOutput("phone");
+    }
+
     /** Plays /api/stream, read from one long request and scheduled about a quarter of a second ahead in an AudioContext,
      * which starts inside the tap, as iOS asks. The stream is AAC that WebCodecs decodes here, about 70 MB an hour, or
      * 16-bit stereo PCM, ten times that, in a browser without the decoder. */
@@ -1255,6 +1281,10 @@
                 run(mine);
                 return resumed;
             },
+            /** Called from a tap that may start the stream later, outside of it. */
+            unlock() {
+                ensureContext().catch(() => {});
+            },
             stop() {
                 generation++;
                 abort?.abort();
@@ -1434,6 +1464,7 @@
         const button = $("link-play");
         let link = $("link").value.trim();
         if (!link) return $("link").focus();
+        preferPhone();
         // A link copied without its scheme, like youtube.com/watch?v=…, is a web link.
         if (!/^[a-z][a-z0-9+.-]*:/i.test(link) && /^[\w-]+(\.[\w-]+)+(\/|$)/.test(link)) link = `https://${link}`;
         clearFailures();
@@ -1456,7 +1487,12 @@
     function chooseFile() {
         const row = $("upload");
         if (row.classList.contains("working")) return;
-        if (row.classList.contains("failed") && uploadFile) return sendFile(uploadFile);
+        if (row.classList.contains("failed") && uploadFile) {
+            preferPhone();
+            return sendFile(uploadFile);
+        }
+        // The picker answers outside the tap, so the audio is allowed to start here and plays once a file is picked.
+        if (output !== "phone" && phoneByDefault()) player.unlock();
         $("upload-file").value = "";
         $("upload-file").click();
     }
@@ -1579,7 +1615,9 @@
     $("upload").onclick = chooseFile;
     $("upload-file").onchange = () => {
         const file = $("upload-file").files[0];
-        if (file) sendFile(file);
+        if (!file) return;
+        preferPhone();
+        sendFile(file);
     };
     $("mac-files").onclick = openFiles;
     $("files-search").oninput = () => {
@@ -1588,12 +1626,12 @@
     };
     $("out-mac").onclick = () => {
         showOutputMenu(false);
-        setOutput("mac");
+        pickOutput("mac");
     };
     $("out-phone").onclick = () => {
         showOutputMenu(false);
         $("output-button").classList.remove("failed");
-        setOutput("phone");
+        pickOutput("phone");
     };
     $("output-button").onclick = (event) => {
         event.stopPropagation();
@@ -1610,6 +1648,7 @@
         if (!state) return;
         // The glyph changes at once, and the next state from the Mac confirms it.
         const action = state.playing ? "pause" : "play";
+        if (action === "play") preferPhone();
         state.position = macPosition();
         state.playing = !state.playing;
         stateAt = performance.now();
