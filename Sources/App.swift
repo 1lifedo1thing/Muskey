@@ -3127,6 +3127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cli.log = { [weak self] in self?.log($0) }
         cli.play = { [weak self] request, job in self?.cliPlay(request, job: job) }
         cli.knownKey = { [weak self] song in self?.knownKey(for: song)?.key }
+        cli.serve = { WebLinks.shared.serve($0) }
+        WebLinks.shared.startIfNeeded()
         cli.start()
     }
 
@@ -3181,9 +3183,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let shift = key.cliShift(to: text) else { return job.fail("unknown key \"\(text)\"") }
             change(to: shift.semitones, relative: shift.relative)
             said.append("in \(model.heard?.name ?? text)" + (shift.semitones == 0 ? "" : " (\(Shift.text(model.shift)))"))
+        } else if model.shift != 0, let heard = model.heard {
+            // A song keeps the changes that were made to it before, so the answer names those as well.
+            said.append("in \(heard.name) (\(Shift.text(model.shift)))")
         }
         if let speed = request.speed {
             playSpeed(min(max(speed, 0.5), fastestSpeed))
+        }
+        if request.speed != nil || abs(currentSpeed - 1) > 0.001 {
             said.append(String(format: "at %.0f%% speed", currentSpeed * 100))
         }
         var region: ClosedRange<Double>?
