@@ -284,11 +284,20 @@ extension StemModel {
     }
 }
 
-enum StemError: Error {
+enum StemError: LocalizedError {
     case noOutput
     /// The downloaded model isn't the one that Muskey expects.
     case checksum
     case unpack
+
+    /// What the tool and the web remote show when a separation fails.
+    var errorDescription: String? {
+        switch self {
+        case .noOutput: "the instruments couldn't be separated"
+        case .checksum: "the separation model didn't download whole"
+        case .unpack: "the separation model couldn't be unpacked"
+        }
+    }
 }
 
 /// Separates a stream of stereo audio at 44.1 kHz in overlapping windows of the model's length. Each window gives

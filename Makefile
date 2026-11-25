@@ -147,7 +147,7 @@ $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 	xcrun actool muskey.icon --compile $(@D) --app-icon muskey --platform macosx --target-device mac \
 		--minimum-deployment-target $(MACOS) --output-partial-info-plist $(@D)/icon.plist >/dev/null
 
-$(BUNDLE): Sources/*.swift Shared/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB) $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
+$(BUNDLE): Sources/*.swift Shared/*.swift Sources/*.h Web/* Info.plist Muskey.entitlements $(LAME_LIB) $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
 		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player $(BUILD)/obj/muskey Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE) $(SENTRY)
 	rm -rf $@ $(APP_DSYM)
 	mkdir -p $@/Contents/MacOS $@/Contents/Helpers $@/Contents/Frameworks $@/Contents/Resources

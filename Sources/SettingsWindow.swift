@@ -263,6 +263,12 @@ private struct GeneralPane: View {
             Section("Command line") {
                 CLIToolRow()
             }
+            Section("Remote") {
+                Toggle("Web remote", isOn: $prefs.webRemote)
+                if prefs.webRemote {
+                    LabeledContent("Pairing link") { PairingLinkControls() }
+                }
+            }
             Section("Startup") {
                 Toggle("Launch at login", isOn: $prefs.launchAtLogin)
             }
@@ -277,6 +283,62 @@ private struct GeneralPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// The link that pairs a phone or a computer with the web remote: the pill copies it, QR Code shows it for a phone's
+/// camera, and Reset makes a new one, which unpairs every device that opened the old one.
+private struct PairingLinkControls: View {
+    @State private var link: String?
+    @State private var copied = false
+    @State private var showsCode = false
+    @State private var confirmsReset = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let link {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(link, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                } label: {
+                    Text(verbatim: link)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 190)
+                        .opacity(copied ? 0 : 1)
+                        .overlay { Text("Copied").font(.system(size: 11, weight: .semibold, design: .rounded)).opacity(copied ? 1 : 0) }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(.quaternary))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Copy the pairing link")
+                Button("QR Code") { showsCode = true }
+                    .popover(isPresented: $showsCode) {
+                        if let image = WebRemote.qrCode(link) {
+                            Image(nsImage: image).interpolation(.none).resizable().frame(width: 220, height: 220).padding(14)
+                        }
+                    }
+            } else {
+                Text("No network").foregroundStyle(.secondary)
+            }
+            Button("Reset") { confirmsReset = true }
+        }
+        .onAppear { link = WebRemote.shared.pairingLink }
+        .alert("Reset the pairing link?", isPresented: $confirmsReset) {
+            Button("Reset Link", role: .destructive) {
+                WebRemote.shared.reset()
+                link = WebRemote.shared.pairingLink
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Devices that opened the old link lose access to the remote")
+        }
     }
 }
 

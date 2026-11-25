@@ -236,6 +236,30 @@ While **Send error reports** is on in Settings > General, Muskey sends its crash
 
 `make build` keeps the dSYMs of the release in `build/dSYMs`, and `make upload` sends them to Sentry after a full release, so that the reports name Muskey's functions.
 
+### Command line
+
+The `muskey` tool lives in `Contents/Helpers`, and Settings > General links it into `~/.local/bin`. It reaches the app through a message port named `com.lowtechguys.Muskey.cli`, which only processes of the same user can open. Requests and answers are JSON, from `Shared/MuskeyIPC.swift`, which both are built with. When the port is missing, the tool opens Muskey in the background and waits up to 20 seconds for it.
+
+- Without `-o`, a request plays its inputs in the HUD, or listens to the song that plays, and applies the changes once the song plays and its key is known.
+- With `-o`, the app starts a job that writes into `~/Library/Caches/Muskey/CLI/<job>/`. Jobs run one at a time, with a stems separation of their own, so a job never takes over the separation of the song in the HUD. The tool asks how the job goes four times a second, prints its step, and moves the file into place. Ctrl-C stops the job.
+- A job takes the key of the song from the HUD (a remembered key, a key heard since launch, or Noiseblend's), then from the notes kept for the song, and only then reads it from 30 seconds of the file. Notes that the notes window kept are cut to `--from` and `--to` without a new separation.
+- A job needs an input, so the tool never records the song that another app plays.
+
+#### Links
+
+`--link` copies the file into `~/Library/Caches/Muskey/Links/<token>/`, where the token is 128 random bits, and prints `http://<address>:25471/l/<token>/<name>`. The address is Tailscale's when it is up, or else the local network's.
+
+The server in `WebServer.swift` listens on port 25471 of each private address of the Mac, and never on all of them: RFC 1918 and link-local IPv4, 100.64/10 on a tunnel interface only (on Wi-Fi it is a carrier's shared range), IPv6 unique-local, and 127.0.0.1. A request names only a token, so no path from the network reaches the disk. Files go out with byte ranges, which Safari needs to play audio. The links keep working after a restart, and the folder's date ends them after three days.
+
+#### Web remote
+
+While **Web remote** is on in Settings > General, the same server answers a page at `/` for paired devices. The pairing link (`/pair/<key>`, with 128 random bits) sets a cookie with `SameSite=Strict`, and **Reset** makes a new key, which unpairs every device. The server also refuses a request when:
+
+- its Host isn't one of the Mac's addresses, which stops a web page elsewhere from reaching the remote through a DNS name that resolves to the Mac
+- it changes something, and its Origin isn't the address of the remote
+
+The page (`Web/remote.html`) lists Recents by an ID made from each song's URL, never by a path. **Play on Mac** and **Listen Here** send the same requests as the tool through `CLIService`: a play, or a write job of an M4A that the browser plays with byte ranges. The notes come from a write job in JSON, and `Web/sheet.js` draws them as the notes window does, moving its line with the audio element. A key picked on the sheet is the key of the next render.
+
 ## Limitations
 
 - A pitch change moves every note by the same amount, so a major song stays major. Muskey reaches a key in the other mode through its relative, which has the same notes: from A major, C minor plays as E♭ major.

@@ -12,6 +12,8 @@ let muskeyStemNames = ["bass", "drums", "guitar", "piano", "vocals", "winds", "o
 /// What the tool can write, by file extension.
 enum CLIFormat: String, Codable, CaseIterable {
     case m4a, mp3, wav, pdf, html, musicxml, mid, txt
+    /// The notes as data, for the sheet of the web remote. Left out of the help of the tool.
+    case json
 
     /// The changed song, as opposed to its notes.
     var isAudio: Bool { [.m4a, .mp3, .wav].contains(self) }

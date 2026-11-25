@@ -19,8 +19,7 @@ import Network
         if links.contains(where: Self.isToken) { start() }
     }
 
-    /// Copies the file into a new link's folder and gives the link, at the address that reaches the furthest:
-    /// Tailscale's, then the local network's.
+    /// Copies the file into a new link's folder and gives the link.
     func serve(_ path: String) -> String? {
         removeExpired()
         var bytes = [UInt8](repeating: 0, count: 16)
@@ -36,17 +35,24 @@ import Network
             return nil
         }
         start()
+        guard let base = Self.base else { return nil }
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))) ?? name
+        return "\(base)/l/\(token)/\(encoded)"
+    }
+
+    /// The start of a link at the address that reaches the furthest: Tailscale's, then the local network's.
+    nonisolated static var base: String? {
         let addresses = WebAddresses.current()
         guard let address = addresses.first(where: { !$0.interface.hasPrefix("lo") }) ?? addresses.first else { return nil }
-        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))) ?? name
-        return "http://\(address.host):\(Self.port)/l/\(token)/\(encoded)"
+        return "http://\(address.host):\(port)"
     }
 
     private var server: WebServer?
     private var monitor: NWPathMonitor?
     private var relisten: DispatchWorkItem?
 
-    private func start() {
+    /// Starts the server, for the links or for the web remote.
+    func start() {
         if server == nil {
             server = WebServer(port: Self.port, handler: Self.handle)
             // Wi-Fi changes and VPNs coming up change the addresses, so the listeners follow them.
@@ -87,13 +93,19 @@ import Network
     // MARK: Requests
 
     nonisolated private static func handle(_ request: WebRequest) async -> WebResponse {
-        guard request.method == "GET" || request.method == "HEAD" else { return .text("Method not allowed", status: 405) }
         let parts = request.path.split(separator: "/", omittingEmptySubsequences: true)
-        guard parts.count >= 2, parts[0] == "l", isToken(String(parts[1])) else { return .notFound }
+        guard parts.first == "l" else { return await WebRemote.handle(request) }
+        guard request.method == "GET" || request.method == "HEAD" else { return .text("Method not allowed", status: 405) }
+        guard parts.count >= 2, isToken(String(parts[1])) else { return .notFound }
         let folder = Self.folder.appending(path: String(parts[1]))
         guard !expired(folder), let name = try? FileManager.default.contentsOfDirectory(atPath: folder.path).first(where: { !$0.hasPrefix(".") })
         else { return .notFound }
-        let path = folder.appending(path: name).path
+        return file(folder.appending(path: name).path, request: request)
+    }
+
+    /// A file with its type, an ETag and byte ranges, named for a download by its file name.
+    nonisolated static func file(_ path: String, request: WebRequest, extra: [(String, String)] = []) -> WebResponse {
+        let name = (path as NSString).lastPathComponent
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: path), let size = (attributes[.size] as? NSNumber)?.uint64Value
         else { return .notFound }
         let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
@@ -108,7 +120,7 @@ import Network
             ("X-Content-Type-Options", "nosniff"),
             ("Referrer-Policy", "no-referrer"),
             ("Content-Disposition", "\(["musicxml", "mid", "xml"].contains(ext) ? "attachment" : "inline"); filename*=UTF-8''\(name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "file")"),
-        ]
+        ] + extra
         if ext == "html" {
             // The sheet carries its scripts and styles inline and asks for nothing from the network.
             headers.append(("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"))
@@ -141,7 +153,7 @@ import Network
         return end >= start ? start ... end : nil
     }
 
-    nonisolated private static func contentType(_ ext: String) -> String {
+    nonisolated static func contentType(_ ext: String) -> String {
         switch ext {
         case "m4a": "audio/mp4"
         case "mp3": "audio/mpeg"
@@ -151,6 +163,11 @@ import Network
         case "musicxml", "xml": "application/vnd.recordare.musicxml+xml"
         case "mid": "audio/midi"
         case "txt": "text/plain; charset=utf-8"
+        case "json": "application/json"
+        case "js": "text/javascript; charset=utf-8"
+        case "css": "text/css; charset=utf-8"
+        case "jpg", "jpeg": "image/jpeg"
+        case "png": "image/png"
         default: "application/octet-stream"
         }
     }

@@ -288,6 +288,13 @@ final class Preferences: ObservableObject {
     @Published var miniRecordScale: Double {
         didSet { defaults.set(miniRecordScale, forKey: "miniRecordScale") }
     }
+    /// Settings > General > Web remote: the page that paired devices open to play and change songs of Recents.
+    @Published var webRemote: Bool {
+        didSet {
+            defaults.set(webRemote, forKey: "webRemote")
+            Task { @MainActor in WebRemote.shared.update() }
+        }
+    }
     /// Settings > General > Send error reports. The key is the one that the other Low Tech Guys apps use.
     @Published var errorReports: Bool {
         didSet { defaults.set(errorReports, forKey: "enableSentry") }
@@ -335,6 +342,7 @@ final class Preferences: ObservableObject {
         let scales = MiniPlayerView.scales
         miniRecordScale = (defaults.object(forKey: "miniRecordScale") as? Double).map { min(max($0, scales.lowerBound), scales.upperBound) } ?? 1
         errorReports = defaults.bool(forKey: "enableSentry")
+        webRemote = defaults.bool(forKey: "webRemote")
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
 }

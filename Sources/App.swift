@@ -3129,6 +3129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cli.knownKey = { [weak self] song in self?.knownKey(for: song)?.key }
         cli.serve = { WebLinks.shared.serve($0) }
         WebLinks.shared.startIfNeeded()
+        WebRemote.shared.recents = { [weak self] in await self?.remoteRecents() ?? [] }
+        WebRemote.shared.update()
         cli.start()
     }
 
@@ -3225,6 +3227,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func urlsPlaying(_ request: CLIRequest) -> Bool { !request.inputs.isEmpty }
+
+    /// The songs of Recents for the web remote, with their details read once and kept with the rows of the record's
+    /// back, and the key and tempo that Muskey knows for each.
+    @MainActor private func remoteRecents() async -> [QueueItem] {
+        var rows: [QueueItem] = []
+        for entry in RecentSongs.load() where !FilePlayer.isFolder(entry.url) {
+            let id = entry.url.absoluteString
+            var row = recentRows[id] ?? QueueItem(url: entry.url, cached: entry.song)
+            if !row.read, let file = row.file, FileManager.default.fileExists(atPath: file.path) {
+                row.apply(await QueueItem.details(file, name: entry.url.isFileURL ? nil : SongName.link(entry.url)))
+                recentRows[id] = row
+            }
+            let song: [String?] = [row.title, row.artist, row.album]
+            if row.key == nil { row.key = knownKey(for: song)?.key }
+            if row.bpm == nil { row.bpm = knownTempo(for: song)?.bpm }
+            rows.append(row)
+        }
+        return rows
+    }
 
     /// A folder opens as its songs and the songs of its subfolders, read off the main thread, with the folder that each
     /// song came from. Files and links pass through at once.

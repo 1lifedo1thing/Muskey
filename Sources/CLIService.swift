@@ -85,6 +85,17 @@ import SwiftUI
         log("cli: listening")
     }
 
+    /// A request from the web remote, answered as the tool's are.
+    func handle(_ request: CLIRequest) -> CLIResponse { answer(request) }
+
+    /// The file that a write job made, which stays in its folder of the cache for a week, after the job is forgotten.
+    func output(of id: String) -> String? {
+        guard id.count == 8, id.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
+        if let job = jobs[id] { return job.done && job.error == nil ? job.output : nil }
+        let folder = CLIWriter.folder.appending(path: id)
+        return (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.first { !$0.hasPrefix(".") }.map { folder.appending(path: $0).path }
+    }
+
     private func answer(_ request: CLIRequest) -> CLIResponse {
         // A job that ended a while ago has been read by its tool.
         jobs = jobs.filter { $0.value.finishedAt.map { Date().timeIntervalSince($0) < 600 } ?? true }
@@ -469,8 +480,16 @@ extension DetectedKey {
             try NotesPDF.write(score.collapsingRests(), title: title, artist: artist, view: shown, to: out)
             return out
         case .html:
-            _ = artist
-            throw Failure("the interactive sheet isn't in this build yet")
+            let out = base.appendingPathExtension("html")
+            let page = NotesSheet.html(fixture, artist: artist, view: view, shift: shift, relative: relative, capo: capo)
+            guard !page.isEmpty else { throw Failure("the interactive sheet is missing from the app's resources") }
+            try page.write(to: out, atomically: true, encoding: .utf8)
+            return out
+        case .json:
+            // The notes as the web remote's sheet reads them, unmoved: the page moves them with the song.
+            let out = base.appendingPathExtension("json")
+            try JSONEncoder().encode(WebNotes(fixture: fixture, artist: artist)).write(to: out)
+            return out
         case .m4a, .mp3, .wav:
             throw Failure("a song format can't hold notes")
         }

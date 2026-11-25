@@ -303,6 +303,7 @@ private final class WebConnection: @unchecked Sendable {
         case 200: "OK"
         case 204: "No Content"
         case 206: "Partial Content"
+        case 303: "See Other"
         case 304: "Not Modified"
         case 400: "Bad Request"
         case 403: "Forbidden"

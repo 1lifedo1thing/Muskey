@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="generator" content="Muskey">
+<title>Muskey</title>
+<link rel="stylesheet" href="/web/sheet.css">
+<style>
+/* The web remote: Recents, then one song with its key, tempo, instruments and part, played on the Mac or heard
+   here, and its notes on the sheet of the notes window. The colours are the sheet's. */
+:root {
+    color-scheme: light dark;
+    --ink: rgb(33 20 26);
+    --muted: rgb(74 51 61 / 0.75);
+    --surface: rgb(255 253 251);
+    --card: rgb(33 20 26 / 0.045);
+    --line: rgb(33 20 26 / 0.1);
+    --accent: oklch(0.58 0.24 16);
+    --on-accent: white;
+    --failed: oklch(0.6 0.22 25);
+    --font: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    accent-color: var(--accent);
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --ink: rgb(255 247 245);
+        --muted: rgb(232 217 219 / 0.7);
+        --surface: rgb(17 15 16);
+        --card: rgb(255 247 245 / 0.06);
+        --line: rgb(255 247 245 / 0.12);
+        --accent: oklch(0.76 0.18 62);
+        --on-accent: rgb(33 20 26);
+        --failed: oklch(0.68 0.2 25);
+    }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+    min-height: 100dvh;
+    color: var(--ink);
+    background: var(--surface);
+    font-family: var(--font);
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
+
+main { max-width: 720px; margin: 0 auto; padding: max(12px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+header { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+header h1 { margin: 0; font-size: 20px; flex: 1; }
+.close { border: 0; background: var(--card); border-radius: 999px; padding: 8px 14px; font-weight: 600; }
+
+/* Songs */
+.songs { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.songs button {
+    width: 100%; display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 12px;
+    padding: 8px; border: 0; border-radius: 14px; background: transparent; text-align: left;
+}
+.songs button:hover, .songs button:focus-visible { background: var(--card); }
+.cover { width: 48px; height: 48px; border-radius: 10px; background: var(--card); object-fit: cover; display: block; }
+.title { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artist { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pills { display: flex; gap: 6px; }
+.pill { padding: 2px 9px; border-radius: 999px; background: var(--card); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.empty { color: var(--muted); padding: 24px 0; text-align: center; }
+
+/* Song */
+.song-head { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 14px; align-items: center; margin: 8px 0 16px; }
+.song-head .cover { width: 72px; height: 72px; border-radius: 14px; }
+.song-head .title { font-size: 20px; white-space: normal; }
+.song-head .pills { margin-top: 6px; }
+section { margin: 18px 0; }
+section > h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+section > h2 .pill { color: var(--ink); text-transform: none; letter-spacing: 0; }
+
+.keys { display: flex; gap: 4px; overflow-x: auto; scroll-snap-type: x proximity; padding: 2px 0 6px; scrollbar-width: none; }
+.keys::-webkit-scrollbar { display: none; }
+.keys button {
+    flex: 0 0 auto; min-width: 48px; min-height: 44px; padding: 0 10px; border: 0; border-radius: 12px;
+    background: var(--card); font-weight: 650; scroll-snap-align: center; position: relative;
+}
+.keys button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.keys button.original::after {
+    content: ""; position: absolute; left: 50%; bottom: 5px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: currentColor;
+}
+
+.tempo { display: flex; align-items: center; gap: 12px; }
+.tempo input { flex: 1; min-height: 44px; }
+.reset { border: 0; background: var(--card); border-radius: 999px; padding: 6px 12px; font-weight: 600; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { border: 0; border-radius: 999px; padding: 10px 14px; background: var(--accent); color: var(--on-accent); font-weight: 650; }
+.chips button[aria-pressed="false"] { background: var(--card); color: var(--muted); text-decoration: line-through; }
+
+.part { display: flex; gap: 10px; }
+.part label { flex: 1; min-width: 0; display: grid; gap: 4px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.part input {
+    width: 100%; min-width: 0; min-height: 44px; border: 1px solid var(--line); border-radius: 12px; padding: 0 12px;
+    background: transparent; font-size: 16px; color: var(--ink);
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.action {
+    position: relative; min-height: 46px; padding: 0 18px; border: 0; border-radius: 14px;
+    background: var(--accent); color: var(--on-accent); font-weight: 700;
+}
+.action.secondary { background: var(--card); color: var(--ink); }
+/* The actions are neutral, so that a failed one is the only red button. */
+.action.failed { background: var(--failed); color: white; }
+.action:disabled { opacity: 0.55; cursor: default; }
+.dismiss {
+    position: absolute; top: -7px; right: -7px; width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 0;
+    background: var(--ink); color: var(--surface); font-size: 12px; line-height: 20px;
+}
+.status { min-height: 20px; margin-top: 8px; color: var(--muted); font-size: 14px; }
+progress { width: 100%; height: 4px; margin-top: 6px; }
+audio { width: 100%; margin-top: 10px; }
+
+select { min-height: 44px; border: 1px solid var(--line); border-radius: 12px; padding: 0 10px; background: transparent; }
+#sheet { height: 78dvh; min-height: 420px; margin-top: 12px; border-radius: 16px; overflow: hidden; }
+
+@media (prefers-reduced-motion: no-preference) {
+    .action, .keys button, .chips button { transition: background-color 120ms ease-out, color 120ms ease-out; }
+}
+</style>
+</head>
+<body>
+<main>
+    <div id="songs-view">
+        <header><h1>Recent songs</h1></header>
+        <ul class="songs" id="songs"></ul>
+        <p class="empty" id="empty" hidden>Play a song in Muskey to list it here</p>
+    </div>
+
+    <div id="song-view" hidden>
+        <header><button class="close" id="close">Close song</button></header>
+        <div class="song-head">
+            <img class="cover" id="song-cover" alt="">
+            <div>
+                <div class="title" id="song-title"></div>
+                <div class="artist" id="song-artist"></div>
+                <div class="pills" id="song-pills"></div>
+            </div>
+        </div>
+
+        <section>
+            <h2>Key <span class="pill" id="shift-pill">0</span></h2>
+            <div class="keys" id="keys" role="group" aria-label="Key"></div>
+        </section>
+
+        <section>
+            <h2>Tempo <span class="pill" id="speed-pill">100%</span></h2>
+            <div class="tempo">
+                <input type="range" id="speed" min="50" max="150" step="1" value="100" aria-label="Tempo">
+                <button class="reset" id="speed-reset">100%</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Instruments</h2>
+            <div class="chips" id="stems" role="group" aria-label="Instruments"></div>
+        </section>
+
+        <section>
+            <h2>Part</h2>
+            <div class="part">
+                <label>From <input id="from" inputmode="decimal" placeholder="0:00" autocomplete="off"></label>
+                <label>To <input id="to" inputmode="decimal" placeholder="end" autocomplete="off"></label>
+            </div>
+        </section>
+
+        <section>
+            <div class="actions">
+                <button class="action secondary" id="play-mac">Play on Mac</button>
+                <button class="action secondary" id="listen">Listen Here</button>
+            </div>
+            <div class="status" id="status" aria-live="polite"></div>
+            <progress id="progress" max="1" hidden></progress>
+            <audio id="audio" controls preload="auto" hidden></audio>
+        </section>
+
+        <section>
+            <h2>Notes</h2>
+            <div class="actions">
+                <select id="notes-stem" aria-label="Instrument to transcribe">
+                    <option value="auto">Auto</option>
+                    <option value="bass">Bass</option>
+                    <option value="guitar">Guitar</option>
+                    <option value="piano">Piano</option>
+                    <option value="vocals">Vocals</option>
+                    <option value="winds">Winds</option>
+                    <option value="other">Other</option>
+                </select>
+                <button class="action secondary" id="transcribe">Transcribe</button>
+            </div>
+            <div id="sheet" hidden></div>
+        </section>
+    </div>
+</main>
+
+<script src="/web/sheet.js"></script>
+<script>
+(() => {
+    const $ = (id) => document.getElementById(id);
+    const STEMS = ["bass", "drums", "guitar", "piano", "vocals", "winds", "other"];
+    const NAMES = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
+    const LETTERS = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+    let songs = [];
+    let song = null;
+    // The changes picked on the page, sent with every play and render.
+    let shift = 0;
+    let speed = 1;
+    let muted = new Set();
+    // What the audio element plays: the render's changes, so a seek on the sheet lands on the same moment of the song.
+    let heard = null;
+    let sheet = null;
+    let polling = null;
+
+    // MARK: Requests
+
+    async function api(path, body) {
+        const response = await fetch(path, body === undefined ? {} : {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(await response.text() || response.statusText);
+        return response.status === 204 ? null : response.json();
+    }
+
+    /** Asks how a job goes until it is done, showing its step, and gives its last answer. */
+    async function follow(job) {
+        const token = {};
+        polling = token;
+        while (!job.done) {
+            showStep(job);
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            if (polling !== token) throw new Error("Stopped");
+            job = await api(`/api/job/${job.job}`);
+        }
+        showStep(null);
+        if (job.error) throw new Error(job.error);
+        return job;
+    }
+
+    function showStep(job) {
+        const step = job?.step;
+        $("status").textContent = step ? (job.progress != null ? `${step} ${Math.round(job.progress * 100)}%` : step) : "";
+        $("progress").hidden = !(step && job.progress != null);
+        if (step && job.progress != null) $("progress").value = job.progress;
+    }
+
+    /** A failed action turns its button red, with Retry beside it and an ✕ that puts it back. */
+    function fail(button, error, retry) {
+        clearFailure(button);
+        button.classList.add("failed");
+        button.title = error.message;
+        $("status").textContent = "";
+        $("progress").hidden = true;
+        const dismiss = document.createElement("button");
+        dismiss.className = "dismiss";
+        dismiss.textContent = "✕";
+        dismiss.setAttribute("aria-label", "Dismiss");
+        dismiss.onclick = (event) => { event.stopPropagation(); clearFailure(button); };
+        button.append(dismiss);
+        const again = document.createElement("button");
+        again.className = "action secondary retry";
+        again.textContent = "Retry";
+        again.onclick = () => { clearFailure(button); retry(); };
+        button.after(again);
+    }
+
+    function clearFailure(button) {
+        button.classList.remove("failed");
+        button.title = "";
+        button.querySelector(".dismiss")?.remove();
+        if (button.nextElementSibling?.classList.contains("retry")) button.nextElementSibling.remove();
+    }
+
+    // MARK: Keys and times
+
+    function parseKey(code) {
+        const match = /^([A-G])([#b]?)(m?)$/.exec(code || "");
+        if (!match) return null;
+        const pitch = (LETTERS[match[1]] + (match[2] === "#" ? 1 : match[2] === "b" ? -1 : 0) + 12) % 12;
+        return { pitch, minor: match[3] === "m" };
+    }
+
+    function keyName(key, by) {
+        return NAMES[(key.pitch + by + 120) % 12] + (key.minor ? "m" : "");
+    }
+
+    const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
+    const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+    /** `72.5`, `1:12` or `1:02:03` in seconds, or null. */
+    function seconds(text) {
+        const parts = text.trim().split(":");
+        if (!text.trim() || parts.length > 3 || parts.some((p) => !/^\d+(\.\d+)?$/.test(p))) return null;
+        return parts.reduce((total, part) => total * 60 + Number(part), 0);
+    }
+
+    function part() {
+        const from = seconds($("from").value), to = seconds($("to").value);
+        return { from: from ?? undefined, to: to ?? undefined };
+    }
+
+    function changes() {
+        const playing = STEMS.filter((stem) => !muted.has(stem));
+        return {
+            song: song.id,
+            key: shift === 0 ? undefined : signed(shift),
+            speed: speed === 1 ? undefined : speed,
+            stems: muted.size ? playing : undefined,
+            ...part(),
+        };
+    }
+
+    // MARK: Songs
+
+    async function loadSongs() {
+        try {
+            songs = await api("/api/songs");
+        } catch (error) {
+            songs = [];
+        }
+        const list = $("songs");
+        list.replaceChildren(...songs.map((item) => {
+            const row = document.createElement("li");
+            const button = document.createElement("button");
+            button.append(cover(item), texts(item), pills(item));
+            button.onclick = () => openSong(item);
+            row.append(button);
+            return row;
+        }));
+        $("empty").hidden = songs.length > 0;
+    }
+
+    function cover(item) {
+        const image = document.createElement("img");
+        image.className = "cover";
+        image.alt = "";
+        if (item.cover) image.src = `/api/cover/${item.id}`;
+        return image;
+    }
+
+    function texts(item) {
+        const box = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "title";
+        title.textContent = item.title;
+        const artist = document.createElement("div");
+        artist.className = "artist";
+        artist.textContent = item.artist || "";
+        box.append(title, artist);
+        return box;
+    }
+
+    function pills(item) {
+        const box = document.createElement("div");
+        box.className = "pills";
+        const key = parseKey(item.key);
+        if (key) box.append(pill(keyName(key, 0)));
+        if (item.bpm) box.append(pill(`${Math.round(item.bpm)} BPM`));
+        return box;
+    }
+
+    function pill(text) {
+        const span = document.createElement("span");
+        span.className = "pill";
+        span.textContent = text;
+        return span;
+    }
+
+    function openSong(item) {
+        song = item;
+        shift = 0;
+        speed = 1;
+        muted = new Set();
+        heard = null;
+        $("from").value = "";
+        $("to").value = "";
+        $("audio").pause();
+        $("audio").removeAttribute("src");
+        $("audio").hidden = true;
+        closeSheet();
+        $("song-title").textContent = item.title;
+        $("song-artist").textContent = item.artist || "";
+        $("song-pills").replaceChildren(...pills(item).childNodes);
+        $("song-cover").src = item.cover ? `/api/cover/${item.id}` : "";
+        $("song-cover").style.visibility = item.cover ? "visible" : "hidden";
+        drawKeys();
+        drawSpeed();
+        drawStems();
+        $("status").textContent = "";
+        $("songs-view").hidden = true;
+        $("song-view").hidden = false;
+        scrollTo(0, 0);
+        // The row scrolls to the song's key once it has a size.
+        $("keys").querySelector('[aria-pressed="true"]')?.scrollIntoView({ inline: "center", block: "nearest" });
+    }
+
+    function closeSong() {
+        polling = null;
+        $("audio").pause();
+        closeSheet();
+        song = null;
+        $("song-view").hidden = true;
+        $("songs-view").hidden = false;
+        loadSongs();
+    }
+
+    // MARK: Controls
+
+    function drawKeys() {
+        const key = parseKey(song.key);
+        const row = $("keys");
+        row.replaceChildren();
+        for (let by = -6; by <= 6; by++) {
+            const button = document.createElement("button");
+            button.textContent = key ? keyName(key, by) : signed(by);
+            button.setAttribute("aria-pressed", String(by === shift));
+            if (by === 0) button.classList.add("original");
+            button.onclick = () => setShift(by);
+            row.append(button);
+        }
+        $("shift-pill").textContent = signed(shift);
+        row.querySelector('[aria-pressed="true"]')?.scrollIntoView({ inline: "center", block: "nearest" });
+    }
+
+    function setShift(by) {
+        shift = Math.max(-12, Math.min(12, by));
+        drawKeys();
+        if (sheet && sheet.state.shift !== shift) sheet.set({ shift });
+    }
+
+    function drawSpeed() {
+        $("speed").value = String(Math.round(speed * 100));
+        $("speed-pill").textContent = `${Math.round(speed * 100)}%`;
+    }
+
+    function drawStems() {
+        $("stems").replaceChildren(...STEMS.map((stem) => {
+            const button = document.createElement("button");
+            button.textContent = stem[0].toUpperCase() + stem.slice(1);
+            button.setAttribute("aria-pressed", String(!muted.has(stem)));
+            button.onclick = () => {
+                muted.has(stem) ? muted.delete(stem) : muted.add(stem);
+                // Every instrument muted plays nothing, so the last one stays on.
+                if (muted.size === STEMS.length) muted.delete(stem);
+                drawStems();
+            };
+            return button;
+        }));
+    }
+
+    // MARK: Actions
+
+    async function playOnMac() {
+        const button = $("play-mac");
+        clearFailure(button);
+        button.disabled = true;
+        try {
+            const job = await follow(await api("/api/play", changes()));
+            $("status").textContent = job.message || "";
+        } catch (error) {
+            if (error.message !== "Stopped") fail(button, error, playOnMac);
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function listen() {
+        const button = $("listen");
+        clearFailure(button);
+        button.disabled = true;
+        const audio = $("audio");
+        const wanted = changes();
+        // The moment of the song that plays, so the new render starts there.
+        const at = heard ? songTime() : null;
+        try {
+            let source;
+            if (!wanted.key && !wanted.speed && !wanted.stems && wanted.from === undefined && wanted.to === undefined) {
+                source = `/api/song/${song.id}`;
+            } else {
+                const job = await follow(await api("/api/write", { ...wanted, format: "m4a" }));
+                source = job.file;
+            }
+            heard = { speed: wanted.speed || 1, from: wanted.from || 0 };
+            audio.src = source;
+            audio.hidden = false;
+            if (at !== null) {
+                audio.addEventListener("loadedmetadata", () => { audio.currentTime = Math.max(0, (at - heard.from) / heard.speed); }, { once: true });
+            }
+            audio.play().catch(() => {});
+        } catch (error) {
+            if (error.message !== "Stopped") fail(button, error, listen);
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    /** The moment of the song that the audio element plays, in the song's own seconds. */
+    function songTime() {
+        return heard.from + $("audio").currentTime * heard.speed;
+    }
+
+    async function transcribe() {
+        const button = $("transcribe");
+        clearFailure(button);
+        button.disabled = true;
+        try {
+            const job = await follow(await api("/api/write", { song: song.id, notes: $("notes-stem").value, format: "json", ...part() }));
+            const data = await (await fetch(job.file)).json();
+            closeSheet();
+            $("sheet").hidden = false;
+            sheet = MuskeySheet.mount($("sheet"), data, {
+                shift,
+                transcribed: part().from !== undefined || part().to !== undefined ? [part().from ?? 0, part().to ?? data.duration] : undefined,
+                onSeek: (time) => {
+                    if (!heard) return;
+                    $("audio").currentTime = Math.max(0, (time - heard.from) / heard.speed);
+                },
+                // A key picked on the sheet is the key that the next render plays in.
+                onChange: (state) => { if (state.shift !== shift) setShift(state.shift); },
+            });
+            syncSheet();
+        } catch (error) {
+            if (error.message !== "Stopped") fail(button, error, transcribe);
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    function closeSheet() {
+        sheet?.destroy();
+        sheet = null;
+        $("sheet").replaceChildren();
+        $("sheet").hidden = true;
+    }
+
+    function syncSheet() {
+        if (!sheet || !heard) return;
+        const audio = $("audio");
+        sheet.setTime(songTime());
+        sheet.setPlaying(!audio.paused, heard.speed);
+    }
+
+    // MARK: Wiring
+
+    $("close").onclick = closeSong;
+    $("speed").oninput = () => {
+        speed = Number($("speed").value) / 100;
+        drawSpeed();
+    };
+    $("speed-reset").onclick = () => {
+        speed = 1;
+        drawSpeed();
+    };
+    $("play-mac").onclick = playOnMac;
+    $("listen").onclick = listen;
+    $("transcribe").onclick = transcribe;
+    for (const event of ["play", "pause", "seeked", "timeupdate", "ratechange"]) $("audio").addEventListener(event, syncSheet);
+
+    loadSongs();
+})();
+</script>
+</body>
+</html>
