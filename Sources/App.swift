@@ -3039,6 +3039,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow.show()
         }
         launched = true
+        MainActor.assumeIsolated { startCLI() }
         // `--open PATH_OR_LINK` plays a file or a link, as a drop on the HUD does.
         if let text = Self.stringOption("--open"), let url = FilePlayer.url(from: text) { open([url]) }
         // `--notes-open STEM` opens the notes window on that stem of the song that `--open` plays, once it plays.
@@ -3117,6 +3118,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             raisesHUD = false
         }
     }
+
+    // MARK: Command line
+
+    /// The `muskey` tool reaches the app through `CLIService`, which plays its songs here.
+    @MainActor private func startCLI() {
+        let cli = CLIService.shared
+        cli.log = { [weak self] in self?.log($0) }
+        cli.play = { [weak self] request, job in self?.cliPlay(request, job: job) }
+        cli.knownKey = { [weak self] song in self?.knownKey(for: song)?.key }
+        cli.start()
+    }
+
+    /// Plays the inputs of the tool in the HUD, or listens to the song that plays now, and applies the changes once
+    /// the song plays and its key is known: the key, the speed, the region loop, the stems and the notes window.
+    @MainActor private func cliPlay(_ request: CLIRequest, job: CLIJob) {
+        let urls = request.inputs.compactMap(FilePlayer.url(from:))
+        guard urls.count == request.inputs.count else { return job.fail("Muskey can't open \(request.inputs.first ?? "the input")") }
+        if (request.stems != nil || request.mute != nil || request.notes != nil), !StemModel.installed {
+            return job.fail("the separation model is not installed. Install it in Settings > Instruments and vocals")
+        }
+        let ready = { [weak self] () -> Bool in
+            guard let self else { return false }
+            return model.pending == nil && model.key != nil && state == .showing
+        }
+        if urls.isEmpty {
+            guard request.notes == nil else {
+                return job.fail("--notes needs a song file or a link. For the song that plays now, press T over the HUD")
+            }
+            if state == .idle { toggle() }
+            job.step = "Listening"
+            return cliWait(job, seconds: 90, until: ready) { [weak self] in self?.cliApply(request, job: job) }
+        }
+        let before = filePlayer.current?.path
+        let opened = Date()
+        open(urls)
+        job.step = urls[0].isFileURL ? "Opening" : "Downloading"
+        // Muskey Player names the new song once it plays it. The same file opened again plays as the song that was there.
+        cliWait(job, seconds: urls[0].isFileURL ? 60 : 900, until: { [weak self] in
+            guard let self, playsInFilePlayer, let path = filePlayer.current?.path else { return false }
+            if job.step != "Reading the key", path != before || Date().timeIntervalSince(opened) > 3 { job.step = "Reading the key" }
+            return (path != before || Date().timeIntervalSince(opened) > 3) && ready()
+        }) { [weak self] in self?.cliApply(request, job: job) }
+    }
+
+    /// Calls `then` once `until` holds, checking four times a second, or fails the job after `seconds`.
+    @MainActor private func cliWait(_ job: CLIJob, seconds: Double, until: @escaping () -> Bool, then: @escaping () -> Void) {
+        Task { @MainActor in
+            let deadline = Date().addingTimeInterval(seconds)
+            while !until() {
+                guard !job.cancelled else { return }
+                guard Date() < deadline else { return job.fail(job.step == "Listening" ? "no key was found for the song that plays" : "the song didn't play in Muskey") }
+                try? await Task.sleep(for: .seconds(0.25))
+            }
+            then()
+        }
+    }
+
+    @MainActor private func cliApply(_ request: CLIRequest, job: CLIJob) {
+        var said: [String] = []
+        if let text = request.key, let key = model.key {
+            guard let shift = key.cliShift(to: text) else { return job.fail("unknown key \"\(text)\"") }
+            change(to: shift.semitones, relative: shift.relative)
+            said.append("in \(model.heard?.name ?? text)" + (shift.semitones == 0 ? "" : " (\(Shift.text(model.shift)))"))
+        }
+        if let speed = request.speed {
+            playSpeed(min(max(speed, 0.5), fastestSpeed))
+            said.append(String(format: "at %.0f%% speed", currentSpeed * 100))
+        }
+        var region: ClosedRange<Double>?
+        if request.from != nil || request.to != nil, let duration = nowPlaying.track?.duration, duration > 0 {
+            let start = max(0, request.from ?? 0), end = min(duration, request.to ?? duration)
+            if end > start + 0.25 {
+                setNotesLoop(start, end)
+                region = start ... end
+                let clock = { (seconds: Double) in String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60) }
+                said.append("looping \(clock(start)) to \(clock(end))")
+            }
+        }
+        if let playing = request.stems ?? request.mute.map({ muted in muskeyStemNames.filter { !muted.contains($0) } }) {
+            let muted = Set(Stem.allCases.filter { !playing.contains($0.name.lowercased()) })
+            setStems(muted)
+            said.append(request.stems != nil ? "only \(request.stems!.joined(separator: ", "))" : "without \(request.mute!.joined(separator: ", "))")
+        }
+        if let name = request.notes {
+            guard playsInFilePlayer, let path = filePlayer.current?.path, let track = nowPlaying.track else {
+                return job.fail("the song didn't play in Muskey, so its notes can't be transcribed")
+            }
+            let stems = notesStems
+            let stem = name == "auto"
+                ? richestNotesStem(stems, in: region) ?? lastNotesStem.flatMap { stems.contains($0) ? $0 : nil } ?? (stems.contains(.bass) ? .bass : stems[0])
+                : stems.first { $0.name.lowercased() == name }
+            guard let stem else { return job.fail("the \(name) can't be transcribed") }
+            openNotes(path: path, track: track, stem: stem, region: region)
+            said.append("transcribing the \(stem.name.lowercased())")
+        }
+        let title = model.track?.title ?? "the song"
+        job.finish(([urlsPlaying(request) ? "Playing \(title)" : "Listening to \(title)"] + said).joined(separator: ", "))
+    }
+
+    private func urlsPlaying(_ request: CLIRequest) -> Bool { !request.inputs.isEmpty }
 
     /// A folder opens as its songs and the songs of its subfolders, read off the main thread, with the folder that each
     /// song came from. Files and links pass through at once.

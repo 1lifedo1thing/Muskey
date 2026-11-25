@@ -136,18 +136,24 @@ $(BUILD)/obj/player: Player/*.swift
 	@mkdir -p $(@D)
 	swiftc -O -target $(TARGET) Player/*.swift -o $@
 
+# The `muskey` command line tool, which talks to the running app over its message port. Shared/ holds the requests,
+# which the app compiles too.
+$(BUILD)/obj/muskey: CLI/*.swift Shared/*.swift
+	@mkdir -p $(@D)
+	swiftc -O -target $(TARGET) CLI/*.swift Shared/*.swift -o $@
+
 $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 	@mkdir -p $(@D)
 	xcrun actool muskey.icon --compile $(@D) --app-icon muskey --platform macosx --target-device mac \
 		--minimum-deployment-target $(MACOS) --output-partial-info-plist $(@D)/icon.plist >/dev/null
 
-$(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB) $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
-		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE) $(SENTRY)
+$(BUNDLE): Sources/*.swift Shared/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB) $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
+		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player $(BUILD)/obj/muskey Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE) $(SENTRY)
 	rm -rf $@ $(APP_DSYM)
 	mkdir -p $@/Contents/MacOS $@/Contents/Helpers $@/Contents/Frameworks $@/Contents/Resources
 	# With -g, swiftc writes a dSYM next to the binary, which Sentry needs to name the functions in a crash or a hang.
 	swiftc -O -g -target $(TARGET) $(DEV) -parse-as-library -import-objc-header Sources/bridge.h $(WHISPER_INCLUDES) -Xcc -I$(LAME)/include \
-		-F $(SPARKLE) -F $(SENTRY) Sources/*.swift $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o $(ESSENTIA_LIB) $(WHISPER_LIBS) $(LAME_LIB) $(MPG123_LIB) \
+		-F $(SPARKLE) -F $(SENTRY) Sources/*.swift Shared/*.swift $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o $(ESSENTIA_LIB) $(WHISPER_LIBS) $(LAME_LIB) $(MPG123_LIB) \
 		-lc++ -framework Accelerate -framework Metal -framework MetalKit -framework Foundation -framework Sparkle -framework Sentry \
 		-Xlinker -rpath -Xlinker @executable_path/../Frameworks \
 		-o $@/Contents/MacOS/$(APP)
@@ -169,6 +175,8 @@ $(BUNDLE): Sources/*.swift Sources/*.h Info.plist Muskey.entitlements $(LAME_LIB
 		$(SENTRY_FRAMEWORK)/Versions/A/Headers $(SENTRY_FRAMEWORK)/Versions/A/PrivateHeaders $(SENTRY_FRAMEWORK)/Versions/A/Modules
 	$(SIGN) $(SENTRY_FRAMEWORK)
 	cp $(BUILD)/obj/$(HELPER) $@/Contents/Helpers/
+	cp $(BUILD)/obj/muskey $@/Contents/Helpers/muskey
+	$(SIGN) --identifier com.lowtechguys.Muskey.cli $@/Contents/Helpers/muskey
 	$(SIGN) --identifier com.apple.controlcenter.Muskey $@/Contents/Helpers/$(HELPER)
 	mkdir -p "$(PLAYER_APP)/Contents/MacOS" "$(PLAYER_APP)/Contents/Resources"
 	cp $(BUILD)/obj/player "$(PLAYER_APP)/Contents/MacOS/$(PLAYER)"
