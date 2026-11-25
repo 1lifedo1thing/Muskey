@@ -884,7 +884,7 @@ struct HUDView: View {
     private func main(_ palette: Palette) -> some View {
         VStack(spacing: 7) {
             VStack(spacing: 12) {
-            TitleLine(model: model, palette: palette)
+            TitleLine(model: model, palette: palette, optionHint: true)
             if model.phase == .idle {
                 IdleActions(model: model, palette: palette)
                     .transition(.opacity)
@@ -4773,8 +4773,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log("reopen: \(model.shown ? "the HUD" : names.joined(separator: ", ")) already shows")
             return false
         }
+        // A listen always shows the HUD, so the state is idle unless the HUD is still fading out.
+        guard state == .idle else {
+            log("reopen: the HUD is closing")
+            return false
+        }
         log("reopen: showing the HUD")
-        if state == .idle { toggle() }
+        toggle()
         return false
     }
 

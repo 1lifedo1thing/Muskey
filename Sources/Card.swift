@@ -69,8 +69,11 @@ struct TitleLine: View {
     var keySize: CGFloat = 30
     var relativeSize: CGFloat = 17
     var listeningSize: CGFloat = 40
+    /// The hint beside Re-detect key that Option names the relative key, in the wide layout, which has the width for it.
+    var optionHint = false
 
-    @State private var hovering = false
+    /// `--render-title-hover` renders the HUD with the pointer over the key.
+    @State private var hovering = TestFlags.has("--render-title-hover")
 
     private var progress: Double? { model.phase == .listening ? model.progress : nil }
     /// A click on the key listens to the song again, once a key shows that isn't the one a new song waits for.
@@ -96,7 +99,20 @@ struct TitleLine: View {
                             if switching {
                                 TitlePill(symbol: "arrow.left.arrow.right", text: key.relative.name, palette: palette).fixedSize().transition(.opacity)
                             } else if pillShown {
-                                TitlePill(symbol: "arrow.clockwise", text: "Re-detect key", palette: palette).fixedSize().transition(.opacity)
+                                HStack(spacing: 8) {
+                                    TitlePill(symbol: "arrow.clockwise", text: "Re-detect key", palette: palette)
+                                    // What Option does here, which the pill turns into while Option is held.
+                                    if switchable, optionHint {
+                                        HStack(spacing: 4) {
+                                            Keycap(text: "⌥", palette: palette, small: true)
+                                            Accidental.text(key.relative.name, color: palette.muted)
+                                                .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                                                .foregroundStyle(palette.muted)
+                                        }
+                                    }
+                                }
+                                .fixedSize()
+                                .transition(.opacity)
                             }
                         }
                 }
