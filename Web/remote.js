@@ -340,7 +340,70 @@
         $("mac").classList.remove("offline");
         $("mac-name").textContent = state.mac;
         drawNow();
+        drawNowPlaying();
         if (open) drawSong();
+    }
+
+    // MARK: Now Playing on the phone
+
+    /** What the phone shows on its lock screen and in Control Center while it plays the Mac's sound: the song, its
+     * cover and its position. The buttons there play, pause and move the song on the Mac. */
+    let sessionSong = null;
+    function drawNowPlaying() {
+        const session = navigator.mediaSession;
+        if (!session || typeof MediaMetadata !== "function" || !state) return;
+        const song = `${state.title}\n${state.artist}\n${Boolean(state.cover)}`;
+        if (song !== sessionSong) {
+            sessionSong = song;
+            // The cover of the song that plays now, whatever the query says: the query only makes a new song a new URL.
+            const artwork = state.cover
+                ? [{ src: new URL(`/api/nowcover?song=${encodeURIComponent(state.title || "")}`, location.href).href, sizes: "512x512", type: "image/jpeg" }]
+                : [{ src: new URL("/icon-512.png", location.href).href, sizes: "512x512", type: "image/png" }];
+            try {
+                session.metadata = state.title ? new MediaMetadata({ title: state.title, artist: state.artist || "", artwork }) : null;
+            } catch {
+                // A browser that refuses the artwork shows the page's title instead.
+            }
+        }
+        session.playbackState = !state.title ? "none" : state.playing ? "playing" : "paused";
+        const duration = songDuration();
+        const position = macPosition();
+        if (!session.setPositionState || !(duration > 0) || position == null) return;
+        try {
+            const heard = position - (output === "phone" ? player.lag() : 0);
+            session.setPositionState({ duration, position: Math.min(duration, Math.max(0, heard)), playbackRate: state.speed || 1 });
+        } catch {
+            // A position past the end, or a rate of 0, is refused, and the last one stays.
+        }
+    }
+
+    /** A button on the lock screen or in Control Center, sent to the Mac like the same button on the page. */
+    function sessionAction(action, seconds) {
+        if (!state) return;
+        if (action === "play" || action === "pause") {
+            state.position = macPosition();
+            state.playing = action === "play";
+            stateAt = performance.now();
+            drawTransport();
+        }
+        drawNowPlaying();
+        transport(seconds == null ? { action } : { action, seconds });
+    }
+    if (navigator.mediaSession) {
+        const handlers = {
+            play: () => sessionAction("play"),
+            pause: () => sessionAction("pause"),
+            seekbackward: () => sessionAction("back"),
+            seekforward: () => sessionAction("forward"),
+            seekto: (details) => details.seekTime != null && sessionAction("seek", Math.max(0, details.seekTime)),
+        };
+        for (const [name, handler] of Object.entries(handlers)) {
+            try {
+                navigator.mediaSession.setActionHandler(name, handler);
+            } catch {
+                // The browser doesn't offer this button.
+            }
+        }
     }
 
     /** The player, the key and the tempo that the Mac plays. The song view leaves out the two that its rows show. */
@@ -483,6 +546,13 @@
     }
 
     function drawSong() {
+        const song = `${state.title}\n${state.artist}`;
+        if (song !== zoomSong) {
+            zoomSong = song;
+            zoom = 1;
+            zoomAnimation = null;
+            autoZoomed = false;
+        }
         $("song-title").textContent = $("bar-title").textContent = state.title || "Nothing playing";
         $("song-artist").textContent = state.artist || "";
         drawSource();
@@ -540,6 +610,7 @@
         // The key of the song, and the key that plays once it changed.
         const change = $("change-pill");
         change.hidden = !key;
+        $("key-reset").hidden = shift === 0 && !relative;
         change.classList.toggle("honey", Boolean(key) && (shift !== 0 || relative));
         if (key && shift === 0 && !relative) change.replaceChildren(keyName(key));
         else if (key) {
@@ -614,6 +685,7 @@
     function drawSpeed() {
         const percent = Math.round(speed * 100);
         $("speed-value").textContent = `${percent}%`;
+        $("speed-reset").hidden = percent === 100;
         $("speed-down").disabled = speed <= 0.5;
         $("speed-up").disabled = speed >= fastest() - 0.001;
         const bpm = state?.bpm;
@@ -807,6 +879,86 @@
         drawWave(true);
     }
 
+    // MARK: Zoom
+
+    /** How many times the waveform is magnified, 1 for the whole song. A close-up follows the playhead and holds still
+     * around a loop that fits in it, as the HUD's does. */
+    let zoom = 1;
+    let zoomAnimation = null;
+    /** The zoom came from a loop made here, and clearing the loop shows the whole song again. */
+    let autoZoomed = false;
+    let zoomSong = null;
+    /** Where the close-up stays while a finger works on the waveform, so the bars don't slide under it, and where it
+     * slides back from once the finger lifts. */
+    let frozenFrom = null;
+    let released = null;
+    /** The shortest part of the song that a close-up shows, in seconds. */
+    const SHORTEST_VIEW = 2;
+    const easeOut = (t) => 1 - (1 - t) ** 3;
+
+    function currentZoom() {
+        if (!zoomAnimation) return zoom;
+        const t = (performance.now() - zoomAnimation.at) / 300;
+        if (t >= 1) {
+            zoomAnimation = null;
+            return zoom;
+        }
+        // On a logarithmic scale, so that each doubling takes the same time.
+        return Math.exp(Math.log(zoomAnimation.from) + (Math.log(zoom) - Math.log(zoomAnimation.from)) * easeOut(t));
+    }
+
+    function setZoom(value, animated) {
+        const next = Math.min(Math.max(1, songDuration() / SHORTEST_VIEW), Math.max(1, value));
+        if (animated && Math.abs(next - zoom) > 0.01) zoomAnimation = { from: currentZoom(), at: performance.now() };
+        zoom = next;
+        drawWave(true);
+    }
+
+    /** The part of the song that the waveform shows: its start and its length, in seconds. */
+    function viewRange() {
+        const duration = songDuration();
+        const factor = currentZoom();
+        if (factor <= 1.001 || !duration) return { from: 0, span: duration };
+        const span = duration / factor;
+        let from = frozenFrom;
+        if (from == null) {
+            const loop = currentLoop();
+            from = loop?.end != null && loop.end - loop.start <= span * 0.9
+                ? (loop.start + loop.end) / 2 - span / 2
+                : (macPosition() ?? 0) - span / 2;
+            if (released) {
+                const t = (performance.now() - released.at) / 350;
+                if (t >= 1) released = null;
+                else from = released.from + (from - released.from) * easeOut(t);
+            }
+        }
+        return { from: Math.min(Math.max(0, from), duration - span), span };
+    }
+
+    /** A loop of 2 seconds or more made here fills most of the waveform, since a loop that long was made on purpose. */
+    function zoomToLoop(loop) {
+        const duration = songDuration();
+        if (!duration || loop?.end == null || loop.end - loop.start < 2) return;
+        const target = duration / ((loop.end - loop.start) / 0.8);
+        if (target < 1.25) return;
+        autoZoomed = true;
+        setZoom(target, true);
+    }
+
+    function zoomOut() {
+        autoZoomed = false;
+        setZoom(1, true);
+    }
+
+    function drawZoomMap(from, span, duration) {
+        const map = $("zoom-map");
+        const zoomed = span < duration - 0.01;
+        map.classList.toggle("on", zoomed);
+        if (!zoomed) return;
+        $("zoom-window").style.left = `${(from / duration) * 100}%`;
+        $("zoom-window").style.width = `${Math.max(1, (span / duration) * 100)}%`;
+    }
+
     /** The end of the loop whose tab was tapped: the buttons beside play move it while it is picked. */
     let pickedEnd = null;
     /** Moves an end as far as the Mac lets it: inside the song, and a quarter of a second from the other end. */
@@ -860,22 +1012,29 @@
 
     let drawnBars = null;
     /** The waveform as bars, the part played in ink and the rest faded, with the loop in honey. The canvas is drawn
-     * again only when a bar changes colour, the loop moves, or `force` asks. */
+     * again only when a bar changes colour, the loop or the close-up moves, or `force` asks. A bar stands for the same
+     * moment of the song while a close-up slides, so the bars move with the song instead of changing in place. */
     function drawWave(force = false) {
         const canvas = $("wave-canvas");
         const box = $("wave").getBoundingClientRect();
         const duration = songDuration();
         if (!box.width || !duration) return;
+        const { from, span } = viewRange();
+        const xOf = (time) => ((time - from) / span) * box.width;
         const position = macPosition() ?? 0;
-        $("playhead").style.transform = `translateX(${(Math.min(position, duration) / duration) * box.width}px)`;
-        drawEnds(box.width, duration);
+        const head = xOf(Math.min(position, duration));
+        $("playhead").style.transform = `translateX(${head}px)`;
+        $("playhead").style.visibility = head < -1 || head > box.width + 1 ? "hidden" : "";
+        drawEnds(box.width, xOf);
+        drawZoomMap(from, span, duration);
         const ratio = window.devicePixelRatio || 1;
         const width = Math.round(box.width * ratio), height = Math.round(box.height * ratio);
         const step = 3 * ratio, barWidth = 2 * ratio;
-        const count = Math.floor(width / step);
-        const played = Math.floor((position / duration) * count);
+        const count = Math.max(1, Math.floor(width / step));
+        const slot = span / count;
+        const played = Math.floor(position / slot);
         const loop = currentLoop();
-        const key = `${width}x${height} ${played} ${waveVersion} ${loop?.start} ${loop?.end}`;
+        const key = `${width}x${height} ${played} ${from.toFixed(3)} ${span.toFixed(3)} ${waveVersion} ${loop?.start} ${loop?.end}`;
         if (!force && key === drawnBars) return;
         drawnBars = key;
         if (canvas.width !== width || canvas.height !== height) {
@@ -886,37 +1045,41 @@
         context.clearRect(0, 0, width, height);
         const css = getComputedStyle(document.documentElement);
         const ink = css.getPropertyValue("--ink").trim(), muted = css.getPropertyValue("--muted").trim(), honey = css.getPropertyValue("--honey").trim();
-        const looped = loop?.end != null ? [loop.start / duration, loop.end / duration] : null;
+        const looped = loop?.end != null ? [loop.start, loop.end] : null;
         if (looped) {
+            const a = Math.max(0, xOf(looped[0]) * ratio), b = Math.min(width, xOf(looped[1]) * ratio);
             context.globalAlpha = 0.16;
             context.fillStyle = honey;
-            context.fillRect(looped[0] * width, 0, (looped[1] - looped[0]) * width, height);
+            if (b > a) context.fillRect(a, 0, b - a, height);
         }
         const levels = wave?.levels;
-        for (let i = 0; i < count; i++) {
+        const first = Math.floor(from / slot), last = Math.ceil((from + span) / slot);
+        for (let k = first; k < last; k++) {
+            const start = k * slot;
+            if (start >= duration) break;
             let level = 0;
             if (levels?.length) {
-                const a = Math.floor((i / count) * levels.length), b = Math.max(a + 1, Math.floor(((i + 1) / count) * levels.length));
+                const a = Math.floor((start / duration) * levels.length), b = Math.max(a + 1, Math.floor(((start + slot) / duration) * levels.length));
                 for (let j = a; j < b && j < levels.length; j++) level = Math.max(level, levels[j]);
             }
-            const share = (i + 0.5) / count;
-            const inLoop = looped && share >= looped[0] && share <= looped[1];
+            const middle = start + slot / 2;
+            const inLoop = looped && middle >= looped[0] && middle <= looped[1];
             const bar = level ? Math.max(2 * ratio, ((level - 1) / 254) * height) : 1.5 * ratio;
-            context.fillStyle = inLoop ? honey : i < played ? ink : muted;
-            context.globalAlpha = !level ? 0.18 : inLoop ? (i < played ? 1 : 0.6) : i < played ? 0.85 : looped ? 0.18 : 0.3;
-            context.fillRect(i * step, (height - bar) / 2, barWidth, bar);
+            context.fillStyle = inLoop ? honey : k < played ? ink : muted;
+            context.globalAlpha = !level ? 0.18 : inLoop ? (k < played ? 1 : 0.6) : k < played ? 0.85 : looped ? 0.18 : 0.3;
+            context.fillRect(Math.round(((start - from) / span) * width), (height - bar) / 2, barWidth, bar);
         }
         context.globalAlpha = 1;
     }
 
-    function drawEnds(width, duration) {
+    function drawEnds(width, xOf) {
         const loop = currentLoop();
         for (const end of ["start", "end"]) {
             const element = $(`end-${end}`);
             const time = loop ? (end === "start" ? loop.start : loop.end) : null;
-            element.hidden = time == null;
-            if (time == null) continue;
-            const x = (time / duration) * width;
+            const x = time == null ? null : xOf(time);
+            element.hidden = x == null || x < -2 || x > width + 2;
+            if (element.hidden) continue;
             element.style.left = `${x}px`;
             element.classList.toggle("flip", end === "start" ? x < 24 : x > width - 24);
             element.classList.toggle("selected", pickedEnd === end);
@@ -942,7 +1105,8 @@
 
     function timeAt(clientX) {
         const box = $("wave").getBoundingClientRect();
-        return Math.min(1, Math.max(0, (clientX - box.left) / box.width)) * songDuration();
+        const { from, span } = viewRange();
+        return Math.min(songDuration(), from + Math.min(1, Math.max(0, (clientX - box.left) / box.width)) * span);
     }
 
     // A tap moves the song there, and so does a slide, with the playhead under the finger until it lifts. Holding still
@@ -958,10 +1122,34 @@
         selection.style.left = `${a - box.left}px`;
         selection.style.width = `${Math.max(2, b - a)}px`;
     }
+    // Two fingers zoom the waveform in or out, and stop whatever the first finger was doing.
+    const fingers = new Map();
+    let pinch = null;
+    const fingerDistance = () => {
+        const [a, b] = [...fingers.values()];
+        return Math.max(24, Math.hypot(a.x - b.x, a.y - b.y));
+    };
     $("wave").addEventListener("pointerdown", (event) => {
-        if (!state?.seekable || !songDuration() || event.button > 0) return;
-        const end = event.target.closest(".loop-end")?.dataset.end ?? null;
+        if (!songDuration() || event.button > 0) return;
+        fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
         $("wave").setPointerCapture(event.pointerId);
+        event.preventDefault();
+        if (fingers.size === 2) {
+            if (gesture) {
+                clearTimeout(gesture.hold);
+                gesture = null;
+                scrubTime = null;
+                $("wave-selection").hidden = true;
+            }
+            frozenFrom = null;
+            released = null;
+            zoomAnimation = null;
+            pinch = { distance: fingerDistance(), zoom };
+            return drawWave(true);
+        }
+        if (fingers.size > 2 || pinch || !state?.seekable) return;
+        const end = event.target.closest(".loop-end")?.dataset.end ?? null;
+        if (currentZoom() > 1.001) frozenFrom = viewRange().from;
         gesture = { id: event.pointerId, x: event.clientX, end, moved: false, mode: end ? "end" : "tap", hold: 0 };
         if (!end) {
             const mine = gesture;
@@ -971,9 +1159,18 @@
                 showSelection(mine.x, mine.x);
             }, HOLD_TO_LOOP);
         }
-        event.preventDefault();
     });
     $("wave").addEventListener("pointermove", (event) => {
+        const finger = fingers.get(event.pointerId);
+        if (finger) {
+            finger.x = event.clientX;
+            finger.y = event.clientY;
+        }
+        if (pinch) {
+            if (fingers.size < 2) return;
+            autoZoomed = false;
+            return setZoom((pinch.zoom * fingerDistance()) / pinch.distance, false);
+        }
         if (!gesture || event.pointerId !== gesture.id) return;
         if (!gesture.moved && Math.abs(event.clientX - gesture.x) < 6) return;
         gesture.moved = true;
@@ -987,10 +1184,23 @@
         tick();
     });
     const endGesture = (event, cancelled) => {
+        fingers.delete(event.pointerId);
+        if (pinch) {
+            if (fingers.size < 2) {
+                pinch = null;
+                // A pinch that barely zoomed shows the whole song.
+                if (zoom < 1.1) setZoom(1, true);
+            }
+            return;
+        }
         if (!gesture || event.pointerId !== gesture.id) return;
         const { x, end, moved, mode, hold } = gesture;
         gesture = null;
         clearTimeout(hold);
+        if (frozenFrom != null) {
+            released = { from: frozenFrom, at: performance.now() };
+            frozenFrom = null;
+        }
         scrubTime = null;
         $("wave-selection").hidden = true;
         if (cancelled) return drawWave(true);
@@ -1004,6 +1214,7 @@
             if (b - a < 0.25) return;
             pickedEnd = null;
             changeLoop({ start: a, end: b });
+            zoomToLoop({ start: a, end: b });
             api("/api/loop", { action: "set", start: a, end: b }).catch((error) => failIcon($("loop-button"), error));
             return;
         }
@@ -1015,6 +1226,7 @@
         transport({ action: "seek", seconds });
     };
     $("wave").addEventListener("pointerup", (event) => endGesture(event, false));
+    $("zoom-map").onclick = zoomOut;
     $("wave").addEventListener("pointercancel", (event) => endGesture(event, true));
     addEventListener("resize", () => drawWave(true));
 
@@ -1058,10 +1270,14 @@
         const loop = currentLoop();
         const position = macPosition() ?? 0;
         if (!loop) changeLoop({ start: position, end: null });
-        else if (loop.end == null) changeLoop({ ...loop, end: Math.max(position, loop.start + 0.25) });
-        else {
+        else if (loop.end == null) {
+            const ended = { ...loop, end: Math.max(position, loop.start + 0.25) };
+            changeLoop(ended);
+            zoomToLoop(ended);
+        } else {
             pickedEnd = null;
             changeLoop(null);
+            if (autoZoomed) zoomOut();
         }
         api("/api/loop", { action: "press" }).catch((error) => failIcon($("loop-button"), error));
     }
@@ -1117,6 +1333,34 @@
 
     let output = "mac";
 
+    /** WebCodecs decodes the compressed stream without a delay, and browsers offer it only on secure pages: HTTPS, or
+     * this device's own address. Safari has `AudioDecoder` on a plain HTTP page as well, where it decodes nothing, so
+     * the page asks the decoder, and a decoder that fails once makes the page ask for PCM from then on. */
+    let webCodecs = window.isSecureContext && typeof AudioDecoder === "function";
+    const decodesAAC = (async () => {
+        try {
+            if (!webCodecs) return false;
+            return (await AudioDecoder.isConfigSupported({ codec: "mp4a.40.2", sampleRate: 48000, numberOfChannels: 2 })).supported === true;
+        } catch {
+            return false;
+        }
+    })();
+    decodesAAC.then((supported) => {
+        webCodecs = supported;
+        if (!$("settings").hidden) drawSettings();
+    });
+    const STREAM_KEY = "muskey:stream";
+
+    /** The stream picked in Settings: compressed by default where WebCodecs decodes it, uncompressed otherwise, since the
+     * audio element plays the compressed stream seconds behind the Mac. */
+    function streamChoice() {
+        try {
+            const picked = localStorage.getItem(STREAM_KEY);
+            if (picked === "compressed" || picked === "uncompressed") return picked;
+        } catch {}
+        return webCodecs ? "compressed" : "uncompressed";
+    }
+
     /** The output that was picked by hand in the output menu, kept for the next visits. Without one, a phone plays every
      * new song itself: a song of Recents or Files, a link, an upload, Play on a paused song, or the playing song that
      * the Now row opens. */
@@ -1166,16 +1410,7 @@
             peak = 0;
         }, 10000);
 
-        /** WebCodecs can decode AAC in this browser. A decoder that fails once makes the page ask for PCM from then on. */
         let aacFailed = false;
-        const decodesAAC = (async () => {
-            try {
-                if (typeof AudioDecoder !== "function") return false;
-                return (await AudioDecoder.isConfigSupported({ codec: "mp4a.40.2", sampleRate: 48000, numberOfChannels: 2 })).supported === true;
-            } catch {
-                return false;
-            }
-        })();
 
         function ensureContext() {
             if (!context) {
@@ -1192,7 +1427,7 @@
             while (mine === generation) {
                 abort = new AbortController();
                 try {
-                    const asked = !aacFailed && (await decodesAAC);
+                    const asked = !aacFailed && streamChoice() === "compressed" && (await decodesAAC);
                     const response = await fetch(asked ? "/api/stream?format=aac" : "/api/stream", { cache: "no-store", signal: abort.signal });
                     if (!response.ok) throw new Error(`the stream answered ${response.status}`);
                     // The Mac sends PCM when it can't encode AAC at its output's rate.
@@ -1323,26 +1558,72 @@
             playAt += buffer.duration;
         }
 
+        /** The compressed stream without WebCodecs: the browser's audio element plays it, a few seconds behind the Mac,
+         * since it buffers a compressed stream before it starts. iOS lets an element play only after a tap played it,
+         * so the tap of an upload primes one for the stream that starts once the file is picked. */
+        let element = null;
+        let primed = null;
+        let elementAt = 0;
+        /** Seconds from asking for the stream to hearing it, which is how far the element plays behind the Mac. */
+        let elementDelay = 0;
+        const elementMode = () => streamChoice() === "compressed" && !webCodecs;
+
+        function startElement(mine) {
+            element = primed ?? new Audio();
+            primed = null;
+            element.muted = testMute;
+            element.src = `/api/stream?format=aac&t=${Date.now()}`;
+            elementAt = performance.now();
+            format = "aac in the audio element";
+            const started = element;
+            started.addEventListener("playing", () => {
+                if (mine !== generation) return;
+                elementDelay = (performance.now() - elementAt) / 1000 - started.currentTime;
+                report(`stream: the audio element plays, ${elementDelay.toFixed(1)} s after it asked`, "info");
+                for (const after of [5, 15, 30]) setTimeout(() => {
+                    if (mine !== generation || element !== started) return;
+                    const buffered = started.buffered.length ? started.buffered.end(started.buffered.length - 1).toFixed(1) : "none";
+                    report(`stream: the audio element after ${after} s: ${player.lag().toFixed(1)} s behind, at ${started.currentTime.toFixed(1)}, buffered to ${buffered}, paused ${started.paused}, ready ${started.readyState}, network ${started.networkState}`, "debug");
+                }, after * 1000);
+            }, { once: true });
+            started.addEventListener("error", () => {
+                if (mine === generation) report(`stream: the audio element failed (${started.error?.code ?? "unknown"})`);
+            });
+            return started.play();
+        }
+
         return {
             /** Called from the tap on Phone. */
             start() {
                 const mine = ++generation;
+                if (elementMode()) return startElement(mine);
                 const resumed = ensureContext();
                 run(mine);
                 return resumed;
             },
             /** Called from a tap that may start the stream later, outside of it. */
             unlock() {
-                ensureContext().catch(() => {});
+                if (!elementMode()) return ensureContext().catch(() => {});
+                primed = primed ?? new Audio();
+                primed.play().catch(() => {});
             },
             stop() {
                 generation++;
                 abort?.abort();
                 abort = null;
                 context?.suspend();
+                if (element) {
+                    element.pause();
+                    element.removeAttribute("src");
+                    element.load();
+                    element = null;
+                }
             },
             /** Seconds between the Mac playing a moment and this phone playing it. */
             lag() {
+                // The element's clock tells when it fell further behind, but a muted element in the simulator never
+                // moves it, so the delay at the start stands in until the clock moves.
+                if (element) return element.currentTime > 0.5 ? Math.max(0, (performance.now() - elementAt) / 1000 - element.currentTime) : elementDelay;
                 // The encoder on the Mac holds back about 60 ms of AAC.
                 return context && playAt ? Math.max(0, playAt - context.currentTime) + (format === "aac" ? 0.11 : 0.05) : 0;
             },
@@ -1581,6 +1862,39 @@
             fail(row, $("open-error"), error);
         }
     }
+
+    // MARK: Settings
+
+    function drawSettings() {
+        const choice = streamChoice();
+        for (const button of $("stream-choice").querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.stream === choice));
+        $("stream-note").textContent = choice === "uncompressed" ? "About 700 MB an hour" : webCodecs ? "About 70 MB an hour" : "About 70 MB an hour, 5 seconds behind the Mac";
+        $("stream-https").hidden = webCodecs || location.protocol === "https:";
+    }
+
+    function showSettings(shown) {
+        $("settings").hidden = !shown;
+        if (shown) drawSettings();
+    }
+
+    $("settings-open").onclick = () => showSettings(true);
+    $("settings-close").onclick = () => showSettings(false);
+    $("settings").addEventListener("click", (event) => {
+        if (event.target === $("settings")) showSettings(false);
+    });
+    $("stream-choice").addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-stream]");
+        if (!button || button.dataset.stream === streamChoice()) return;
+        try {
+            localStorage.setItem(STREAM_KEY, button.dataset.stream);
+        } catch {}
+        drawSettings();
+        report(`stream: ${button.dataset.stream} picked`, "info");
+        // A phone that listens switches streams inside this tap, which iOS asks of a sound that starts.
+        if (output !== "phone") return;
+        player.stop();
+        player.start().catch((error) => report(`audio refused: ${error.name} ${error.message}`));
+    });
 
     // MARK: Install
 
@@ -1876,6 +2190,8 @@
     $("speed-down").onclick = () => setSpeed(speed - 0.05);
     $("speed-up").onclick = () => setSpeed(speed + 0.05);
     $("speed-value").onclick = () => setSpeed(1);
+    $("speed-reset").onclick = () => setSpeed(1);
+    $("key-reset").onclick = () => setKey(0, false);
     $("play-all").onclick = () => setStems(new Set());
     $("transcribe").onclick = transcribe;
     $("link-form").onsubmit = playLink;
@@ -1974,6 +2290,7 @@
     if (history.state !== null) history.replaceState(null, "");
     loadSongs();
     refreshState();
-    setInterval(() => { if (document.visibilityState === "visible") refreshState(); }, 1500);
+    // A locked phone that plays the Mac's sound keeps asking too, so that its lock screen shows the next song.
+    setInterval(() => { if (document.visibilityState === "visible" || output === "phone") refreshState(); }, 1500);
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshState(); });
 })();

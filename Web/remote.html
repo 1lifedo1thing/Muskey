@@ -21,7 +21,10 @@
 <div class="view" id="home">
     <header class="large-title">
         <h1>Muskey</h1>
-        <div class="mac" id="mac" hidden><span class="dot"></span><span id="mac-name"></span></div>
+        <div class="title-side">
+            <div class="mac" id="mac" hidden><span class="dot"></span><span id="mac-name"></span></div>
+            <button class="gear" id="settings-open" aria-label="Settings"><span class="icon" style="--symbol: url(/api/symbol/gearshape)"></span></button>
+        </div>
     </header>
 
     <section class="section">
@@ -93,7 +96,7 @@
     <div class="error-line" id="save-error" hidden></div>
 
     <section class="section">
-        <div class="label">Key <span class="pill" id="change-pill" hidden></span></div>
+        <div class="label">Key <span class="label-side"><button class="reset" id="key-reset" aria-label="Reset key" hidden><span class="icon" style="--symbol: url(/api/symbol/arrow.counterclockwise)"></span></button><span class="pill" id="change-pill" hidden></span></span></div>
         <div class="keyrow" id="keyrow">
             <button class="step down" id="key-down" aria-label="Semitone down"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
             <div class="keys" id="keys" role="group" aria-label="Key"></div>
@@ -105,7 +108,7 @@
         <div class="card">
             <div class="row">
                 <span class="row-label">Tempo</span>
-                <span class="grow"><span class="pill" id="bpm-pill" hidden></span></span>
+                <span class="grow label-side"><button class="reset" id="speed-reset" aria-label="Reset tempo" hidden><span class="icon" style="--symbol: url(/api/symbol/arrow.counterclockwise)"></span></button><span class="pill" id="bpm-pill" hidden></span></span>
                 <div class="stepper">
                     <button class="down" id="speed-down" aria-label="Slower"><span class="icon" style="--symbol: url(/api/symbol/minus)"></span></button>
                     <button class="value" id="speed-value" aria-label="Play at the song's tempo">100%</button>
@@ -140,6 +143,7 @@
                 <button class="loop-end" id="end-start" data-end="start" aria-label="Loop start" hidden><span class="tab">A</span></button>
                 <button class="loop-end" id="end-end" data-end="end" aria-label="Loop end" hidden><span class="tab">B</span></button>
             </div>
+            <button class="zoom-map" id="zoom-map" aria-label="Zoom out"><span class="zoom-window" id="zoom-window"></span></button>
             <div class="clocks">
                 <span class="clock" id="mac-elapsed">0:00</span>
                 <span class="loop-time" id="loop-time"></span>
@@ -162,6 +166,25 @@
 </div>
 
 <script src="/web/sheet.js"></script>
+<!-- Settings of this phone, from the gear on Home. -->
+<div class="settings" id="settings" hidden>
+    <div class="settings-sheet" role="dialog" aria-label="Settings">
+        <div class="settings-head">
+            <h2>Settings</h2>
+            <button class="install-pill-close" id="settings-close" aria-label="Close settings"><span class="icon" style="--symbol: url(/api/symbol/xmark)"></span></button>
+        </div>
+        <div class="settings-label">Phone stream</div>
+        <div class="card padded">
+            <div class="sort stream-choice" id="stream-choice" role="group" aria-label="Phone stream">
+                <button data-stream="compressed">Compressed</button>
+                <button data-stream="uncompressed">Uncompressed</button>
+            </div>
+            <div class="stream-note" id="stream-note"></div>
+        </div>
+        <div class="stream-https" id="stream-https" hidden>Compressed plays without a delay at the HTTPS link</div>
+    </div>
+</div>
+
 <!-- Install Muskey: a pill floating at the bottom of Home, as on legume. -->
 <div class="install-pill" id="install" hidden role="region" aria-label="Install Muskey">
     <div class="install-pill-inner">

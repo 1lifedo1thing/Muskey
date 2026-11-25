@@ -129,7 +129,7 @@ struct WebNotes: Encodable {
         "music.mic", "metronome.fill", "hifispeaker.fill", "guitars.fill", "pianokeys", "music.quarternote.3", "wind", "headphones",
         "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "speaker.wave.2.fill", "speaker.slash.fill",
         "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear", "minus", "plus", "gobackward.5", "goforward.5", "iphone",
-        "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down", "arrow.down.app", "square.and.arrow.up", "folder",
+        "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down", "arrow.down.app", "square.and.arrow.up", "folder", "gearshape", "arrow.counterclockwise",
     ]
 
     /// The icon of a running app, 96 pixels square. Only running apps, so the page can't ask what else is installed.
@@ -360,6 +360,14 @@ struct WebNotes: Encodable {
             // format from the Content-Type.
             let rate = WebStream.shared.rate
             let aac = request.query["format"] == "aac" && ADTSEncoder.supports(rate)
+            // An audio element asks for the first two bytes before it asks for the stream, and keeps that connection
+            // open when the answer has no end, so the phone would get the audio twice. The probe gets the two bytes
+            // that every ADTS frame starts with.
+            if aac, request.headers["range"] == "bytes=0-1" {
+                return WebResponse(status: 206, headers: [
+                    ("Content-Type", "audio/aac"), ("Content-Range", "bytes 0-1/*"), ("Cache-Control", "no-store"),
+                ], body: .data(Data([0xFF, 0xF1])))
+            }
             return WebResponse(status: 200, headers: [
                 ("Content-Type", aac ? "audio/aac" : "application/octet-stream"), ("Cache-Control", "no-store"), ("X-Sample-Rate", String(Int(rate))),
             ], body: .stream { sink in _ = WebStream.shared.add(sink, aac: aac) })
