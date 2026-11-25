@@ -1,5 +1,4 @@
 import AppKit
-import CoreImage.CIFilterBuiltins
 
 /// The notes of a song as the sheet in a browser reads them: a transcription and the artist for the line under its title.
 struct WebNotes: Encodable {
@@ -144,17 +143,6 @@ struct WebNotes: Encodable {
         return "\(base)/pair/\(key)"
     }
 
-    static func qrCode(_ text: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(text.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else { return nil }
-        let rep = NSCIImageRep(ciImage: output)
-        let image = NSImage(size: rep.size)
-        image.addRepresentation(rep)
-        return image
-    }
-
     // MARK: Requests
 
     private nonisolated static let enabledKey = "webRemote"
@@ -193,7 +181,10 @@ struct WebNotes: Encodable {
 
     nonisolated static func handle(_ request: WebRequest) async -> WebResponse {
         guard enabled, let key = storedKey else { return .notFound }
-        guard let host = host(request.headers["host"]), WebAddresses.allowedHosts().contains(host) else { return .text("Unknown host", status: 403) }
+        // DNS names are compared in lowercase, since a browser may keep the capitals of a name like Studio-Mac.local.
+        guard let host = host(request.headers["host"])?.lowercased(), WebAddresses.allowedHosts().contains(host) else {
+            return .text("Unknown host", status: 403)
+        }
         let parts = request.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
 
         if parts.count == 2, parts[0] == "pair" {
