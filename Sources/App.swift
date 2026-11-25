@@ -3172,6 +3172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return cliWait(job, seconds: 90, until: ready) { [weak self] in self?.cliApply(request, job: job) }
         }
         let before = filePlayer.current?.path
+        let songBefore = nowPlaying.track?.song
         let opened = Date()
         // A failure that the HUD showed before this song opened isn't this song's failure.
         let staleActivity = openActivity
@@ -3214,7 +3215,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             guard playsInFilePlayer, let path = filePlayer.current?.path else { return false }
             if job.step != "Reading the key", path != before || Date().timeIntervalSince(opened) > 3 { job.step = "Reading the key" }
-            return (path != before || Date().timeIntervalSince(opened) > 3) && ready()
+            // Now Playing names the new song a moment after Muskey Player starts it, and until then the HUD reads the
+            // key of the song that played before.
+            let named = path == before || nowPlaying.track?.song != songBefore || Date().timeIntervalSince(opened) > 3
+            return (path != before || Date().timeIntervalSince(opened) > 3) && named && ready()
         }) { [weak self] in self?.cliApply(request, job: job) }
     }
 
