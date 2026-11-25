@@ -379,6 +379,31 @@ a.button { text-decoration: none; }
 .files-bar h2 { flex: 1; margin: 0; text-align: center; font-size: 17px; font-weight: 650; }
 .files-bar .spacer { width: 44px; flex: none; }
 .files-top .field { width: 100%; box-sizing: border-box; }
+#files-list > .section:first-child { margin-top: 4px; }
+.file-row.folder-row > .icon:first-child { color: var(--honey-text); }
+.sort { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border-radius: 10px; background: var(--fill); }
+.sort button { height: 26px; padding: 0 12px; border-radius: 8px; font-size: 13px; font-weight: 650; color: var(--muted); }
+.sort button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); }
+@media (prefers-color-scheme: dark) {
+    .sort button[aria-pressed="true"] { background: rgb(255 247 245 / 0.16); }
+}
+/* A letter over the songs that start with it, and the letters down the right edge, which scroll to them. */
+.letter-head { padding: 10px 14px 4px; font-size: 13px; font-weight: 700; color: var(--honey-text); background: var(--fill-2); }
+.row + .letter-head, .letter-head + .row { position: relative; }
+.letter-head + .row::before { display: none; }
+.letters {
+    position: fixed;
+    right: 2px;
+    top: 50%;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 2px;
+    transform: translateY(-50%);
+    touch-action: none;
+}
+.letters span { display: block; padding: 1px 6px; font-size: 11px; font-weight: 700; line-height: 1.25; color: var(--honey-text); }
 .file-row { --inset: 44px; }
 .file-row > .icon:first-child { width: 18px; height: 18px; color: color-mix(in srgb, var(--muted) 60%, transparent); }
 .button.failed { background: var(--failed); color: white; }

@@ -78,13 +78,14 @@
     <header class="files-top">
         <div class="files-bar">
             <button class="back" id="files-close" aria-label="Close files"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
-            <h2>Files on the Mac</h2>
+            <h2 id="files-title">Files on the Mac</h2>
             <div class="spacer"></div>
         </div>
         <input class="field" id="files-search" type="search" placeholder="Search" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search">
     </header>
-    <div class="card" id="files-list"></div>
+    <div id="files-list"></div>
     <div class="empty" id="files-more" hidden>Search to find more</div>
+    <nav class="letters" id="files-letters" aria-label="Letters" hidden></nav>
 </div>
 
 <div class="view" id="song" hidden>

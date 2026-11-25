@@ -129,7 +129,7 @@ struct WebNotes: Encodable {
         "music.mic", "metronome.fill", "hifispeaker.fill", "guitars.fill", "pianokeys", "music.quarternote.3", "wind", "headphones",
         "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "speaker.wave.2.fill", "speaker.slash.fill",
         "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear", "minus", "plus", "gobackward.5", "goforward.5", "iphone",
-        "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down", "arrow.down.app", "square.and.arrow.up",
+        "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down", "arrow.down.app", "square.and.arrow.up", "folder",
     ]
 
     /// The icon of a running app, 96 pixels square. Only running apps, so the page can't ask what else is installed.
@@ -333,6 +333,9 @@ struct WebNotes: Encodable {
             return json(WebJob(await MainActor.run { CLIService.shared.handle(play) }))
         case "api/files" where reads && parts.count == 2:
             return json(await shared.macFiles(matching: request.query["q"] ?? ""))
+        case "api/folder" where reads && parts.count == 2:
+            guard let folder = await shared.macFolder(id: request.query["id"], sort: request.query["sort"] ?? "name") else { return .notFound }
+            return json(folder)
         case "api/spotify" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let link = body["link"], Spotify.uri(from: link) != nil else {
                 return json(WebJob(CLIResponse(error: "That isn't a Spotify link", done: true)))
@@ -579,8 +582,9 @@ struct WebNotes: Encodable {
 
     private func item(_ id: String) async -> QueueItem? {
         if let item = await songs().first(where: { $0.song.id == id })?.item { return item }
-        guard let file = await folderFiles().first(where: { Self.id($0) == id }) else { return nil }
-        return QueueItem(url: file, cached: nil)
+        let index = await folderIndex()
+        guard let song = index.songIDs[id] else { return nil }
+        return QueueItem(url: index.songs[song].url, cached: nil)
     }
 
     // MARK: Files on the Mac
@@ -599,57 +603,100 @@ struct WebNotes: Encodable {
         let more: Bool
     }
 
-    private var indexed: (folders: [String], at: Date, files: [URL])?
-    private var indexing: Task<[URL], Never>?
-
-    /// The songs in the folders of Settings > Remote, newest first, read again after a minute or a change of folders.
-    /// The walk runs off the main thread, skips hidden files, packages and the library of the Music app, and stops at
-    /// 20 000 songs.
-    private func folderFiles() async -> [URL] {
-        let folders = UserDefaults.standard.stringArray(forKey: "remoteFolders") ?? []
-        if let indexed, indexed.folders == folders, Date().timeIntervalSince(indexed.at) < 60 { return indexed.files }
-        if let indexing { return await indexing.value }
-        let task = Task.detached(priority: .utility) { Self.walk(folders) }
-        indexing = task
-        let files = await task.value
-        indexing = nil
-        indexed = (folders, Date(), files)
-        return files
+    struct WebFolderRow: Encodable {
+        let id: String
+        let name: String
+        /// The songs in the folder and in the folders inside it.
+        let count: Int
     }
 
-    nonisolated private static func walk(_ folders: [String]) -> [URL] {
-        let fm = FileManager.default
-        let extensions = SongName.mediaExtensions.subtracting(["mid", "midi"])
-        let musicLibrary = fm.urls(for: .musicDirectory, in: .userDomainMask)[0].appending(path: "Music").standardizedFileURL.path
-        var found: [(url: URL, date: Date)] = []
-        for folder in folders {
-            guard let walker = fm.enumerator(at: URL(fileURLWithPath: folder), includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
-                                             options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
-            for case let url as URL in walker {
-                if url.standardizedFileURL.path == musicLibrary {
-                    walker.skipDescendants()
-                    continue
-                }
-                guard extensions.contains(url.pathExtension.lowercased()) else { continue }
-                let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                found.append((url, date))
-                if found.count >= 20000 { break }
-            }
+    /// A folder of Settings > Remote or a folder inside one, or the top of the Files screen (`name` nil): the folders
+    /// in it that hold songs, its songs, and at the top, the newest songs.
+    struct WebFolder: Encodable {
+        /// Settings > Remote > Folders names no folder.
+        let folders: Int
+        let name: String?
+        let subfolders: [WebFolderRow]
+        let files: [WebFile]
+        let recent: [WebFile]
+        /// More songs are in the folder than the list holds.
+        let more: Bool
+    }
+
+    private var index: (folders: [String], at: Date, value: FolderIndex)?
+    private var indexing: (folders: [String], task: Task<FolderIndex, Never>)?
+
+    /// The songs of the folders in Settings > Remote, walked again for a new list of folders, which is waited for, and
+    /// after a minute, which keeps the old index until the walk is done.
+    private func folderIndex() async -> FolderIndex {
+        let folders = UserDefaults.standard.stringArray(forKey: "remoteFolders") ?? []
+        if let index, index.folders == folders {
+            if Date().timeIntervalSince(index.at) > 60 { reindex(folders) }
+            return index.value
         }
-        return found.sorted { $0.date > $1.date }.map(\.url)
+        return await reindex(folders).value
+    }
+
+    @discardableResult
+    private func reindex(_ folders: [String]) -> Task<FolderIndex, Never> {
+        if let indexing, indexing.folders == folders { return indexing.task }
+        let task = Task.detached(priority: .utility) { FolderIndex.build(folders, id: { WebRemote.id($0) }) }
+        indexing = (folders, task)
+        Task { @MainActor in
+            let value = await task.value
+            if indexing?.task == task { indexing = nil }
+            guard folders == UserDefaults.standard.stringArray(forKey: "remoteFolders") ?? [] else { return }
+            index = (folders, Date(), value)
+            if value.full { log.info("remote: the folders hold over \(FolderIndex.limit) songs, the rest aren't listed") }
+        }
+        return task
+    }
+
+    nonisolated private static func file(_ song: Int, in index: FolderIndex) -> WebFile {
+        let song = index.songs[song]
+        return WebFile(id: song.id, title: song.name, folder: index.folders[song.folder].name)
     }
 
     /// Up to 300 songs of the folders whose name has every word of `query`, newest first.
     private func macFiles(matching query: String) async -> WebFiles {
         let folders = UserDefaults.standard.stringArray(forKey: "remoteFolders") ?? []
-        let words = query.lowercased().split(separator: " ").map(String.init)
-        let matches = await folderFiles().filter { url in
-            let name = url.deletingPathExtension().lastPathComponent.lowercased()
-            return words.allSatisfy { name.contains($0) }
+        let words = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).split(separator: " ").map(String.init)
+        let index = await folderIndex()
+        return await Task.detached(priority: .userInitiated) {
+            var files: [WebFile] = []
+            for song in index.newest where words.allSatisfy(index.songs[song].search.contains) {
+                if files.count == 300 { return WebFiles(folders: folders.count, files: files, more: true) }
+                files.append(Self.file(song, in: index))
+            }
+            return WebFiles(folders: folders.count, files: files, more: false)
+        }.value
+    }
+
+    /// A folder by its ID, or the top of the Files screen: the folders of Settings > Remote, or the contents of the only
+    /// one, with the 10 newest songs. Songs are sorted by `name`, or by the date they were added (`added`).
+    private func macFolder(id: String?, sort: String) async -> WebFolder? {
+        let configured = (UserDefaults.standard.stringArray(forKey: "remoteFolders") ?? []).count
+        let index = await folderIndex()
+        let top = (id ?? "").isEmpty
+        let folder: Int?
+        if top {
+            folder = index.roots.count == 1 ? index.roots[0] : nil
+        } else {
+            guard let id, let found = index.folderIDs[id] else { return nil }
+            folder = found
         }
-        return WebFiles(folders: folders.count, files: matches.prefix(300).map {
-            WebFile(id: Self.id($0), title: $0.deletingPathExtension().lastPathComponent, folder: $0.deletingLastPathComponent().lastPathComponent)
-        }, more: matches.count > 300)
+        return await Task.detached(priority: .userInitiated) {
+            let subfolders = (folder.map { index.folders[$0].folders } ?? index.roots).filter { index.folders[$0].count > 0 }
+            var songs = folder.map { index.folders[$0].songs } ?? []
+            if sort == "added" { songs.sort { index.songs[$0].added > index.songs[$1].added } }
+            return WebFolder(
+                folders: configured, name: top ? nil : folder.map { index.folders[$0].name },
+                subfolders: subfolders.map { WebFolderRow(id: index.folders[$0].id, name: index.folders[$0].name, count: index.folders[$0].count) },
+                files: songs.prefix(3000).map { Self.file($0, in: index) },
+                recent: top ? index.newest.prefix(10).map { Self.file($0, in: index) } : [],
+                more: songs.count > 3000
+            )
+        }.value
     }
 
     /// The ID in Recents of the song whose audio is `file`: the file's own, or the link's that it was downloaded from.

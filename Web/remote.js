@@ -1613,52 +1613,210 @@
 
     // MARK: Files on the Mac
 
-    let filesQuery = null;
+    /** What the Files screen asked for last, so an older answer that comes later is dropped. */
+    let filesAsked = null;
     let filesTimer = 0;
+    /** The folder that the Files screen shows, by its ID, or null at the top. */
+    let filesDir = null;
+    const SORT_KEY = "muskey:files-sort";
+    let filesSort = (() => {
+        try {
+            return localStorage.getItem(SORT_KEY) === "added" ? "added" : "name";
+        } catch {
+            return "name";
+        }
+    })();
 
     function openFiles() {
         clearFailures();
         show("files");
-        if (history.state?.files !== true) history.pushState({ files: true }, "");
+        if (history.state?.files !== true) {
+            filesDir = null;
+            history.pushState({ files: true, dir: null }, "");
+        }
         loadFiles();
     }
 
-    async function loadFiles() {
+    /** A folder opens over the one that holds it, which keeps its place in the list for the way back. */
+    function openFolder(id) {
+        history.replaceState({ ...history.state, scroll: scrollY }, "");
+        history.pushState({ files: true, dir: id }, "");
+        filesDir = id;
+        $("files-search").value = "";
+        loadFiles(0);
+    }
+
+    /** The search over every folder while the search bar has words, the folder otherwise. */
+    async function loadFiles(scroll) {
         const query = $("files-search").value.trim();
-        filesQuery = query;
-        const list = $("files-list");
+        const asked = `${query}|${filesDir}|${filesSort}`;
+        filesAsked = asked;
         let answer;
         try {
-            answer = await api(`/api/files?q=${encodeURIComponent(query)}`);
+            answer = query
+                ? await api(`/api/files?q=${encodeURIComponent(query)}`)
+                : await api(`/api/folder?id=${encodeURIComponent(filesDir ?? "")}&sort=${filesSort}`);
         } catch (error) {
             answer = { folders: -1, files: [], more: false, error: error.message };
         }
-        if (query !== filesQuery) return;
+        if (asked !== filesAsked) return;
+        $("files-title").textContent = (!query && answer.name) || "Files on the Mac";
+        $("files-close").setAttribute("aria-label", filesDir ? "Close folder" : "Close files");
         $("files-more").hidden = !answer.more;
-        if (!answer.files.length) {
+        const sections = query ? searchSections(answer) : folderSections(answer);
+        if (!sections.length) {
             const empty = document.createElement("div");
             empty.className = "empty";
-            empty.textContent = answer.error ?? (answer.folders === 0 ? "Add folders in Muskey's Settings > Remote to list their songs here" : "No songs match");
-            list.replaceChildren(empty);
-            return;
+            empty.textContent = answer.error ?? (answer.folders === 0 ? "Add folders in Muskey's Settings > Remote to list their songs here" : query ? "No songs match" : "No songs");
+            $("files-list").replaceChildren(empty);
+        } else {
+            $("files-list").replaceChildren(...sections);
         }
-        list.replaceChildren(...answer.files.map((file) => {
-            const row = document.createElement("button");
-            row.className = "row song-row file-row";
-            const texts = document.createElement("div");
-            texts.className = "grow";
-            const title = document.createElement("div");
-            title.className = "song-title";
-            title.textContent = file.title;
+        drawLetters();
+        if (scroll !== undefined) scrollTo(0, scroll);
+    }
+
+    function filesSection(label, rows, extra) {
+        const section = document.createElement("section");
+        section.className = "section";
+        const head = document.createElement("div");
+        head.className = "label";
+        const text = document.createElement("span");
+        text.textContent = label;
+        head.append(text);
+        if (extra) head.append(extra);
+        const card = document.createElement("div");
+        card.className = "card";
+        card.append(...rows);
+        section.append(head, card);
+        return section;
+    }
+
+    function searchSections(answer) {
+        return answer.files.length ? [filesSection("Songs", answer.files.map((file) => fileRow(file, true)))] : [];
+    }
+
+    function folderSections(answer) {
+        const sections = [];
+        if (answer.subfolders?.length) sections.push(filesSection("Folders", answer.subfolders.map(folderRow)));
+        if (answer.recent?.length) sections.push(filesSection("Recently added", answer.recent.map((file) => fileRow(file, true))));
+        if (answer.files?.length) {
+            // A long list sorted by name gets a heading for each letter, and the letters down the right edge.
+            const lettered = filesSort === "name" && answer.files.length > 40;
+            const rows = [];
+            let last = null;
+            for (const file of answer.files) {
+                const letter = letterOf(file.title);
+                if (lettered && letter !== last) {
+                    const head = document.createElement("div");
+                    head.className = "letter-head";
+                    head.dataset.letter = letter;
+                    head.textContent = letter;
+                    rows.push(head);
+                    last = letter;
+                }
+                rows.push(fileRow(file, false));
+            }
+            sections.push(filesSection("Songs", rows, sortControl()));
+        }
+        return sections;
+    }
+
+    /** The first letter of a name without its accents, or # for a digit or a symbol. */
+    function letterOf(name) {
+        const first = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").charAt(0).toUpperCase();
+        return first >= "A" && first <= "Z" ? first : "#";
+    }
+
+    /** Counts of five digits and more are grouped by a narrow no-break space. */
+    const spaced = (count) => (count >= 10000 ? String(count).replace(/\B(?=(\d{3})+(?!\d))/g, "\u202f") : String(count));
+
+    function fileRow(file, withFolder) {
+        const row = document.createElement("button");
+        row.className = "row song-row file-row";
+        const texts = document.createElement("div");
+        texts.className = "grow";
+        const title = document.createElement("div");
+        title.className = "song-title";
+        title.textContent = file.title;
+        texts.append(title);
+        if (withFolder) {
             const folder = document.createElement("div");
             folder.className = "song-artist";
             folder.textContent = file.folder;
-            texts.append(title, folder);
-            row.append(icon("music.note"), texts);
-            row.onclick = () => playSong(file, row);
-            return row;
+            texts.append(folder);
+        }
+        row.append(icon("music.note"), texts);
+        row.onclick = () => playSong(file, row);
+        return row;
+    }
+
+    function folderRow(folder) {
+        const row = document.createElement("button");
+        row.className = "row song-row file-row folder-row";
+        const name = document.createElement("div");
+        name.className = "grow song-title";
+        name.textContent = folder.name;
+        const chevron = document.createElement("span");
+        chevron.className = "icon chevron";
+        row.append(icon("folder"), name, pill(spaced(folder.count)), chevron);
+        row.onclick = () => openFolder(folder.id);
+        return row;
+    }
+
+    function sortControl() {
+        const control = document.createElement("div");
+        control.className = "sort";
+        control.setAttribute("role", "group");
+        control.setAttribute("aria-label", "Sort");
+        for (const [value, label] of [["name", "Name"], ["added", "Added"]]) {
+            const button = document.createElement("button");
+            button.textContent = label;
+            button.setAttribute("aria-pressed", String(filesSort === value));
+            button.onclick = () => {
+                if (filesSort === value) return;
+                filesSort = value;
+                try {
+                    localStorage.setItem(SORT_KEY, value);
+                } catch {}
+                loadFiles(scrollY);
+            };
+            control.append(button);
+        }
+        return control;
+    }
+
+    /** The letters of the headings down the right edge. A touch on one, or a slide along them, scrolls to its songs. */
+    function drawLetters() {
+        const heads = [...$("files-list").querySelectorAll(".letter-head")];
+        const strip = $("files-letters");
+        strip.hidden = heads.length < 2;
+        strip.replaceChildren(...heads.map((head) => {
+            const letter = document.createElement("span");
+            letter.textContent = head.dataset.letter;
+            return letter;
         }));
     }
+
+    function scrollToLetter(event) {
+        const target = document.elementFromPoint(innerWidth - 12, event.clientY);
+        const letter = target?.closest?.("#files-letters span")?.textContent;
+        if (!letter) return;
+        const head = $("files-list").querySelector(`.letter-head[data-letter="${CSS.escape(letter)}"]`);
+        if (!head) return;
+        // The heading stops under the bar with the search bar, which stays at the top.
+        head.style.scrollMarginTop = `${$("files").querySelector(".files-top").offsetHeight}px`;
+        head.scrollIntoView({ block: "start" });
+    }
+
+    $("files-letters").addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        $("files-letters").setPointerCapture(event.pointerId);
+        scrollToLetter(event);
+    });
+    $("files-letters").addEventListener("pointermove", (event) => {
+        if ($("files-letters").hasPointerCapture(event.pointerId)) scrollToLetter(event);
+    });
 
     // MARK: Wiring
 
@@ -1673,6 +1831,11 @@
         else if (!open && history.state?.files !== true && !$("files").hidden) {
             show("home");
             loadSongs();
+        } else if (!open && history.state?.files === true && (history.state.dir ?? null) !== filesDir) {
+            // Back from a folder to the one that holds it, at the place in the list that it was left at.
+            filesDir = history.state.dir ?? null;
+            $("files-search").value = "";
+            loadFiles(history.state.scroll ?? 0);
         }
     });
     $("files-close").onclick = () => history.back();
