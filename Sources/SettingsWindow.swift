@@ -375,8 +375,10 @@ private struct PairingControls: View {
         }
         .task(id: links.secureHost) {
             choices = WebAddresses.choices(lookUp: false)
-            // Reverse lookups wait on the network's DNS, so the names arrive after the addresses.
+            // Reverse lookups wait on the network's DNS, so the names arrive after the addresses. A lookup that started
+            // before the certificate arrived can end after the one that started with it, so its list is dropped.
             let named = await Task.detached(priority: .userInitiated) { WebAddresses.choices(lookUp: true) }.value
+            guard !Task.isCancelled else { return }
             choices = named
         }
         .onChange(of: prefs.remoteAddress) { refresh() }
