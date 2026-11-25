@@ -1580,11 +1580,6 @@
                 if (mine !== generation) return;
                 elementDelay = (performance.now() - elementAt) / 1000 - started.currentTime;
                 report(`stream: the audio element plays, ${elementDelay.toFixed(1)} s after it asked`, "info");
-                for (const after of [5, 15, 30]) setTimeout(() => {
-                    if (mine !== generation || element !== started) return;
-                    const buffered = started.buffered.length ? started.buffered.end(started.buffered.length - 1).toFixed(1) : "none";
-                    report(`stream: the audio element after ${after} s: ${player.lag().toFixed(1)} s behind, at ${started.currentTime.toFixed(1)}, buffered to ${buffered}, paused ${started.paused}, ready ${started.readyState}, network ${started.networkState}`, "debug");
-                }, after * 1000);
             }, { once: true });
             started.addEventListener("error", () => {
                 if (mine === generation) report(`stream: the audio element failed (${started.error?.code ?? "unknown"})`);
@@ -1621,8 +1616,8 @@
             },
             /** Seconds between the Mac playing a moment and this phone playing it. */
             lag() {
-                // The element's clock tells when it fell further behind, but a muted element in the simulator never
-                // moves it, so the delay at the start stands in until the clock moves.
+                // The element's clock tells when it fell further behind. A muted element in the iOS simulator never
+                // moves it (an unmuted one does), so the delay at the start stands in until the clock moves.
                 if (element) return element.currentTime > 0.5 ? Math.max(0, (performance.now() - elementAt) / 1000 - element.currentTime) : elementDelay;
                 // The encoder on the Mac holds back about 60 ms of AAC.
                 return context && playAt ? Math.max(0, playAt - context.currentTime) + (format === "aac" ? 0.11 : 0.05) : 0;
