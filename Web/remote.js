@@ -82,13 +82,52 @@
 
     // MARK: Requests
 
-    async function api(path, body) {
-        const response = await fetch(path, body === undefined ? { cache: "no-store" } : {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+    /** A line in Muskey's log on the Mac, for what goes wrong on the phone, where nobody can read the console. */
+    function report(message) {
+        fetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: String(message) }) }).catch(() => {});
+    }
+    addEventListener("error", (event) => report(`script error: ${event.message} at ${event.filename}:${event.lineno}`));
+    addEventListener("unhandledrejection", (event) => report(`unhandled: ${event.reason?.message || event.reason}`));
+
+    // The tests on a simulator open the page with ?testmute, which mutes the audio right after each play starts, so
+    // that the Mac running the simulator stays quiet. iOS decides whether a play may start before the mute.
+    const testMute = (() => {
+        try {
+            if (new URLSearchParams(location.search).has("testmute")) sessionStorage.setItem("testmute", "1");
+            return sessionStorage.getItem("testmute") === "1";
+        } catch {
+            return false;
+        }
+    })();
+
+    /** Starts the audio, and reports a play that iOS refused, which happens when it doesn't start from a tap. */
+    function startAudio(why) {
+        const audio = $("audio");
+        const started = audio.play();
+        if (testMute) audio.muted = true;
+        return started.catch((error) => {
+            report(`play refused (${why}): ${error.name} ${error.message}`);
+            throw error;
         });
-        if (!response.ok) throw new Error((await response.text()) || response.statusText);
+    }
+
+    async function api(path, body) {
+        let response;
+        try {
+            response = await fetch(path, body === undefined ? { cache: "no-store" } : {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+        } catch (error) {
+            if (path !== "/api/state") report(`${path} unreachable: ${error.message}`);
+            throw error;
+        }
+        if (!response.ok) {
+            const text = (await response.text()) || response.statusText;
+            report(`${path} answered ${response.status}: ${text}`);
+            throw new Error(text);
+        }
         return response.status === 204 ? null : response.json();
     }
 
@@ -744,7 +783,7 @@
             if (at !== null) {
                 audio.addEventListener("loadedmetadata", () => { audio.currentTime = Math.max(0, (at - heard.from) / heard.speed); }, { once: true });
             }
-            audio.play().catch(() => {});
+            startAudio("listen here").catch(() => {});
         } catch (error) {
             if (error.message !== "Stopped") fail(button, $("status"), error);
         } finally {
@@ -850,7 +889,7 @@
     $("spotify-form").onsubmit = playSpotify;
     $("play-pause").onclick = () => {
         const audio = $("audio");
-        audio.paused ? audio.play().catch(() => {}) : audio.pause();
+        audio.paused ? startAudio("play button").catch(() => {}) : audio.pause();
     };
     $("seek").oninput = () => {
         seeking = true;
@@ -859,6 +898,10 @@
     };
     $("seek").onchange = () => { seeking = false; };
     for (const name of ["play", "pause", "timeupdate", "seeked", "loadedmetadata", "ratechange"]) $("audio").addEventListener(name, drawPlayer);
+    $("audio").addEventListener("error", () => {
+        const audio = $("audio");
+        if (audio.getAttribute("src")) report(`audio error ${audio.error?.code}: ${audio.error?.message || ""} (${audio.currentSrc})`);
+    });
     for (const toggle of document.querySelectorAll(".mac-sound")) {
         toggle.onchange = async () => {
             for (const other of document.querySelectorAll(".mac-sound")) other.checked = toggle.checked;

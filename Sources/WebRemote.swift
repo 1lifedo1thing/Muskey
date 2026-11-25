@@ -43,6 +43,19 @@ struct WebNotes: Encodable {
     var mute: (Bool) -> Void = { _ in }
     /// Plays or pauses the song that plays on the Mac, or moves it, as the HUD's Space and arrow keys do.
     var transport: (WebTransport) -> Void = { _ in }
+    /// Muskey's log, which also gets what the page reports: failed requests, audio errors and plays that iOS refused.
+    var log: (String) -> Void = { _ in }
+    private var pageLines: [Date] = []
+
+    /// A line from the page, at most 30 a minute and 400 characters each.
+    func pageLog(_ text: String) {
+        let now = Date()
+        pageLines = pageLines.filter { now.timeIntervalSince($0) < 60 }
+        guard pageLines.count < 30 else { return }
+        pageLines.append(now)
+        let line = String(text.replacingOccurrences(of: "\n", with: " ").prefix(400))
+        log("remote page: \(line)")
+    }
 
     /// What the remote shows of the song that plays on the Mac.
     struct State: Encodable {
@@ -203,6 +216,7 @@ struct WebNotes: Encodable {
         let route = parts.prefix(2).joined(separator: "/")
         let id = parts.count == 3 ? parts[2] : nil
         let reads = request.method == "GET" || request.method == "HEAD"
+        let response = await { () async -> WebResponse in
         switch route {
         case "web/sheet.js", "web/sheet.css", "web/remote.js", "web/remote.css":
             guard reads, parts.count == 2, let url = Bundle.main.url(forResource: parts[1], withExtension: nil, subdirectory: "Web") else { return .notFound }
@@ -237,6 +251,12 @@ struct WebNotes: Encodable {
             play.remote = true
             let request = play
             return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
+        case "api/log" where request.method == "POST" && parts.count == 2:
+            guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let message = body["message"] else {
+                return .text("Unreadable request", status: 400)
+            }
+            await MainActor.run { shared.pageLog(message) }
+            return WebResponse(status: 204)
         case "api/transport" where request.method == "POST" && parts.count == 2:
             guard let action = try? JSONDecoder().decode(WebTransport.self, from: request.body), action.valid else {
                 return .text("Unreadable request", status: 400)
@@ -274,6 +294,23 @@ struct WebNotes: Encodable {
         default:
             return .notFound
         }
+        }()
+        // What the phone asked for and how it went, without the state, the jobs and the pictures that it asks for all
+        // the time, and without the byte ranges of the audio unless one fails.
+        let quiet = ["api/state", "api/job", "api/symbol", "api/cover", "api/nowcover", "api/songs", "api/log"].contains(route) || route.hasPrefix("web/")
+        let media = route == "api/song" || route == "api/file"
+        if request.method == "POST" && route != "api/log" || media && response.status >= 400 || !quiet && !media && response.status >= 400 {
+            await MainActor.run { shared.log("remote: \(request.method) /\(parts.joined(separator: "/")) \(response.status)\(Self.errorText(response))") }
+        }
+        return response
+    }
+
+    /// The error of a job or a text answer, for the log.
+    nonisolated private static func errorText(_ response: WebResponse) -> String {
+        guard case let .data(data) = response.body, data.count < 2000, let text = String(data: data, encoding: .utf8) else { return "" }
+        if response.status >= 400 { return ": \(text)" }
+        if let range = text.range(of: #""error":"[^"]*""#, options: .regularExpression) { return ", \(text[range])" }
+        return ""
     }
 
     nonisolated private static func page(_ name: String) -> WebResponse {

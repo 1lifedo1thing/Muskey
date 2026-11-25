@@ -3135,6 +3135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.nowCover = { [weak self] in self?.model.artwork }
         WebRemote.shared.mute = { [weak self] in self?.setOutputMuted($0) }
         WebRemote.shared.transport = { [weak self] in self?.remoteTransport($0) }
+        WebRemote.shared.log = { [weak self] in self?.log($0) }
         WebRemote.shared.update()
         cli.start()
     }
