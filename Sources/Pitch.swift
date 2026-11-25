@@ -12,16 +12,15 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "Pitch")
 /// the shifted mix. Main thread only, apart from the IOProc. Adapted from PitchTap's TapEngine.
 final class PitchChanger {
     var semitones = 0 {
-        didSet { if let shifter { ps_set_semitones(shifter, shifted) } }
+        didSet { if let shifter { ps_set_semitones(shifter, Float(semitones)) } }
     }
 
     /// Semitones added to the shift, to undo the pitch change of a song that Muskey Player plays faster or slower:
-    /// 2.81 for a song at 85 % of its speed.
+    /// 2.81 for a song at 85 % of its speed. The shifter applies it to the song captured from now on, so the stems and
+    /// the lyrics delay, which play the song seconds later, keep the old one until the song at the new speed is heard.
     var correction = 0.0 {
-        didSet { if let shifter { ps_set_semitones(shifter, shifted) } }
+        didSet { if let shifter, correction != oldValue { ps_set_correction(shifter, Float(correction)) } }
     }
-
-    private var shifted: Float { Float(Double(semitones) + correction) }
 
     var running: Bool { aggregateID != kAudioObjectUnknown }
     /// Frames of sound that the tap heard since the shifter was built.
@@ -355,7 +354,8 @@ final class PitchChanger {
         self.shifter = shifter
         rate = sampleRate
         ps_stream_attach(shifter, stream)
-        ps_set_semitones(shifter, shifted)
+        ps_set_semitones(shifter, Float(semitones))
+        ps_set_correction(shifter, Float(correction))
         ps_set_paused(shifter, paused ? 1 : 0)
         ps_set_delay(shifter, lyricsDelay)
         ps_set_step_fade(shifter, fadeSteps ? 1 : 0)
@@ -722,6 +722,34 @@ enum PitchSelfTest {
             report(fading > 0.15 * steady && fading < 0.85 * steady && gone < 0.01 * steady && cut < 0.01 * steady,
                    String(format: "stem mute fade   karaoke: %.0f%% level 300 ms after the mute, %.1f%% from 700 ms; a key: %.1f%% from 200 ms",
                           fading / steady * 100, gone / steady * 100, cut / steady * 100))
+        }
+
+        // Muskey Player slows the song to 80 %, so its 440 Hz drops to 352 Hz, and the correction of +3.86 semitones
+        // brings it back to 440 Hz. The song captured before the change keeps no correction when it plays later, so the
+        // output stays at 440 Hz, never at the 550 Hz that the new correction gives the song at its old speed. First
+        // with the lyrics delay playing the song 3 seconds behind, then with a change made just before the stems start
+        // and step back to the second before it.
+        do {
+            let correction = Float(-12 * log2(0.8))
+            let delayed = renderTimeline(seconds: 14, tone: { $0 < 6 ? 440 : 352 }, events: [
+                (0, { ps_set_step_fade($0, 1) }), (1, { ps_set_delay($0, 3) }), (6, { ps_set_correction($0, correction) }),
+            ])
+            let started = renderTimeline(seconds: 10, tone: { $0 < 2 ? 440 : 352 }, events: [
+                (0, { ps_set_step_fade($0, 1) }), (1, { ps_stems_enable($0, 1) }), (2, { ps_set_correction($0, correction) }),
+            ], separator: true)
+            func high(_ out: [Float], from: Double, to: Double) -> [String] {
+                stride(from: from, to: to, by: 0.25).compactMap { t in
+                    let hz = pitch(out, from: t, to: t + 0.25)
+                    return hz > 480 ? String(format: "%.0f Hz at %.2f s", hz, t) : nil
+                }
+            }
+            let delayedHigh = high(delayed.out, from: 5, to: 13.75), startedHigh = high(started.out, from: 1.5, to: 9.75)
+            let delayedEnd = pitch(delayed.out, from: 12, to: 13.9), startedEnd = pitch(started.out, from: 8, to: 9.9)
+            report(delayedHigh.isEmpty && startedHigh.isEmpty && abs(delayedEnd / 440 - 1) < 0.01 && abs(startedEnd / 440 - 1) < 0.01
+                   && delayed.delay > 2.5 && started.delay > 0.5,
+                   String(format: "tempo correction %.1f Hz %.1f s behind, %.1f Hz %.1f s behind the stems, too high: %@",
+                          delayedEnd, delayed.delay, startedEnd, started.delay,
+                          delayedHigh.isEmpty && startedHigh.isEmpty ? "never" : (delayedHigh + startedHigh).prefix(4).joined(separator: ", ")))
         }
 
         // Another sound keeps the tap from going silent during a pause: the fade of the pause lets it through after

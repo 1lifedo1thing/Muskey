@@ -24,6 +24,9 @@ void ps_destroy(PSShifter *shifter);
 // A change starts a second stretcher at the new pitch, and about 0.2 s later crossfades to it over 0.2 s. A new
 // pitch set during a crossfade starts once that crossfade ends.
 void ps_set_semitones(PSShifter *shifter, float semitones);
+// Semitones added to the pitch to undo the tempo of a slower or faster song, for the song captured from now on. The
+// stems and the lyrics delay play the song captured before with the correction it had then. One thread only.
+void ps_set_correction(PSShifter *shifter, float semitones);
 
 // The pitch heard while no crossfade runs, or NaN while one is under way.
 float ps_playing_semitones(PSShifter *shifter);

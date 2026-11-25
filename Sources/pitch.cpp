@@ -481,6 +481,50 @@ struct PSShifter {
     bool planar;
     std::atomic<float> semitones{0};
 
+    // The tempo correction that undoes the pitch of a slower or faster song, for the song captured from each frame on,
+    // the last few changes kept in a ring. The stems and the lyrics delay play the song seconds after it was captured,
+    // and after a step back they play some of it again, so the voices get the correction of the song that they hear:
+    // the one in force when that part was captured. The live song always gets the newest one. Written on one thread,
+    // read on the audio thread.
+    static constexpr uint32_t correctionSlots = 8;
+    std::atomic<uint64_t> correctionFrom[correctionSlots] = {};
+    std::atomic<float> correctionValue[correctionSlots] = {};
+    std::atomic<uint32_t> corrections{0};
+
+    void setCorrection(float value) {
+        uint64_t from = captured.written.load(std::memory_order_relaxed);
+        uint32_t count = corrections.load(std::memory_order_relaxed);
+        // Changes while nothing is captured all start at the same frame, and only the newest of them counts.
+        if (count > 0 && correctionFrom[(count - 1) % correctionSlots].load(std::memory_order_relaxed) == from) {
+            correctionValue[(count - 1) % correctionSlots].store(value, std::memory_order_release);
+            return;
+        }
+        correctionFrom[count % correctionSlots].store(from, std::memory_order_relaxed);
+        correctionValue[count % correctionSlots].store(value, std::memory_order_relaxed);
+        corrections.store(count + 1, std::memory_order_release);
+    }
+
+    // The correction of the song that the voices are fed next: of the frame that the stems or the delay play, or the
+    // newest one for the live song. A voice takes about 0.4 seconds to change, so a step back to the stems or the
+    // delay asks for their correction as it starts to fade out or spin, and the voice is ready when they come in.
+    float correctionFed() {
+        uint32_t count = corrections.load(std::memory_order_acquire);
+        if (count == 0) return 0;
+        uint32_t newest = count - 1;
+        bool timeline = stemsPlaying && (stemsMix.load(std::memory_order_relaxed) >= 0.5f || fadeLeft > 0 || spinLeft > 0 || jumpPending);
+        if (!timeline) return correctionValue[newest % correctionSlots].load(std::memory_order_acquire);
+        uint64_t frame = !jumpPending ? stemsPlayed.load(std::memory_order_relaxed) : jumpToLive ? liveFrame : jumpTarget;
+        uint32_t oldest = count > correctionSlots ? count - correctionSlots : 0;
+        for (uint32_t i = newest + 1; i > oldest; i--) {
+            uint32_t slot = (i - 1) % correctionSlots;
+            if (correctionFrom[slot].load(std::memory_order_relaxed) <= frame) {
+                return correctionValue[slot].load(std::memory_order_acquire);
+            }
+        }
+        // Older than every change: no correction before the first one, or the oldest one kept.
+        return count > correctionSlots ? correctionValue[oldest % correctionSlots].load(std::memory_order_acquire) : 0;
+    }
+
     // A key change crossfades between two voices. The playing voice keeps its pitch for its whole life, and the
     // other one starts over at the new pitch: it hears the same input until it has enough history behind the
     // moment the playing voice is at, joins at that moment, and takes over during the fade. Only then is it the
@@ -1384,6 +1428,10 @@ void ps_set_semitones(PSShifter *shifter, float semitones) {
     shifter->semitones.store(semitones, std::memory_order_relaxed);
 }
 
+void ps_set_correction(PSShifter *shifter, float semitones) {
+    shifter->setCorrection(semitones);
+}
+
 uint64_t ps_frames_heard(PSShifter *shifter) {
     return shifter->heard.load(std::memory_order_relaxed);
 }
@@ -1694,7 +1742,7 @@ void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *out
     size_t totalChannels = 0;
     for (UInt32 b = 0; b < output->mNumberBuffers; b++) totalChannels += output->mBuffers[b].mNumberChannels;
 
-    s->retarget(s->semitones.load(std::memory_order_relaxed));
+    s->retarget(s->semitones.load(std::memory_order_relaxed) + s->correctionFed());
 
     for (size_t done = 0; done < frames;) {
         size_t n = std::min(frames - done, maxChunk);
