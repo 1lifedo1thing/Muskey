@@ -480,6 +480,9 @@ struct PSShifter {
     std::atomic<PSStream *> stream{nullptr};
     bool planar;
     std::atomic<float> semitones{0};
+    // While a phone listens, the Mac's speakers get silence and the phone's stream gets the sound: an output with no
+    // mute or volume of its own, like a display's speakers, kept playing otherwise.
+    std::atomic<bool> speakersSilent{false};
 
     // The tempo correction that undoes the pitch of a slower or faster song, for the song captured from each frame on,
     // the last few changes kept in a ring. The stems and the lyrics delay play the song seconds after it was captured,
@@ -1536,6 +1539,10 @@ void ps_set_paused(PSShifter *s, int paused) {
     s->paused.store(paused != 0, std::memory_order_relaxed);
 }
 
+void ps_set_speakers_silent(PSShifter *s, int silent) {
+    s->speakersSilent.store(silent != 0, std::memory_order_relaxed);
+}
+
 void ps_stems_restart(PSShifter *s) {
     s->restartStems.store(true, std::memory_order_relaxed);
 }
@@ -1752,6 +1759,10 @@ void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *out
         s->cutPauseTail(n);
         if (!s->recording.empty()) s->record(n);
         if (PSStream *stream = s->stream.load(std::memory_order_acquire)) stream->write(s->outLeft.data(), s->outRight.data(), n);
+        if (s->speakersSilent.load(std::memory_order_relaxed)) {
+            std::fill(s->outLeft.begin(), s->outLeft.begin() + n, 0.0f);
+            std::fill(s->outRight.begin(), s->outRight.begin() + n, 0.0f);
+        }
 
         // Spread left and right over the output device's channels, interleaved within each buffer.
         size_t channelBase = 0;

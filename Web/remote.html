@@ -11,6 +11,7 @@
 <meta name="theme-color" content="rgb(250 244 240)" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="rgb(17 15 16)" media="(prefers-color-scheme: dark)">
 <meta name="generator" content="Muskey">
+<!-- app -->
 <title>Muskey</title>
 <link rel="stylesheet" href="/web/sheet.css">
 <link rel="stylesheet" href="/web/remote.css">
@@ -80,7 +81,7 @@
 
     <div class="head" id="head">
         <button class="back" id="close" aria-label="Close song"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
-        <span id="song-cover"></span>
+        <span class="cover-wrap" id="cover-wrap"><span id="song-cover"></span><span class="source-badge" id="source-badge" hidden></span></span>
         <div class="grow" style="min-width: 0">
             <div class="song-title" id="song-title"></div>
             <div class="song-artist" id="song-artist"></div>
@@ -91,7 +92,7 @@
     <div class="error-line" id="save-error" hidden></div>
 
     <section class="section">
-        <div class="label">Key <span class="pill" id="change-pill" hidden></span><span id="listening-pill" hidden></span></div>
+        <div class="label">Key <span class="pill" id="change-pill" hidden></span></div>
         <div class="keyrow" id="keyrow">
             <button class="step down" id="key-down" aria-label="Semitone down"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
             <div class="keys" id="keys" role="group" aria-label="Key"></div>

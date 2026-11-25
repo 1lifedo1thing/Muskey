@@ -3250,9 +3250,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Mutes the sound output, and tells whether it is muted now.
     @discardableResult private func muteForRemote() -> Bool {
         guard remoteMuteBefore == nil else { return true }
-        guard let before = OutputMute.muted else { return false }
+        guard let before = OutputMute.muted else {
+            log("remote: the sound output has no mute or volume, the pitch change sends it silence")
+            return false
+        }
         guard before || OutputMute.set(true) else {
-            log("remote: the sound output can't be muted", .error)
+            log("remote: the sound output can't be muted, the pitch change sends it silence", .error)
             return false
         }
         remoteMuteBefore = before
@@ -3298,8 +3301,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seekable: model.seekable, mac: Self.macName,
             mutedStems: model.stemsMuted.map { $0.name.lowercased() }.sorted(),
             loop: model.loop.map { WebRemote.State.Loop(start: $0.start, end: $0.end) },
-            wave: model.wave.waveform.map { wave in wave.levels.count &* 7919 &+ wave.levels.reduce(0) { $0 + ($1 > 0 ? 1 : 0) } }
+            wave: model.wave.waveform.map { wave in wave.levels.count &* 7919 &+ wave.levels.reduce(0) { $0 + ($1 > 0 ? 1 : 0) } },
+            source: remoteSource(track).kind, sourceApp: remoteSource(track).app
         )
+    }
+
+    /// The source of the song for the badge on the phone's cover, kept for the file that Muskey Player plays, since
+    /// finding a download's link reads the index of links.
+    private var remoteSourceCache: (path: String, kind: String)?
+
+    @MainActor private func remoteSource(_ track: NowPlaying.Track?) -> (kind: String?, app: String?) {
+        guard playsInFilePlayer, let path = filePlayer.current?.path else {
+            return track?.bundleID.map { ("app", $0) } ?? (nil, nil)
+        }
+        if let cached = remoteSourceCache, cached.path == path { return (cached.kind, nil) }
+        let cache = LinkCache()
+        var kind = "file"
+        if path.hasPrefix(cache.folder.path), let host = cache.link(ofFile: path)?.host?.lowercased() {
+            kind = host.hasSuffix("spotify.com") ? "spotify" : host.hasSuffix("youtube.com") || host == "youtu.be" ? "youtube" : "link"
+        }
+        remoteSourceCache = (path, kind)
+        return (kind, nil)
     }
 
     /// Whether the song plays, counting a play or pause asked for in the last 1.5 seconds that the player hasn't reported.
@@ -3318,6 +3340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         phoneListening = on
         phoneWatch?.invalidate()
         phoneWatch = nil
+        pitch.speakersSilent = on
         if on {
             muteForRemote()
             if !pitch.running { startPitch() }

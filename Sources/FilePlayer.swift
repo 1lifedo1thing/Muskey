@@ -1008,6 +1008,11 @@ final class LinkCache {
         return song
     }
 
+    /// The link that the song at `path` was downloaded from.
+    func link(ofFile path: String) -> URL? {
+        Self.queue.sync(execute: load).first { $0.value.path == path }.flatMap { URL(string: $0.key) }
+    }
+
     /// The link was downloaded before, and its song plays at once.
     func has(_ url: URL) -> Bool {
         Self.queue.sync(execute: load)[url.absoluteString].map { FileManager.default.fileExists(atPath: $0.path) } ?? false

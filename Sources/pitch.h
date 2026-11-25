@@ -67,6 +67,9 @@ void ps_stems_enable(PSShifter *shifter, int on);
 // The player paused the song (1) or plays it again (0). Once the tap is silent too, the stems are held where they
 // are and the silence isn't captured, so the pause and the resume are heard at once despite the stems' delay.
 void ps_set_paused(PSShifter *shifter, int paused);
+// 1 sends silence to the output device while the stream that ps_stream_attach set up keeps the sound, for a phone that
+// listens in place of the Mac.
+void ps_set_speakers_silent(PSShifter *shifter, int silent);
 // The song changed or moved while it was paused: the stems start over, and the song plays as it is until the first
 // block of the new song is separated.
 void ps_stems_restart(PSShifter *shifter);

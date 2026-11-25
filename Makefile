@@ -172,6 +172,7 @@ $(BUNDLE): Sources/*.swift Shared/*.swift Sources/*.h Web/* Info.plist Muskey.en
 	$(if $(DEV),$(KEEP_DEBUG_LOGS) $@/Contents/Info.plist)
 	cp $(BUILD)/obj/Assets.car $(BUILD)/obj/muskey.icns $@/Contents/Resources/
 	ditto Web $@/Contents/Resources/Web
+	cp muskey.icon/Assets/icon.png $@/Contents/Resources/Web/app-icon.png
 	ditto $(SPARKLE)/Sparkle.framework $(SPARKLE_FRAMEWORK)
 	# The XPC services are only for sandboxed apps.
 	rm -rf $(SPARKLE_FRAMEWORK)/XPCServices $(SPARKLE_FRAMEWORK)/Versions/B/XPCServices

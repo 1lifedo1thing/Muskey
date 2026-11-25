@@ -107,6 +107,11 @@ struct WebNotes: Encodable {
         var loop: Loop?
         /// Changes whenever the waveform has more of the song, so the page fetches it again only then.
         var wave: Int?
+        /// Where the song comes from, for the badge and the ring on the phone's cover: `spotify` or `youtube` for a link
+        /// of those sites, `link` for another site, `file` for a file in Muskey Player, `app` for another player on the
+        /// Mac, named by `sourceApp`, its bundle ID.
+        var source: String?
+        var sourceApp: String?
 
         struct Loop: Encodable {
             let start: Double
@@ -115,7 +120,7 @@ struct WebNotes: Encodable {
 
         enum CodingKeys: CodingKey {
             case title, artist, app, playing, listening, key, shift, relative, bpm, speed, cover, muted, relativeKeys, song, position, duration,
-                 seekable, mac, mutedStems, listeners, loop, wave
+                 seekable, mac, mutedStems, listeners, loop, wave, source, sourceApp
         }
     }
 
@@ -126,6 +131,19 @@ struct WebNotes: Encodable {
         "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear", "minus", "plus", "gobackward.5", "goforward.5", "iphone",
         "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down",
     ]
+
+    /// The icon of a running app, 96 pixels square. Only running apps, so the page can't ask what else is installed.
+    @MainActor static func appIconPNG(_ bundleID: String) -> Data? {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first, let icon = app.icon,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 96, pixelsHigh: 96, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        icon.draw(in: NSRect(x: 0, y: 0, width: 96, height: 96))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
+    }
 
     /// A symbol as a black PNG at three times its point size, which the page uses as a mask to colour it.
     func symbolPNG(_ name: String) -> Data? {
@@ -248,6 +266,7 @@ struct WebNotes: Encodable {
             return .text("Unknown host", status: 403)
         }
         let parts = request.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        if let response = appRoute(request, parts: parts, key: key) { return response }
 
         if parts.count == 2, parts[0] == "pair" {
             guard request.method == "GET", same(parts[1], key) else { return .notFound }
@@ -290,6 +309,10 @@ struct WebNotes: Encodable {
         case "api/nowcover" where reads && parts.count == 2:
             guard let jpeg = await MainActor.run(body: { SongTags.jpeg(shared.nowCover()) }) else { return .notFound }
             return WebResponse(status: 200, headers: [("Content-Type", "image/jpeg"), ("Cache-Control", "no-store")], body: .data(jpeg))
+        case "api/appicon" where reads:
+            // The icon of a player that runs on the Mac, for the badge on the cover.
+            guard let id, let png = await MainActor.run(body: { Self.appIconPNG(id) }) else { return .notFound }
+            return WebResponse(status: 200, headers: [("Content-Type", "image/png"), ("Cache-Control", "private, max-age=86400")], body: .data(png))
         case "api/symbol" where reads:
             guard let id, let png = await MainActor.run(body: { shared.symbolPNG(id) }) else { return .notFound }
             return WebResponse(status: 200, headers: [("Content-Type", "image/png"), ("Cache-Control", "private, max-age=86400")], body: .data(png))
@@ -410,10 +433,63 @@ struct WebNotes: Encodable {
         return ""
     }
 
+    /// What installing the page as an app reads: open to any phone on these addresses, since a browser fetches the
+    /// icons and launch screens without its cookies, and they are only Muskey's. The manifest names the Mac and carries
+    /// the key only for a paired phone.
+    nonisolated private static func appRoute(_ request: WebRequest, parts: [String], key: String) -> WebResponse? {
+        guard request.method == "GET" || request.method == "HEAD", (1 ... 2).contains(parts.count) else { return nil }
+        let name = parts.joined(separator: "/")
+        let immutable = ("Cache-Control", "public, max-age=31536000, immutable")
+        switch name {
+        case "manifest.webmanifest":
+            let paired = same(cookieValue(request) ?? "", key)
+            let data = WebApp.manifest(name: paired ? "Muskey · \(macName)" : "Muskey", startURL: paired ? "/pair/\(key)" : "/")
+            return WebResponse(status: 200, headers: [("Content-Type", "application/manifest+json"), ("Cache-Control", "no-store")], body: .data(data))
+        case "sw.js":
+            // Checked on every visit, so a new version replaces the old one's cache.
+            return WebResponse(status: 200, headers: [("Content-Type", "text/javascript; charset=utf-8"), ("Cache-Control", "no-cache")],
+                               body: .data(Data(WebApp.serviceWorker.utf8)))
+        case "offline":
+            var response = page(html: Data(WebApp.offlinePage.utf8))
+            response.headers.removeAll { $0.0 == "Cache-Control" }
+            response.headers.append(("Cache-Control", "no-cache"))
+            return response
+        default:
+            break
+        }
+        let art = WebAppArt.shared
+        let image: Data?
+        switch name {
+        case "favicon.ico", "favicon.png": image = art.icon(size: 64, margin: 0.04)
+        case "apple-touch-icon.png", "apple-touch-icon-precomposed.png": image = art.fullBleed(size: 180)
+        case "icon-192.png": image = art.icon(size: 192)
+        case "icon-512.png": image = art.icon(size: 512)
+        case "icon-maskable-512.png": image = art.maskable(size: 512)
+        default:
+            guard parts.count == 2, parts[0] == "splash", parts[1].hasSuffix(".png"),
+                  let spec = WebApp.splashSpec(String(parts[1].dropLast(".png".count)))
+            else { return nil }
+            image = art.splash(width: spec.width, height: spec.height, dark: spec.dark)
+        }
+        guard let image else { return .notFound }
+        let caching = request.query["v"] == nil ? ("Cache-Control", "public, max-age=86400") : immutable
+        return WebResponse(status: 200, headers: [("Content-Type", "image/png"), caching], body: .data(image))
+    }
+
+    /// The name of this Mac, for the installed app's name.
+    nonisolated private static let macName = Host.current().localizedName ?? "Mac"
+
     nonisolated private static func page(_ name: String) -> WebResponse {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "html", subdirectory: "Web"), let data = try? Data(contentsOf: url) else {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "html", subdirectory: "Web"), var data = try? Data(contentsOf: url) else {
             return .notFound
         }
+        if let html = String(data: data, encoding: .utf8), html.contains("<!-- app -->") {
+            data = Data(html.replacingOccurrences(of: "<!-- app -->", with: WebApp.head).utf8)
+        }
+        return page(html: data)
+    }
+
+    nonisolated private static func page(html data: Data) -> WebResponse {
         return WebResponse(status: 200, headers: [
             ("Content-Type", "text/html; charset=utf-8"),
             ("Cache-Control", "no-store"),

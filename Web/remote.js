@@ -375,13 +375,71 @@
         loadSongs();
     }
 
+    // The marks of the sites whose links Muskey opens, drawn here rather than fetched.
+    const SOURCE_MARKS = {
+        spotify: `<svg viewBox="0 0 26 26" aria-hidden="true"><rect width="26" height="26" fill="#1ed760"/><g fill="none" stroke="#000" stroke-linecap="round"><path d="M6.6 9.6c4.4-1.4 9.4-1 13 1.1" stroke-width="2.3"/><path d="M7.4 13.3c3.7-1.1 7.8-.7 10.8 1" stroke-width="1.9"/><path d="M8.2 16.7c3-.8 6.2-.5 8.5.9" stroke-width="1.6"/></g></svg>`,
+        youtube: `<svg viewBox="0 0 26 26" aria-hidden="true"><rect width="26" height="26" fill="#ff0033"/><path d="M10.4 8.6v8.8l7.2-4.4z" fill="#fff"/></svg>`,
+    };
+    // The ring's colour for each source; another app's comes from its icon.
+    const SOURCE_RINGS = { spotify: "#1ed760", youtube: "#ff0033", file: "rgb(228 88 96)", link: "rgb(228 88 96)" };
+
+    /** The badge on the cover and the colour of its ring, drawn again only when the source changes. */
+    function drawSource() {
+        const wrap = $("cover-wrap");
+        const badge = $("source-badge");
+        wrap.classList.toggle("listening", Boolean(state.listening));
+        const kind = state.source || "";
+        const key = kind === "app" ? `app:${state.sourceApp}` : kind;
+        if (badge.dataset.key === key) return;
+        badge.dataset.key = key;
+        badge.replaceChildren();
+        wrap.style.setProperty("--ring", SOURCE_RINGS[kind] || "rgb(228 88 96)");
+        if (SOURCE_MARKS[kind]) {
+            badge.innerHTML = SOURCE_MARKS[kind];
+        } else if (kind === "app" && state.sourceApp) {
+            const image = document.createElement("img");
+            image.alt = "";
+            image.onload = () => {
+                const color = iconColor(image);
+                if (color && badge.dataset.key === key) wrap.style.setProperty("--ring", color);
+            };
+            image.onerror = () => {
+                badge.hidden = true;
+            };
+            image.src = `/api/appicon/${encodeURIComponent(state.sourceApp)}`;
+            badge.append(image);
+        }
+        badge.hidden = !badge.firstChild;
+    }
+
+    /** The most colourful tone of an app's icon, for its ring: each pixel counts by how saturated it is. */
+    function iconColor(image) {
+        try {
+            const canvas = document.createElement("canvas");
+            canvas.width = canvas.height = 24;
+            const context = canvas.getContext("2d", { willReadFrequently: true });
+            context.drawImage(image, 0, 0, 24, 24);
+            const pixels = context.getImageData(0, 0, 24, 24).data;
+            let r = 0, g = 0, b = 0, total = 0;
+            for (let i = 0; i < pixels.length; i += 4) {
+                if (pixels[i + 3] < 200) continue;
+                const max = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]), min = Math.min(pixels[i], pixels[i + 1], pixels[i + 2]);
+                const weight = max ? ((max - min) / max) ** 2 : 0;
+                r += pixels[i] * weight;
+                g += pixels[i + 1] * weight;
+                b += pixels[i + 2] * weight;
+                total += weight;
+            }
+            return total > 1 ? `rgb(${Math.round(r / total)} ${Math.round(g / total)} ${Math.round(b / total)})` : null;
+        } catch {
+            return null;
+        }
+    }
+
     function drawSong() {
         $("song-title").textContent = $("bar-title").textContent = state.title || "Nothing playing";
         $("song-artist").textContent = state.artist || "";
-        // The head holds only the title and the artist; the Mac listening for the key shows beside the Key label.
-        const listening = $("listening-pill");
-        listening.replaceChildren(...(state.listening ? [pill("Listening", "listening")] : []));
-        listening.hidden = !state.listening;
+        drawSource();
         const source = state.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : null;
         if (source !== songCover) {
             songCover = source;

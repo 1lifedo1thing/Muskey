@@ -119,6 +119,12 @@ final class PitchChanger {
         didSet { if paused != oldValue, let shifter { ps_set_paused(shifter, paused ? 1 : 0) } }
     }
 
+    /// Silence on the Mac's speakers while a phone listens to the stream. Muting the output device does the same where
+    /// it can, but a display's speakers have no mute or volume.
+    var speakersSilent = false {
+        didSet { if speakersSilent != oldValue, let shifter { ps_set_speakers_silent(shifter, speakersSilent ? 1 : 0) } }
+    }
+
     /// The song changed or moved while it was paused, so the stems that were held belong to another moment: they
     /// start over, and the song plays as it is until the first block is separated.
     func restartStems() {
@@ -357,6 +363,7 @@ final class PitchChanger {
         ps_set_semitones(shifter, Float(semitones))
         ps_set_correction(shifter, Float(correction))
         ps_set_paused(shifter, paused ? 1 : 0)
+        ps_set_speakers_silent(shifter, speakersSilent ? 1 : 0)
         ps_set_delay(shifter, lyricsDelay)
         ps_set_step_fade(shifter, fadeSteps ? 1 : 0)
         ps_slow_set_speed(shifter, slowSpeed)

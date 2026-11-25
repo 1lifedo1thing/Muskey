@@ -271,12 +271,19 @@ button:disabled { cursor: default; }
 .chevron { --symbol: url(/api/symbol/chevron.right); width: 12px; height: 12px; color: color-mix(in srgb, var(--muted) 45%, transparent); }
 .empty { padding: 18px 14px; text-align: center; color: color-mix(in srgb, var(--muted) 70%, transparent); font-size: 15px; }
 .head { display: flex; gap: 10px; align-items: center; padding: calc(10px + env(safe-area-inset-top)) 0 0; }
-.head #song-cover { flex: none; }
+.head #song-cover { display: block; line-height: 0; }
 .head .grow { flex: 1; min-width: 0; }
 /* The cover and the title with the artist are one unit, centred on each other; the title takes two lines at most. */
 .head .song-title { font-size: 20px; line-height: 1.2; white-space: normal; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
-#listening-pill { display: inline-flex; margin-left: 6px; vertical-align: middle; }
-#listening-pill[hidden] { display: none; }
+/* Where the song comes from, as a badge on the cover: Spotify, YouTube, or the app that plays it on the Mac; a file in
+   Muskey Player has none. While the Mac listens for the key, a ring in the source's colour pulses around the cover. */
+.cover-wrap { position: relative; flex: none; display: grid; --ring: rgb(228 88 96); }
+.cover-wrap .cover { transition: outline-color 300ms; outline: 3px solid transparent; outline-offset: 3px; }
+.cover-wrap.listening .cover { outline-color: var(--ring); animation: ring-pulse 1.6s ease-in-out infinite; }
+@keyframes ring-pulse { 50% { outline-color: color-mix(in srgb, var(--ring) 25%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .cover-wrap.listening .cover { animation: none; } }
+.source-badge { position: absolute; right: -7px; bottom: -7px; width: 26px; height: 26px; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 2px var(--bg); background: var(--bg); }
+.source-badge > * { display: block; width: 100%; height: 100%; }
 
 /* Fields */
 .field {
