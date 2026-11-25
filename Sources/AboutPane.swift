@@ -56,6 +56,7 @@ struct Project: Identifiable {
         Project(name: "LAME", use: "MP3 files", site: url("https://lame.sourceforge.io")),
         Project(name: "mpg123", use: "MP3 files", site: url("https://www.mpg123.de")),
         Project(name: "Sparkle", use: "Updates", site: url("https://sparkle-project.org")),
+        Project(name: "Sentry", use: "Error reports", site: url("https://github.com/getsentry/sentry-cocoa")),
     ]
 }
 

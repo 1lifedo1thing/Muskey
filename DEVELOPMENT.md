@@ -230,6 +230,12 @@ A song from another player is recorded first, as it plays from its start to its 
 
 Muskey writes the song to a temporary file, which replaces the chosen one once it is whole. The pill at the top right of the screen shows the progress, then the saved song with **Show in Finder**, or a red pill with **Retry**.
 
+### Error reports
+
+While **Send error reports** is on in Settings > General, Muskey sends its crashes, its uncaught exceptions and the hangs of its main thread that last longer than 30 seconds to [Sentry](https://sentry.io). It also sends one event the first time each version launches. A report carries an anonymous ID, a hash of the Mac's serial number, which Settings shows as Machine ID. The addresses of web requests stay out of the reports, since the lookups of lyrics and keys put song titles in them. Builds made with `make` send their events to a `dev` environment, without crashes or hangs.
+
+`make build` keeps the dSYMs of the release in `build/dSYMs`, and `make upload` sends them to Sentry after a full release, so that the reports name Muskey's functions.
+
 ## Limitations
 
 - A pitch change moves every note by the same amount, so a major song stays major. Muskey reaches a key in the other mode through its relative, which has the same notes: from A major, C minor plays as E♭ major.
@@ -343,5 +349,7 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | Flag | Action |
 |---|---|
 | `--selftest` | Send a 440 Hz tone through the pitch shifter, check the pitch, gaps, timing and level that come out, and quit |
+| `--test-sentry` | Send one event to the `dev` environment of Muskey's Sentry project, print its ID, and quit |
+| `--test-hang S` | Block the main thread for S seconds, 3 seconds after launch, and report hangs to Sentry from 2 seconds on |
 
 Muskey writes each result to `~/Library/Logs/Muskey.log`.

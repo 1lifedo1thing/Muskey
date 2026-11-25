@@ -39,7 +39,7 @@ brew install eigen lame
 make install
 ```
 
-On the first build, Essentia, Rubber Band and Sparkle are downloaded into `vendor/` and compiled, which takes a few minutes.
+On the first build, Essentia, Rubber Band, Sparkle and Sentry are downloaded into `vendor/` and compiled, which takes a few minutes.
 
 Builds are signed with a Developer ID, which keeps the System Audio Recording permission across rebuilds. To sign with your own, run `make install IDENTITY="Developer ID Application: Your Name (TEAMID)"`.
 
@@ -53,6 +53,7 @@ Muskey is free software under the [GNU Affero General Public License v3.0](LICEN
 - [Rubber Band](https://github.com/breakfastquay/rubberband): GPL-2.0 or later
 - [PitchTap](https://github.com/gkudva96/pitchtap): GPL-3.0, the starting point of the pitch change
 - [Sparkle](https://github.com/sparkle-project/Sparkle): MIT
+- [Sentry](https://github.com/getsentry/sentry-cocoa): MIT
 - [whisper.cpp](https://github.com/ggml-org/whisper.cpp): MIT, linked statically
 - [Dettato](https://github.com/kobimusic/dettato): Apache-2.0, the transcriber of notes, ported to Swift and Core ML. Its notice reads: "Dettato, Copyright 2026 KobiMusic. This product includes software and model weights developed by KobiMusic."
 - [Omnilingual ASR](https://github.com/facebookresearch/omnilingual-asr): Apache-2.0, the model that reads sung words for timing lyrics, converted to Core ML with 8-bit weights. Copyright 2025 Meta Platforms, Inc. and affiliates.
