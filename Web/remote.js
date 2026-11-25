@@ -378,10 +378,10 @@
     function drawSong() {
         $("song-title").textContent = $("bar-title").textContent = state.title || "Nothing playing";
         $("song-artist").textContent = state.artist || "";
-        // Only the title and the artist, and a pill while the Mac listens for the key.
-        const pills = $("song-pills");
-        pills.replaceChildren(...(state.listening ? [pill("Listening", "listening")] : []));
-        pills.hidden = !state.listening;
+        // The head holds only the title and the artist; the Mac listening for the key shows beside the Key label.
+        const listening = $("listening-pill");
+        listening.replaceChildren(...(state.listening ? [pill("Listening", "listening")] : []));
+        listening.hidden = !state.listening;
         const source = state.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : null;
         if (source !== songCover) {
             songCover = source;

@@ -84,7 +84,6 @@
         <div class="grow" style="min-width: 0">
             <div class="song-title" id="song-title"></div>
             <div class="song-artist" id="song-artist"></div>
-            <div class="pills" id="song-pills" hidden></div>
         </div>
         <button class="button compact" id="save" hidden><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Save</span></button>
         <a class="button compact primary" id="save-link" hidden><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Download</span></a>
@@ -92,7 +91,7 @@
     <div class="error-line" id="save-error" hidden></div>
 
     <section class="section">
-        <div class="label">Key <span class="pill" id="change-pill" hidden></span></div>
+        <div class="label">Key <span class="pill" id="change-pill" hidden></span><span id="listening-pill" hidden></span></div>
         <div class="keyrow" id="keyrow">
             <button class="step down" id="key-down" aria-label="Semitone down"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
             <div class="keys" id="keys" role="group" aria-label="Key"></div>
