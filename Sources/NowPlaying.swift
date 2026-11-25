@@ -90,8 +90,9 @@ final class NowPlaying {
 
     private var process: Process?
     private var stdinPipe: Pipe?
-    /// The song that the last change was reported for, or that was playing when watching started.
-    private var reported: [String?]?
+    /// The song that the last change was reported for, a second after Now Playing named it while it played, or that
+    /// was playing when watching started.
+    private(set) var reported: [String?]?
     private var pending: DispatchWorkItem?
 
     private static var helperURL: URL {

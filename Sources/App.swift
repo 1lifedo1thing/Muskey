@@ -3215,9 +3215,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             guard playsInFilePlayer, let path = filePlayer.current?.path else { return false }
             if job.step != "Reading the key", path != before || Date().timeIntervalSince(opened) > 3 { job.step = "Reading the key" }
-            // Now Playing names the new song a moment after Muskey Player starts it, and until then the HUD reads the
-            // key of the song that played before.
-            let named = path == before || nowPlaying.track?.song != songBefore || Date().timeIntervalSince(opened) > 3
+            // Now Playing names the new song a moment after Muskey Player starts it, and reports it as a song change a
+            // second later, which makes the HUD listen to it. Until then the HUD can show the key of the song that
+            // played before. A file named like the song before it is taken as that song after 3 seconds.
+            let song = nowPlaying.track?.song
+            let named = path == before || (song != songBefore ? nowPlaying.reported == song : Date().timeIntervalSince(opened) > 3)
             return (path != before || Date().timeIntervalSince(opened) > 3) && named && ready()
         }) { [weak self] in self?.cliApply(request, job: job) }
     }
