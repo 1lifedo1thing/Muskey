@@ -10,10 +10,12 @@ import Network
     /// A fixed port, so that a link stays the same across restarts.
     nonisolated static let port: UInt16 = 25471
     nonisolated static let lifetime: TimeInterval = 3 * 24 * 3600
-    nonisolated static let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "Muskey/Links")
+    /// Kept apart from `Muskey/Links`, where Muskey Player keeps the songs that it downloads from links.
+    nonisolated static let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "Muskey/Shared")
 
     /// Serves the links from before a restart while any of them is still valid.
     func startIfNeeded() {
+        moveOldLinks()
         removeExpired()
         let links = (try? FileManager.default.contentsOfDirectory(atPath: Self.folder.path)) ?? []
         if links.contains(where: Self.isToken) { start() }
@@ -84,11 +86,22 @@ import Network
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
 
+    /// Removes the folders of links that ended, and nothing that isn't a link's folder.
     private func removeExpired() {
         let fm = FileManager.default
-        for name in (try? fm.contentsOfDirectory(atPath: Self.folder.path)) ?? [] {
+        for name in (try? fm.contentsOfDirectory(atPath: Self.folder.path)) ?? [] where Self.isToken(name) {
             let folder = Self.folder.appending(path: name)
-            if !Self.isToken(name) || Self.expired(folder) { try? fm.removeItem(at: folder) }
+            if Self.expired(folder) { try? fm.removeItem(at: folder) }
+        }
+    }
+
+    /// The first builds kept the links in `Muskey/Links`, among the downloaded songs. Only the links' folders move.
+    private func moveOldLinks() {
+        let fm = FileManager.default
+        let old = Self.folder.deletingLastPathComponent().appending(path: "Links")
+        for name in (try? fm.contentsOfDirectory(atPath: old.path)) ?? [] where Self.isToken(name) {
+            try? fm.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+            try? fm.moveItem(at: old.appending(path: name), to: Self.folder.appending(path: name))
         }
     }
 

@@ -255,7 +255,7 @@ Spotify plays on the device that Spotify Connect has picked. When that is anothe
 
 #### Links
 
-`--link` copies the file into `~/Library/Caches/Muskey/Links/<token>/`, where the token is 128 random bits, and prints `http://<address>:25471/l/<token>/<name>`. The address is Tailscale's when it is up, or else the local network's.
+`--link` copies the file into `~/Library/Caches/Muskey/Shared/<token>/`, where the token is 128 random bits, and prints `http://<address>:25471/l/<token>/<name>`. The address is Tailscale's when it is up, or else the local network's.
 
 The server in `WebServer.swift` listens on port 25471 of each private address of the Mac, and never on all of them: RFC 1918 and link-local IPv4, 100.64/10 on a tunnel interface only (on Wi-Fi it is a carrier's shared range), IPv6 unique-local, and 127.0.0.1. A request names only a token, so no path from the network reaches the disk. Files go out with byte ranges, which Safari needs to play audio. The links keep working after a restart, and the folder's date ends them after three days.
 
