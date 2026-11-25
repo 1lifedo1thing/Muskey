@@ -260,6 +260,9 @@ private struct GeneralPane: View {
             Section("Menu bar icon") {
                 MenuBarIconTiles(icon: $prefs.menuBarIcon)
             }
+            Section("Command line") {
+                CLIToolRow()
+            }
             Section("Startup") {
                 Toggle("Launch at login", isOn: $prefs.launchAtLogin)
             }
@@ -274,6 +277,82 @@ private struct GeneralPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Install links the `muskey` tool into `~/.local/bin`, and Add to PATH appears while a shell config lacks that folder.
+/// The files are read and written off the main thread, since a shell config can sit on a slow or stalled disk.
+private struct CLIToolRow: View {
+    @State private var installed = false
+    @State private var needsPath = false
+    @State private var addedPath = false
+    @State private var failure: String?
+    @State private var working = false
+
+    var body: some View {
+        LabeledContent("Command line tool") {
+            HStack(spacing: 8) {
+                // The failure takes the place of the pills, so the row stays on one line.
+                if installed, failure == nil {
+                    pill(ShellIntegration.shownLink, monospaced: true)
+                    if addedPath {
+                        pill("Added to PATH")
+                            .help("Restart the shell to use muskey")
+                    } else if needsPath {
+                        Button("Add to PATH") { run(ShellIntegration.addToPath) { addedPath = true } }
+                            .help("Add ~/.local/bin to the PATH in .zshrc, .bashrc and config.fish")
+                    }
+                }
+                if failure != nil {
+                    Button("Retry") { run(ShellIntegration.install) }
+                }
+                Button(installed ? "Reinstall" : "Install") { run(ShellIntegration.install) }
+                    .tint(failure == nil ? nil : .red)
+                    .buttonStyle(.borderedProminent)
+                    .help(failure ?? "")
+                    .overlay(alignment: .topTrailing) {
+                        if failure != nil {
+                            Button { failure = nil } label: {
+                                Image(systemName: "xmark.circle.fill").font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .offset(x: 5, y: -5)
+                        }
+                    }
+            }
+            .disabled(working)
+        }
+        .task { await refresh() }
+    }
+
+    private func pill(_ text: String, monospaced: Bool = false) -> some View {
+        Text(verbatim: text)
+            .font(.system(size: 11, design: monospaced ? .monospaced : .default))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(.quaternary))
+    }
+
+    private func refresh() async {
+        let state = await Task.detached(priority: .userInitiated) { (ShellIntegration.installed, ShellIntegration.needsPath) }.value
+        installed = state.0
+        needsPath = state.1
+    }
+
+    private func run(_ action: @escaping @Sendable () throws -> Void, then done: @escaping () -> Void = {}) {
+        working = true
+        Task {
+            let error = await Task.detached(priority: .userInitiated) { () -> String? in
+                do { try action(); return nil } catch { return error.localizedDescription }
+            }.value
+            failure = error
+            if error == nil { done() }
+            await refresh()
+            working = false
+        }
     }
 }
 
