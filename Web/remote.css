@@ -54,6 +54,21 @@
     }
 }
 
+/* Insets measured by remote.js, since WebKit reads env() as 0 on an installed app's cold launch. */
+:root {
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --edge: 0px;
+    --top: max(var(--safe-top), var(--edge));
+}
+/* Installed from the Home Screen (flagged by remote.js, since iOS doesn't match display-mode there). iOS 26 paints a
+   soft band over the top 30 points of an installed app, over everything, so nothing readable goes there. */
+html[data-standalone] { --edge: 34px; }
+/* An iPhone shows no status bar in landscape, so there's nothing to keep clear at the top. */
+@media (orientation: landscape) and (max-height: 500px) {
+    html[data-standalone] { --edge: 0px; }
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 /* The page scrolls and never zooms: a double tap or a pinch zoomed it, as it would a document. */
@@ -111,8 +126,8 @@ button:disabled { cursor: default; }
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: calc(52px + env(safe-area-inset-top));
-    padding: env(safe-area-inset-top) var(--gutter) 0;
+    min-height: calc(52px + var(--top));
+    padding: var(--top) var(--gutter) 0;
     background: var(--bar);
     -webkit-backdrop-filter: saturate(1.6) blur(20px);
     backdrop-filter: saturate(1.6) blur(20px);
@@ -144,7 +159,7 @@ button:disabled { cursor: default; }
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: calc(18px + env(safe-area-inset-top)) 14px 4px;
+    padding: calc(18px + var(--top)) 14px 4px;
 }
 .large-title h1 { margin: 0; font-size: 34px; font-weight: 800; letter-spacing: -0.01em; }
 /* The Mac that the remote talks to, with a dot that turns red while the Mac doesn't answer. */
@@ -170,7 +185,7 @@ button:disabled { cursor: default; }
     bottom: 0;
     z-index: 5;
     margin: 16px calc(-1 * var(--gutter)) 0;
-    padding: 10px var(--gutter) calc(10px + env(safe-area-inset-bottom));
+    padding: 10px var(--gutter) calc(10px + var(--safe-bottom));
     background: var(--bar);
     -webkit-backdrop-filter: saturate(1.6) blur(20px);
     backdrop-filter: saturate(1.6) blur(20px);
@@ -270,7 +285,7 @@ button:disabled { cursor: default; }
 .song-row .pills { margin: 0; flex-wrap: nowrap; }
 .chevron { --symbol: url(/api/symbol/chevron.right); width: 12px; height: 12px; color: color-mix(in srgb, var(--muted) 45%, transparent); }
 .empty { padding: 18px 14px; text-align: center; color: color-mix(in srgb, var(--muted) 70%, transparent); font-size: 15px; }
-.head { display: flex; gap: 10px; align-items: center; padding: calc(10px + env(safe-area-inset-top)) 0 0; }
+.head { display: flex; gap: 10px; align-items: center; padding: calc(10px + var(--top)) 0 0; }
 .head #song-cover { display: block; line-height: 0; }
 .head .grow { flex: 1; min-width: 0; }
 /* The cover and the title with the artist are one unit, centred on each other; the title takes two lines at most. */
@@ -323,6 +338,29 @@ a.button { text-decoration: none; }
 .button.big { height: 52px; border-radius: 16px; font-size: 17px; }
 #link-play { min-width: 84px; }
 .open-row { width: 100%; text-align: left; font-size: 17px; font-weight: 500; }
+/* Install Muskey: the browser's install dialog on a tap, or the steps of Safari in a pill, with ✕ to hide it. */
+.install-row { padding: 0 6px 0 0; gap: 0; }
+.install-main {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 8px 12px 14px;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 17px;
+    font-weight: 500;
+    text-align: left;
+}
+.install-main > .icon:first-child { width: 20px; height: 20px; color: var(--honey-text); }
+.install-main .grow { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+.install-label { white-space: nowrap; }
+.install-hide { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 50%; background: none; color: var(--muted); }
+.install-hide .icon { width: 12px; height: 12px; }
+.install-hide:active { background: var(--fill); }
 .open-row:active { background: var(--fill-2); }
 .open-row > .icon:first-child { width: 20px; height: 20px; color: var(--honey-text); }
 .open-row.failed { color: var(--failed); }
@@ -334,7 +372,7 @@ a.button { text-decoration: none; }
     top: 0;
     z-index: 2;
     margin: 0 calc(-1 * var(--gutter)) 10px;
-    padding: env(safe-area-inset-top) var(--gutter) 10px;
+    padding: var(--top) var(--gutter) 10px;
     background: var(--bg);
 }
 .files-bar { display: flex; align-items: center; gap: 6px; height: 52px; }
@@ -519,7 +557,7 @@ a.button { text-decoration: none; }
     .segments button[aria-pressed="true"] { background: rgb(255 247 245 / 0.16); }
 }
 /* The sheet fills the screen between the bar at the top and the transport at the bottom. */
-#sheet { height: calc(100dvh - 240px - env(safe-area-inset-bottom)); min-height: 380px; margin-top: 12px; border-radius: 16px; overflow: hidden; scroll-margin-top: 64px; }
+#sheet { height: calc(100dvh - 240px - var(--safe-bottom)); min-height: 380px; margin-top: 12px; border-radius: 16px; overflow: hidden; scroll-margin-top: 64px; }
 
 /* The play button of the transport */
 .play {

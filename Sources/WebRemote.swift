@@ -129,7 +129,7 @@ struct WebNotes: Encodable {
         "music.mic", "metronome.fill", "hifispeaker.fill", "guitars.fill", "pianokeys", "music.quarternote.3", "wind", "headphones",
         "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "speaker.wave.2.fill", "speaker.slash.fill",
         "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear", "minus", "plus", "gobackward.5", "goforward.5", "iphone",
-        "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down",
+        "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down", "arrow.down.app", "square.and.arrow.up",
     ]
 
     /// The icon of a running app, 96 pixels square. Only running apps, so the page can't ask what else is installed.

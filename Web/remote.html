@@ -24,6 +24,21 @@
         <div class="mac" id="mac" hidden><span class="dot"></span><span id="mac-name"></span></div>
     </header>
 
+    <section class="section" id="install-section" hidden>
+        <div class="card">
+            <div class="row install-row">
+                <button class="install-main" id="install">
+                    <span class="icon" id="install-icon"></span>
+                    <span class="grow">
+                        <span class="install-label">Install Muskey</span>
+                        <span class="pill" id="install-hint" hidden>Share › Add to Home Screen</span>
+                    </span>
+                </button>
+                <button class="install-hide" id="install-hide" aria-label="Hide"><span class="icon" style="--symbol: url(/api/symbol/xmark)"></span></button>
+            </div>
+        </div>
+    </section>
+
     <section class="section">
         <div class="label">Now playing</div>
         <div class="card" id="now-card">

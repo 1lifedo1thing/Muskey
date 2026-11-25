@@ -112,6 +112,47 @@
     for (const type of ["gesturestart", "gesturechange"]) document.addEventListener(type, (event) => event.preventDefault(), { passive: false });
     addEventListener("unhandledrejection", (event) => report(`unhandled: ${event.reason?.message || event.reason}`));
 
+    // MARK: Installed app
+
+    // Installed from the Home Screen. `display-mode: standalone` is false inside an installed iOS app, so
+    // navigator.standalone counts too, which only iOS sets.
+    const standalone = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+    if (standalone) document.documentElement.dataset.standalone = "";
+
+    // WebKit doesn't set env(safe-area-inset-*) until the viewport geometry changes, so an installed app's cold launch
+    // reads 0 and the transport slides under the home indicator. A probe measures them instead, and the CSS keeps
+    // env() for every other browser.
+    const measureInset = (side) => {
+        const probe = document.createElement("div");
+        probe.style.cssText = `position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;width:0;height:env(safe-area-inset-${side}, 0px)`;
+        document.body.append(probe);
+        const value = probe.offsetHeight;
+        probe.remove();
+        return value;
+    };
+    const syncInsets = () => {
+        const insets = { top: measureInset("top"), bottom: measureInset("bottom") };
+        for (const [side, value] of Object.entries(insets)) document.documentElement.style.setProperty(`--safe-${side}`, `${value}px`);
+        return insets;
+    };
+    // Flipping viewport-fit for a frame counts as the geometry change that WebKit waits for. Zero can also be the
+    // truth (a phone without a notch), so it only nudges and measures again.
+    if (Object.values(syncInsets()).every((value) => value === 0) && standalone) {
+        const meta = document.querySelector('meta[name="viewport"]');
+        const original = meta?.getAttribute("content") || "";
+        if (original.includes("viewport-fit=cover")) {
+            meta.setAttribute("content", original.replace("viewport-fit=cover", "viewport-fit=auto"));
+            requestAnimationFrame(() => meta.setAttribute("content", original));
+            setTimeout(syncInsets, 120);
+            setTimeout(syncInsets, 600);
+        }
+    }
+    addEventListener("orientationchange", () => setTimeout(syncInsets, 300));
+    screen.orientation?.addEventListener("change", () => setTimeout(syncInsets, 300));
+
+    // The offline page of the installed app needs HTTPS, which the Mac serves only on its Tailscale name.
+    if (location.protocol === "https:" && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+
     // The tests on a simulator open the page with ?testmute, which keeps the stream at zero volume, so that the Mac
     // running the simulator stays quiet. iOS decides whether the sound may start before the volume matters.
     const testMute = (() => {
@@ -1533,6 +1574,43 @@
         }
     }
 
+    // MARK: Install
+
+    /** Install Muskey shows in a browser that can install the page: on a tap, the browser's install dialog where the
+     * browser offers one (Chrome, Android, over HTTPS), or the steps in Safari's Share menu on an iPhone or iPad. */
+    const INSTALL_HIDDEN_KEY = "muskey:install-hidden";
+    const appleTouch = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    let installPrompt = null;
+
+    function installHidden() {
+        try {
+            return localStorage.getItem(INSTALL_HIDDEN_KEY) === "1";
+        } catch {
+            return false;
+        }
+    }
+
+    function drawInstall() {
+        const shown = !standalone && !installHidden() && (installPrompt !== null || appleTouch);
+        $("install-section").hidden = !shown;
+        if (!shown) return;
+        $("install-icon").style.setProperty("--symbol", symbol(installPrompt ? "arrow.down.app" : "square.and.arrow.up"));
+        $("install-hint").hidden = installPrompt !== null;
+    }
+
+    addEventListener("beforeinstallprompt", (event) => {
+        event.preventDefault();
+        installPrompt = event;
+        drawInstall();
+    });
+    addEventListener("appinstalled", () => {
+        installPrompt = null;
+        try {
+            localStorage.setItem(INSTALL_HIDDEN_KEY, "1");
+        } catch {}
+        drawInstall();
+    });
+
     // MARK: Files on the Mac
 
     let filesQuery = null;
@@ -1625,6 +1703,26 @@
         sendFile(file);
     };
     $("mac-files").onclick = openFiles;
+    $("install").onclick = async () => {
+        // Safari has no install dialog, and the pill on the row names the steps.
+        if (!installPrompt) return;
+        const prompt = installPrompt;
+        installPrompt = null;
+        try {
+            await prompt.prompt();
+            report(`install: ${(await prompt.userChoice).outcome}`, "info");
+        } catch (error) {
+            report(`install: ${error.message}`);
+        }
+        drawInstall();
+    };
+    $("install-hide").onclick = () => {
+        try {
+            localStorage.setItem(INSTALL_HIDDEN_KEY, "1");
+        } catch {}
+        drawInstall();
+    };
+    drawInstall();
     $("files-search").oninput = () => {
         clearTimeout(filesTimer);
         filesTimer = setTimeout(loadFiles, 200);
