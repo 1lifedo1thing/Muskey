@@ -3136,6 +3136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.mute = { [weak self] in self?.setOutputMuted($0) }
         WebRemote.shared.transport = { [weak self] in self?.remoteTransport($0) }
         WebRemote.shared.songShown = { [weak self] in self?.remoteSongShown() }
+        WebRemote.shared.loop = { [weak self] in self?.remoteLoop($0) }
+        WebRemote.shared.waveform = { [weak self] in self?.model.wave.waveform }
         WebRemote.shared.log = { [weak self] in self?.log($0) }
         WebStream.shared.log = { [weak self] line in DispatchQueue.main.async { self?.log(line) } }
         WebStream.shared.onListening = { [weak self] on in self?.phoneListens(on) }
@@ -3307,7 +3309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // While the stems play seconds behind the player, the phone shows the moment that is heard, as the lyrics do.
             position: seeked ?? track?.position(at: Date()).map { max(0, $0 - pitch.stemsDelay) }, duration: track?.duration,
             seekable: model.seekable, mac: Self.macName,
-            mutedStems: model.stemsMuted.map { $0.name.lowercased() }.sorted()
+            mutedStems: model.stemsMuted.map { $0.name.lowercased() }.sorted(),
+            loop: model.loop.map { WebRemote.State.Loop(start: $0.start, end: $0.end) },
+            wave: model.wave.waveform.map { wave in wave.levels.count &* 7919 &+ wave.levels.reduce(0) { $0 + ($1 > 0 ? 1 : 0) } }
         )
     }
 
@@ -3346,6 +3350,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var remoteWarmedAt = Date.distantPast
+
+    /// The region loop from the phone: a tap on its loop button works as R does, a drag across the waveform sets the
+    /// loop where the finger went, and a handle moves one end.
+    @MainActor private func remoteLoop(_ action: WebLoop) {
+        switch action.action {
+        case "press":
+            pressLoop(snapping: true)
+        case "set":
+            guard let start = action.start, let end = action.end, end > start + 0.25, model.seekable else { return }
+            let duration = nowPlaying.track?.duration ?? end
+            loopSnap?.cancel()
+            withAnimation(.easeOut(duration: 0.2)) { model.loop = LoopRegion(start: max(0, start), end: min(end, duration)) }
+            loopSong = nowPlaying.track?.song
+            log(String(format: "region loop from the phone: %.2f s to %.2f s", start, end))
+            applyLoop()
+        case "move":
+            guard let loop = model.loop, let seconds = action.seconds else { return }
+            let end: LoopEnd = action.which == "end" ? .end : .start
+            setLoopEnd(end, loop.clamped(end, seconds, duration: nowPlaying.track?.duration ?? .infinity))
+        default:
+            clearLoop()
+        }
+    }
 
     /// A phone shows the song, so the stems model is loaded as it is for a pointer over the HUD, and a tap on an
     /// instrument starts the stems in a second instead of waiting for the model. It is freed 15 minutes after the

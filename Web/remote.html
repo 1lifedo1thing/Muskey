@@ -42,11 +42,11 @@
         <div class="label">Open</div>
         <div class="card">
             <form class="row" id="link-form" novalidate>
-                <input class="field" id="link" type="url" inputmode="url" placeholder="Spotify, YouTube or other link" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Link">
+                <textarea class="field link-field" id="link" rows="2" inputmode="url" enterkeyhint="go" placeholder="Paste a link to a Spotify song, YouTube video, etc." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Link"></textarea>
                 <button class="button primary" id="link-play" type="submit"><span class="label-text">Play</span></button>
             </form>
-            <button class="row open-row" id="upload"><span class="icon" style="--symbol: url(/api/symbol/iphone)"></span><span class="grow label-text">File from this phone</span><span class="icon chevron"></span></button>
-            <button class="row open-row" id="mac-files"><span class="icon" style="--symbol: url(/api/symbol/macbook)"></span><span class="grow">Files on the Mac</span><span class="icon chevron"></span></button>
+            <button class="row open-row" id="upload"><span class="icon" style="--symbol: url(/api/symbol/iphone)"></span><span class="grow label-text">Open a file from this phone</span><span class="icon chevron"></span></button>
+            <button class="row open-row" id="mac-files"><span class="icon" style="--symbol: url(/api/symbol/macbook)"></span><span class="grow">Open a file from the Mac</span><span class="icon chevron"></span></button>
         </div>
         <input type="file" id="upload-file" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav,.aif,.aiff,.flac,.ogg,.opus,.mp4,.mov,.mkv,.webm" hidden>
         <div class="error-line" id="open-error" hidden></div>
@@ -89,16 +89,6 @@
     </div>
 
     <section class="section">
-        <div class="card row output" role="group" aria-label="Output">
-            <span class="row-label">Output</span>
-            <div class="segments two">
-                <button id="out-mac" aria-pressed="true"><span class="icon" style="--symbol: url(/api/symbol/macbook)"></span><span class="label-text">Mac</span></button>
-                <button id="out-phone" aria-pressed="false"><span class="icon" style="--symbol: url(/api/symbol/iphone)"></span><span class="label-text">Phone</span></button>
-            </div>
-        </div>
-    </section>
-
-    <section class="section">
         <div class="label">Key <span class="pill" id="change-pill" hidden></span></div>
         <div class="keyrow" id="keyrow">
             <button class="step down" id="key-down" aria-label="Semitone down"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
@@ -126,6 +116,15 @@
         <div class="card padded"><div class="stems" id="stems" role="group" aria-label="Instruments"></div></div>
     </section>
 
+    <section class="section" id="save-section">
+        <div class="label">Save</div>
+        <div class="card padded">
+            <button class="button big" id="save" style="width: 100%"><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Save song</span></button>
+            <a class="button big primary" id="save-link" style="width: 100%" hidden><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Download</span></a>
+            <div class="error-line" id="save-error" hidden></div>
+        </div>
+    </section>
+
     <section class="section" id="notes-section">
         <div class="label">Notes</div>
         <div class="card padded">
@@ -139,16 +138,30 @@
     <footer class="dock">
         <div class="error-line" id="song-error" hidden></div>
         <div class="transport" id="transport">
-            <div class="scrub">
+            <div class="wave" id="wave" aria-label="Position and region loop">
+                <canvas id="wave-canvas"></canvas>
+                <div class="wave-selection" id="wave-selection" hidden></div>
+                <div class="playhead" id="playhead"></div>
+                <button class="loop-end" id="end-start" data-end="start" aria-label="Loop start" hidden><span class="tab">A</span></button>
+                <button class="loop-end" id="end-end" data-end="end" aria-label="Loop end" hidden><span class="tab">B</span></button>
+            </div>
+            <div class="clocks">
                 <span class="clock" id="mac-elapsed">0:00</span>
-                <input type="range" id="mac-seek" min="0" max="1000" value="0" aria-label="Position">
+                <span class="loop-time" id="loop-time"></span>
                 <span class="clock" id="mac-left">0:00</span>
             </div>
             <div class="transport-buttons">
-                <button class="round" id="mac-back" aria-label="Back 5 seconds"><span class="icon" style="--symbol: url(/api/symbol/gobackward.5)"></span></button>
+                <button class="round side" id="loop-button" aria-label="Start loop"><span class="icon" style="--symbol: url(/api/symbol/repeat)"></span></button>
+                <button class="round" id="mac-back" aria-label="Back 5 seconds"><span class="icon" id="back-icon" style="--symbol: url(/api/symbol/gobackward.5)"></span></button>
                 <button class="play" id="mac-play" aria-label="Play"><span class="icon" id="mac-play-icon" style="--symbol: url(/api/symbol/play.fill)"></span></button>
-                <button class="round" id="mac-forward" aria-label="Forward 5 seconds"><span class="icon" style="--symbol: url(/api/symbol/goforward.5)"></span></button>
+                <button class="round" id="mac-forward" aria-label="Forward 5 seconds"><span class="icon" id="forward-icon" style="--symbol: url(/api/symbol/goforward.5)"></span></button>
+                <button class="round side" id="output-button" aria-label="Output: Mac" aria-haspopup="menu" aria-expanded="false"><span class="icon" id="output-icon" style="--symbol: url(/api/symbol/macbook)"></span></button>
             </div>
+        </div>
+        <div class="menu" id="output-menu" role="menu" aria-label="Output" hidden>
+            <div class="menu-title">Output</div>
+            <button role="menuitemradio" id="out-mac" aria-checked="true"><span class="icon" style="--symbol: url(/api/symbol/macbook)"></span><span class="grow">Mac</span><span class="icon check" style="--symbol: url(/api/symbol/checkmark)"></span></button>
+            <button role="menuitemradio" id="out-phone" aria-checked="false"><span class="icon" style="--symbol: url(/api/symbol/iphone)"></span><span class="grow">This phone</span><span class="icon check" style="--symbol: url(/api/symbol/checkmark)"></span></button>
         </div>
     </footer>
 </div>

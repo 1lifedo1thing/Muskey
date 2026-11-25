@@ -24,6 +24,7 @@
     --blue-tint: oklch(0.74 0.055 245 / 0.2);
     --blue-text: oklch(0.45 0.055 245);
     --failed: oklch(0.58 0.2 25);
+    --failed-text: oklch(0.5 0.2 25);
     --font: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     --gutter: 16px;
     accent-color: var(--honey);
@@ -49,6 +50,7 @@
         --blue-tint: oklch(0.66 0.055 245 / 0.22);
         --blue-text: oklch(0.85 0.055 245);
         --failed: oklch(0.64 0.2 25);
+        --failed-text: oklch(0.78 0.14 25);
     }
 }
 
@@ -276,6 +278,9 @@ button:disabled { cursor: default; }
     background: var(--fill);
     font-size: 16px;
 }
+/* The link field wraps, so the whole placeholder shows, and so does a long link once it is pasted. */
+.link-field { height: auto; min-height: 56px; padding: 8px 14px; resize: none; line-height: 1.3; font-size: 16px; overflow: hidden; word-break: break-all; }
+.link-field::placeholder { word-break: normal; }
 .field::placeholder { color: color-mix(in srgb, var(--muted) 55%, transparent); }
 
 /* Buttons */
@@ -293,6 +298,8 @@ button:disabled { cursor: default; }
     white-space: nowrap;
 }
 .button.primary { background: var(--honey); color: var(--honey-ink); }
+a.button { text-decoration: none; }
+#save-link { margin-top: 10px; }
 .button.big { height: 52px; border-radius: 16px; font-size: 17px; }
 #link-play { min-width: 84px; }
 .open-row { width: 100%; text-align: left; font-size: 17px; font-weight: 500; }
@@ -325,8 +332,34 @@ button:disabled { cursor: default; }
 }
 @keyframes shine { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 .song-row.failed .song-artist { color: var(--failed); font-weight: 600; }
-.error-line { padding: 6px 14px 0; font-size: 13px; font-weight: 600; color: var(--failed); }
-.dock .error-line { padding: 0 4px; text-align: center; }
+/* What went wrong, under the control that failed: a tinted notice with a warning symbol, in full sentences. */
+.error-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--failed) 11%, transparent);
+    color: var(--failed-text);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+.error-line::before {
+    content: "";
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin-top: 1.5px;
+    background: currentColor;
+    -webkit-mask: url(/api/symbol/exclamationmark.triangle.fill) center / contain no-repeat;
+    mask: url(/api/symbol/exclamationmark.triangle.fill) center / contain no-repeat;
+}
+.error-line[hidden] { display: none; }
+.section > .error-line { margin-left: 4px; margin-right: 4px; }
+.dock .error-line { margin-top: 0; }
 .button:disabled { opacity: 0.5; }
 .button:not(:disabled):active { filter: brightness(0.94); }
 
@@ -461,10 +494,6 @@ button:disabled { cursor: default; }
 .segments button .icon { width: 18px; height: 18px; }
 .segments button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); }
 /* Output: where the Mac's sound is heard. */
-.output .segments { flex: 1; margin-left: 8px; }
-.segments.two { grid-template-columns: 1fr 1fr; }
-.segments.two button { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: 15px; font-weight: 600; }
-.segments.two button .icon { width: 17px; height: 17px; }
 .segments button.failed { background: var(--failed); color: white; }
 @media (prefers-color-scheme: dark) {
     .segments button[aria-pressed="true"] { background: rgb(255 247 245 / 0.16); }
@@ -486,13 +515,73 @@ button:disabled { cursor: default; }
 .play .icon { width: 17px; height: 17px; }
 
 /* Play, pause and seek of the song that plays on the Mac */
-.transport { display: grid; gap: 2px; }
-.scrub { display: flex; align-items: center; gap: 10px; }
-.scrub input[type="range"] { flex: 1; min-width: 0; height: 40px; margin: 0; }
-.scrub .clock { flex: none; width: 44px; font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--muted) 80%, transparent); }
-.scrub .clock:last-child { text-align: right; }
-.transport.unknown .scrub { display: none; }
-.transport-buttons { display: flex; align-items: center; justify-content: center; gap: 36px; }
+.transport { display: grid; gap: 4px; }
+
+/* The waveform takes the place of a seek bar: a tap moves the song there, a drag across it makes a region loop, and
+   the A and B tabs of the loop move its ends. It takes every touch, so a drag never scrolls the page. */
+.wave { position: relative; height: 64px; margin-top: 18px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.wave canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.transport.unknown .wave, .transport.unknown .clocks { display: none; }
+.playhead { position: absolute; top: -3px; bottom: -3px; left: 0; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--ink); pointer-events: none; will-change: transform; }
+.wave-selection { position: absolute; top: 0; bottom: 0; border-radius: 6px; background: var(--honey-tint); outline: 1.5px solid var(--honey); pointer-events: none; }
+/* The ends of the loop: a line through the waveform with a tab above it, like the HUD's, on a strip as wide as a finger. */
+.loop-end { position: absolute; top: -20px; bottom: -3px; width: 44px; margin-left: -22px; display: flex; flex-direction: column; align-items: center; }
+.loop-end::after { content: ""; flex: 1; width: 2px; border-radius: 1px; background: var(--honey); }
+.loop-end .tab {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 18px;
+    border-radius: 6px;
+    background: var(--honey);
+    color: var(--honey-ink);
+    font-size: 11px;
+    font-weight: 800;
+}
+/* As in the HUD, the A tab ends at its line and the B tab starts at its line, so a short loop shows both, and each
+   end takes the touches on its own side. */
+.loop-end[data-end="start"] { margin-left: -38px; align-items: flex-end; }
+.loop-end[data-end="start"]::after { margin-right: 5px; }
+.loop-end[data-end="start"] .tab { margin-right: 6px; border-bottom-right-radius: 0; }
+.loop-end[data-end="end"] { margin-left: -6px; align-items: flex-start; }
+.loop-end[data-end="end"]::after { margin-left: 5px; }
+.loop-end[data-end="end"] .tab { margin-left: 6px; border-bottom-left-radius: 0; }
+.loop-end.selected .tab { width: 28px; height: 20px; box-shadow: 0 0 0 3px var(--honey-tint); }
+.loop-end.selected::after { width: 3px; }
+.clocks { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.clocks .clock { flex: none; min-width: 44px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--muted) 80%, transparent); }
+.clocks .clock:last-child { text-align: right; }
+.loop-time { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--honey-text); }
+.transport-buttons { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }
+/* The loop button on the left and the output button on the right, as in a music app's bar. */
+.transport .side .icon { width: 21px; height: 21px; }
+#loop-button.started { color: var(--honey-text); box-shadow: inset 0 0 0 2px var(--honey); }
+#loop-button.on { background: var(--honey); color: var(--honey-ink); }
+@media (prefers-reduced-motion: no-preference) {
+    #loop-button.started { animation: pulse 1.2s ease-in-out infinite; }
+}
+#output-button.phone { color: var(--honey-text); background: var(--honey-tint); }
+#output-button.failed { color: white; background: var(--failed); }
+
+/* The output menu, above the output button */
+.menu {
+    position: absolute;
+    right: var(--gutter);
+    bottom: calc(100% - 8px);
+    min-width: 220px;
+    padding: 6px;
+    border-radius: 18px;
+    background: var(--card);
+    border: 0.5px solid var(--card-line);
+    box-shadow: 0 12px 36px rgb(0 0 0 / 0.18);
+}
+.menu-title { padding: 6px 12px 4px; font-size: 13px; font-weight: 600; color: color-mix(in srgb, var(--muted) 70%, transparent); }
+.menu button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 0 12px; border-radius: 12px; font-size: 17px; font-weight: 500; text-align: left; }
+.menu button:active { background: var(--fill); }
+.menu .icon { width: 20px; height: 20px; }
+.menu .grow { flex: 1; }
+.menu .check { width: 16px; height: 16px; color: var(--honey-text); visibility: hidden; }
+.menu [aria-checked="true"] .check { visibility: visible; }
 .transport .round { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); }
 .transport .round .icon { width: 24px; height: 24px; }
 .transport .round:disabled { opacity: 0.3; }

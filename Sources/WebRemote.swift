@@ -42,6 +42,10 @@ struct WebNotes: Encodable {
     var mute: (Bool) -> Void = { _ in }
     /// Plays or pauses the song that plays on the Mac, or moves it, as the HUD's Space and arrow keys do.
     var transport: (WebTransport) -> Void = { _ in }
+    /// A change of the region loop from the phone.
+    var loop: (WebLoop) -> Void = { _ in }
+    /// The waveform of the song that plays, as the HUD draws it.
+    var waveform: () -> SongWaveform? = { nil }
     /// The phone shows the song that plays, where a tap on an instrument can come at any moment.
     var songShown: () -> Void = {}
     /// Muskey's log, which also gets what the page reports: failed requests, audio errors and plays that iOS refused.
@@ -93,10 +97,19 @@ struct WebNotes: Encodable {
         var mutedStems: [String] = []
         /// Phones that hear the Mac's output.
         var listeners = 0
+        /// The region loop: its start, and its end once it is set.
+        var loop: Loop?
+        /// Changes whenever the waveform has more of the song, so the page fetches it again only then.
+        var wave: Int?
+
+        struct Loop: Encodable {
+            let start: Double
+            let end: Double?
+        }
 
         enum CodingKeys: CodingKey {
             case title, artist, app, playing, listening, key, shift, relative, bpm, speed, cover, muted, relativeKeys, song, position, duration,
-                 seekable, mac, mutedStems, listeners
+                 seekable, mac, mutedStems, listeners, loop, wave
         }
     }
 
@@ -105,6 +118,7 @@ struct WebNotes: Encodable {
         "music.mic", "metronome.fill", "hifispeaker.fill", "guitars.fill", "pianokeys", "music.quarternote.3", "wind", "headphones",
         "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "speaker.wave.2.fill", "speaker.slash.fill",
         "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear", "minus", "plus", "gobackward.5", "goforward.5", "iphone",
+        "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down",
     ]
 
     /// A symbol as a black PNG at three times its point size, which the page uses as a mask to colour it.
@@ -326,6 +340,16 @@ struct WebNotes: Encodable {
             }
             await MainActor.run { shared.transport(action) }
             return WebResponse(status: 204)
+        case "api/loop" where request.method == "POST" && parts.count == 2:
+            guard let action = try? JSONDecoder().decode(WebLoop.self, from: request.body), action.valid else {
+                return .text("Unreadable request", status: 400)
+            }
+            await MainActor.run { shared.loop(action) }
+            return WebResponse(status: 204)
+        case "api/waveform" where reads && parts.count == 2:
+            // The levels as the HUD keeps them, 50 a second and one byte each, 0 for a moment that wasn't heard yet.
+            guard let wave = await MainActor.run(body: { shared.waveform() }) else { return .notFound }
+            return json(WebWave(duration: wave.duration, rate: SongWaveform.rate, levels: wave.levels.base64EncodedString()))
         case "api/mute" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode([String: Bool].self, from: request.body), let muted = body["muted"] else {
                 return .text("Unreadable request", status: 400)
@@ -586,6 +610,33 @@ struct WebNotes: Encodable {
         }
         return Self.json(WebJob(CLIService.shared.handle(request)))
     }
+}
+
+/// A change of the region loop: `press` as R does it (start, end, then clear), `set` from `start` to `end` after a drag
+/// across the waveform, `move` of the `which` end (`start` or `end`) to `seconds`, and `clear`.
+struct WebLoop: Decodable {
+    let action: String
+    let start: Double?
+    let end: Double?
+    let which: String?
+    let seconds: Double?
+
+    var valid: Bool {
+        let finite = { (value: Double?) in value.map { $0.isFinite && $0 >= 0 } ?? false }
+        switch action {
+        case "press", "clear": return true
+        case "set": return finite(start) && finite(end)
+        case "move": return (which == "start" || which == "end") && finite(seconds)
+        default: return false
+        }
+    }
+}
+
+struct WebWave: Encodable {
+    let duration: Double
+    let rate: Double
+    /// Base64 of one byte per level.
+    let levels: String
 }
 
 /// A play, pause or move of the song that plays on the Mac: `play`, `pause`, `back`, `forward`, or `seek` to `seconds`.

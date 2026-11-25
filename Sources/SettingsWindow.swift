@@ -292,18 +292,28 @@ private struct RemotePane: View {
 
     var body: some View {
         Form {
-            Section("Command line") {
+            Section {
                 CLIToolRow()
             }
             Section("Web remote") {
-                Toggle("Web remote", isOn: $prefs.webRemote)
+                Toggle(isOn: $prefs.webRemote) {
+                    Text("Web remote")
+                    Text("Access Muskey on your Mac from your phone through web interface")
+                }
                 if prefs.webRemote {
                     PairingControls(prefs: prefs)
                 }
             }
             if prefs.webRemote {
-                Section("Folders") {
+                Section {
                     RemoteFolders(prefs: prefs)
+                } header: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Music folders")
+                        Text("Folders in which Muskey will look for audio files for presenting them in the song picker")
+                            .font(.subheadline.weight(.regular))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }

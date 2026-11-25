@@ -354,6 +354,8 @@
         muted = new Set(state.mutedStems || []);
         touched = 0;
         songCover = undefined;
+        $("save-link").hidden = true;
+        pickedEnd = null;
         drawSong();
         drawAll();
         show("song");
@@ -380,7 +382,7 @@
             $("song-cover").replaceChildren(cover(source, true));
         }
         // The notes need the song's file, which links and files have, and other players' songs don't.
-        $("notes-section").hidden = !state.song;
+        $("notes-section").hidden = $("save-section").hidden = !state.song;
         drawTransport();
         drawOutput();
         // The Mac's state wins, unless a change was just made here and the Mac hasn't applied it yet.
@@ -610,22 +612,22 @@
         return Math.min(state.position + since, state.duration ?? Infinity);
     }
 
-    let macSeeking = false;
     function drawTransport() {
         if (!open || !state) return;
         $("mac-play-icon").style.setProperty("--symbol", symbol(state.playing ? "pause.fill" : "play.fill"));
         $("mac-play").setAttribute("aria-label", state.playing ? "Pause" : "Play");
         const position = macPosition();
-        const duration = state.duration || 0;
+        const duration = songDuration();
         const known = position != null && duration > 0;
         $("transport").classList.toggle("unknown", !known);
-        for (const id of ["mac-seek", "mac-back", "mac-forward"]) $(id).disabled = !known || !state.seekable;
+        for (const id of ["mac-back", "mac-forward", "loop-button"]) $(id).disabled = !known || !state.seekable;
         if (known) {
-            if (!macSeeking) $("mac-seek").value = String(Math.round((position / duration) * 1000));
-            const at = macSeeking ? (Number($("mac-seek").value) / 1000) * duration : position;
-            $("mac-elapsed").textContent = clock(at);
-            $("mac-left").textContent = `−${clock(duration - at)}`;
+            $("mac-elapsed").textContent = clock(position);
+            $("mac-left").textContent = `−${clock(Math.max(0, duration - position))}`;
         }
+        drawLoopControls();
+        loadWave();
+        drawWave();
         if (sheet) {
             sheet.setTime(Math.max(0, (position ?? 0) - (output === "phone" ? player.lag() : 0)));
             sheet.setPlaying(Boolean(state.playing), speed);
@@ -639,6 +641,286 @@
         } finally {
             setTimeout(refreshState, 300);
         }
+    }
+
+    // MARK: Waveform and region loop
+
+    /** The levels of the song as the HUD keeps them: 50 a second, one byte each, 0 for a moment not heard yet. */
+    let wave = null;
+    let waveVersion = null;
+    let waveLoading = false;
+    const songDuration = () => state?.duration || wave?.duration || 0;
+
+    async function loadWave() {
+        if (waveLoading || !state || (state.wave ?? null) === waveVersion) return;
+        const version = state.wave ?? null;
+        if (version === null) {
+            wave = null;
+            waveVersion = null;
+            return;
+        }
+        waveLoading = true;
+        try {
+            const answer = await api("/api/waveform");
+            const text = atob(answer.levels);
+            const levels = new Uint8Array(text.length);
+            for (let i = 0; i < text.length; i++) levels[i] = text.charCodeAt(i);
+            wave = { duration: answer.duration, rate: answer.rate, levels };
+            waveVersion = version;
+            drawWave(true);
+        } catch {
+            // The waveform stays as it was, and the next state asks again.
+        } finally {
+            waveLoading = false;
+        }
+    }
+
+    /** A loop changed here a moment ago, which answers about the Mac's state from before the change don't undo. */
+    let loopOverride = null;
+    function currentLoop() {
+        if (loopOverride && performance.now() - loopOverride.at < 2500) return loopOverride.loop;
+        return state?.loop ?? null;
+    }
+    function changeLoop(loop) {
+        loopOverride = { at: performance.now(), loop };
+        drawLoopControls();
+        drawWave(true);
+    }
+
+    /** The end of the loop whose tab was tapped: the buttons beside play move it while it is picked. */
+    let pickedEnd = null;
+    /** Moves an end as far as the Mac lets it: inside the song, and a quarter of a second from the other end. */
+    function clampEnd(loop, end, time) {
+        const duration = songDuration();
+        return end === "start" ? Math.min(Math.max(0, time), (loop.end ?? duration) - 0.25) : Math.max(Math.min(duration, time), loop.start + 0.25);
+    }
+
+    const precise = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")}`;
+
+    function drawLoopControls() {
+        const loop = currentLoop();
+        // An end that went away can't stay picked.
+        if (!loop || (pickedEnd === "end" && loop.end == null)) pickedEnd = null;
+        const button = $("loop-button");
+        button.classList.toggle("started", Boolean(loop && loop.end == null));
+        button.classList.toggle("on", Boolean(loop && loop.end != null));
+        button.setAttribute("aria-label", !loop ? "Start loop" : loop.end == null ? "End loop" : "Clear loop");
+        // The buttons beside play move the picked end of the loop, or the song by 5 seconds.
+        $("back-icon").style.setProperty("--symbol", symbol(pickedEnd ? "chevron.left" : "gobackward.5"));
+        $("forward-icon").style.setProperty("--symbol", symbol(pickedEnd ? "chevron.right" : "goforward.5"));
+        const name = pickedEnd === "start" ? "loop start" : "loop end";
+        $("mac-back").setAttribute("aria-label", pickedEnd ? `Move ${name} earlier` : "Back 5 seconds");
+        $("mac-forward").setAttribute("aria-label", pickedEnd ? `Move ${name} later` : "Forward 5 seconds");
+        const time = loop && pickedEnd ? (pickedEnd === "start" ? loop.start : loop.end) : null;
+        $("loop-time").textContent = time != null
+            ? `${pickedEnd === "start" ? "A" : "B"} ${precise(time)}`
+            : loop?.end != null ? `${clock(loop.start)} – ${clock(loop.end)}` : "";
+        drawSaveAndNotes();
+    }
+
+    /** Every frame while the song view shows: the playhead, the clocks and the bars that changed colour. */
+    function tick() {
+        if (!state) return;
+        const position = macPosition();
+        const duration = songDuration();
+        if (position != null && duration > 0) {
+            $("mac-elapsed").textContent = clock(position);
+            $("mac-left").textContent = `−${clock(Math.max(0, duration - position))}`;
+        }
+        drawWave();
+    }
+
+    /** A failed loop or output action: the icon button turns red, and the error shows over the bar. */
+    function failIcon(button, error) {
+        button.classList.add("failed");
+        $("song-error").textContent = error.message;
+        $("song-error").hidden = false;
+        setTimeout(() => button.classList.remove("failed"), 6000);
+    }
+
+    let drawnBars = null;
+    /** The waveform as bars, the part played in ink and the rest faded, with the loop in honey. The canvas is drawn
+     * again only when a bar changes colour, the loop moves, or `force` asks. */
+    function drawWave(force = false) {
+        const canvas = $("wave-canvas");
+        const box = $("wave").getBoundingClientRect();
+        const duration = songDuration();
+        if (!box.width || !duration) return;
+        const position = macPosition() ?? 0;
+        $("playhead").style.transform = `translateX(${(Math.min(position, duration) / duration) * box.width}px)`;
+        drawEnds(box.width, duration);
+        const ratio = window.devicePixelRatio || 1;
+        const width = Math.round(box.width * ratio), height = Math.round(box.height * ratio);
+        const step = 3 * ratio, barWidth = 2 * ratio;
+        const count = Math.floor(width / step);
+        const played = Math.floor((position / duration) * count);
+        const loop = currentLoop();
+        const key = `${width}x${height} ${played} ${waveVersion} ${loop?.start} ${loop?.end}`;
+        if (!force && key === drawnBars) return;
+        drawnBars = key;
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+        }
+        const context = canvas.getContext("2d");
+        context.clearRect(0, 0, width, height);
+        const css = getComputedStyle(document.documentElement);
+        const ink = css.getPropertyValue("--ink").trim(), muted = css.getPropertyValue("--muted").trim(), honey = css.getPropertyValue("--honey").trim();
+        const looped = loop?.end != null ? [loop.start / duration, loop.end / duration] : null;
+        if (looped) {
+            context.globalAlpha = 0.16;
+            context.fillStyle = honey;
+            context.fillRect(looped[0] * width, 0, (looped[1] - looped[0]) * width, height);
+        }
+        const levels = wave?.levels;
+        for (let i = 0; i < count; i++) {
+            let level = 0;
+            if (levels?.length) {
+                const a = Math.floor((i / count) * levels.length), b = Math.max(a + 1, Math.floor(((i + 1) / count) * levels.length));
+                for (let j = a; j < b && j < levels.length; j++) level = Math.max(level, levels[j]);
+            }
+            const share = (i + 0.5) / count;
+            const inLoop = looped && share >= looped[0] && share <= looped[1];
+            const bar = level ? Math.max(2 * ratio, ((level - 1) / 254) * height) : 1.5 * ratio;
+            context.fillStyle = inLoop ? honey : i < played ? ink : muted;
+            context.globalAlpha = !level ? 0.18 : inLoop ? (i < played ? 1 : 0.6) : i < played ? 0.85 : looped ? 0.18 : 0.3;
+            context.fillRect(i * step, (height - bar) / 2, barWidth, bar);
+        }
+        context.globalAlpha = 1;
+    }
+
+    function drawEnds(width, duration) {
+        const loop = currentLoop();
+        for (const end of ["start", "end"]) {
+            const element = $(`end-${end}`);
+            const time = loop ? (end === "start" ? loop.start : loop.end) : null;
+            element.hidden = time == null;
+            if (time == null) continue;
+            element.style.left = `${(time / duration) * width}px`;
+            element.classList.toggle("selected", pickedEnd === end);
+        }
+    }
+
+    let moveTimer = 0;
+    let moveSentAt = 0;
+    /** Moves an end here at once, and on the Mac at most every 150 ms while a finger drags it, then where it stops. */
+    function moveEnd(end, time, final) {
+        const loop = currentLoop();
+        if (!loop || (end === "end" && loop.end == null)) return;
+        const seconds = clampEnd(loop, end, time);
+        changeLoop({ ...loop, [end]: seconds });
+        clearTimeout(moveTimer);
+        const send = () => {
+            moveSentAt = performance.now();
+            api("/api/loop", { action: "move", which: end, seconds }).catch(() => {});
+        };
+        if (final || performance.now() - moveSentAt > 150) send();
+        else moveTimer = setTimeout(send, 150);
+    }
+
+    function timeAt(clientX) {
+        const box = $("wave").getBoundingClientRect();
+        return Math.min(1, Math.max(0, (clientX - box.left) / box.width)) * songDuration();
+    }
+
+    // A tap moves the song there, a drag across the waveform makes a loop of the part it covers, and a drag on a tab
+    // moves that end. A tap on a tab picks it for the buttons beside play, and a second tap lets it go.
+    let gesture = null;
+    $("wave").addEventListener("pointerdown", (event) => {
+        if (!state?.seekable || !songDuration() || event.button > 0) return;
+        const end = event.target.closest(".loop-end")?.dataset.end ?? null;
+        $("wave").setPointerCapture(event.pointerId);
+        gesture = { id: event.pointerId, x: event.clientX, end, moved: false };
+        event.preventDefault();
+    });
+    $("wave").addEventListener("pointermove", (event) => {
+        if (!gesture || event.pointerId !== gesture.id) return;
+        if (!gesture.moved && Math.abs(event.clientX - gesture.x) < 6) return;
+        gesture.moved = true;
+        if (gesture.end) return moveEnd(gesture.end, timeAt(event.clientX), false);
+        const box = $("wave").getBoundingClientRect();
+        const a = Math.max(box.left, Math.min(gesture.x, event.clientX)), b = Math.min(box.right, Math.max(gesture.x, event.clientX));
+        const selection = $("wave-selection");
+        selection.hidden = false;
+        selection.style.left = `${a - box.left}px`;
+        selection.style.width = `${b - a}px`;
+    });
+    const endGesture = (event, cancelled) => {
+        if (!gesture || event.pointerId !== gesture.id) return;
+        const { x, end, moved } = gesture;
+        gesture = null;
+        $("wave-selection").hidden = true;
+        if (cancelled) return;
+        if (end) {
+            if (moved) return moveEnd(end, timeAt(event.clientX), true);
+            pickedEnd = pickedEnd === end ? null : end;
+            return drawTransport();
+        }
+        if (moved) {
+            const a = timeAt(Math.min(x, event.clientX)), b = timeAt(Math.max(x, event.clientX));
+            if (b - a < 0.25) return;
+            pickedEnd = null;
+            changeLoop({ start: a, end: b });
+            api("/api/loop", { action: "set", start: a, end: b }).catch((error) => failIcon($("loop-button"), error));
+            return;
+        }
+        pickedEnd = null;
+        const seconds = timeAt(event.clientX);
+        state.position = seconds;
+        stateAt = performance.now();
+        drawTransport();
+        transport({ action: "seek", seconds });
+    };
+    $("wave").addEventListener("pointerup", (event) => endGesture(event, false));
+    $("wave").addEventListener("pointercancel", (event) => endGesture(event, true));
+    addEventListener("resize", () => drawWave(true));
+
+    /** The loop button works as R does on the Mac: it starts the loop where the song is, ends it, then clears it. */
+    function pressLoop() {
+        const loop = currentLoop();
+        const position = macPosition() ?? 0;
+        if (!loop) changeLoop({ start: position, end: null });
+        else if (loop.end == null) changeLoop({ ...loop, end: Math.max(position, loop.start + 0.25) });
+        else {
+            pickedEnd = null;
+            changeLoop(null);
+        }
+        api("/api/loop", { action: "press" }).catch((error) => failIcon($("loop-button"), error));
+    }
+
+    /** The buttons beside play: 5 seconds back or forward, or while a tab is picked, its end by 20 ms, again and again
+     * while the finger stays down. */
+    function stepButton(id, direction) {
+        const button = $(id);
+        let delay = 0;
+        let repeat = 0;
+        const stop = () => {
+            clearTimeout(delay);
+            clearInterval(repeat);
+        };
+        const nudge = () => {
+            const loop = currentLoop();
+            if (!loop || !pickedEnd) return stop();
+            const time = pickedEnd === "start" ? loop.start : loop.end;
+            moveEnd(pickedEnd, time + direction * 0.02, false);
+        };
+        button.addEventListener("pointerdown", () => {
+            if (!pickedEnd || button.disabled) return;
+            nudge();
+            delay = setTimeout(() => (repeat = setInterval(nudge, 60)), 400);
+        });
+        for (const name of ["pointerup", "pointerleave", "pointercancel"]) {
+            button.addEventListener(name, () => {
+                if (!delay && !repeat) return;
+                stop();
+                delay = repeat = 0;
+                const loop = currentLoop();
+                if (loop && pickedEnd) moveEnd(pickedEnd, pickedEnd === "start" ? loop.start : loop.end, true);
+            });
+        }
+        button.addEventListener("click", () => {
+            if (!pickedEnd) transport({ action: direction < 0 ? "back" : "forward" });
+        });
     }
 
     // MARK: Output: the Mac, or this phone through a live stream of the Mac's output
@@ -760,7 +1042,7 @@
                 player.stop();
                 output = "mac";
                 drawOutput();
-                fail($("out-phone"), $("song-error"), new Error("This phone refused to play the sound"));
+                failIcon($("output-button"), new Error("This phone refused to play the sound. Tap the output button to try again"));
             });
         } else {
             player.stop();
@@ -770,18 +1052,75 @@
     }
 
     function drawOutput() {
-        $("out-mac").setAttribute("aria-pressed", String(output === "mac"));
-        $("out-phone").setAttribute("aria-pressed", String(output === "phone"));
+        $("out-mac").setAttribute("aria-checked", String(output === "mac"));
+        $("out-phone").setAttribute("aria-checked", String(output === "phone"));
+        $("output-icon").style.setProperty("--symbol", symbol(output === "phone" ? "iphone" : "macbook"));
+        $("output-button").classList.toggle("phone", output === "phone");
+        $("output-button").setAttribute("aria-label", output === "phone" ? "Output: this phone" : "Output: Mac");
+    }
+
+    function showOutputMenu(shown) {
+        $("output-menu").hidden = !shown;
+        $("output-button").setAttribute("aria-expanded", String(shown));
+    }
+
+    // MARK: Save
+
+    /** Save and Transcribe take the loop once it has an end, and the whole song otherwise. */
+    function drawSaveAndNotes() {
+        const looped = currentLoop()?.end != null;
+        const save = $("save");
+        if (!save.classList.contains("failed") && !save.classList.contains("working")) {
+            save.querySelector(".label-text").textContent = looped ? "Save loop" : "Save song";
+        }
+        drawTranscribeLabel();
+    }
+
+    /** The song as it plays on the Mac, with its key, tempo and instruments, or only its loop, written on the Mac
+     * and offered here as a download. */
+    async function save() {
+        const button = $("save");
+        if (!state?.song || button.classList.contains("working")) return;
+        clearFailures();
+        $("save-link").hidden = true;
+        const loop = currentLoop();
+        const body = {
+            song: state.song,
+            format: "m4a",
+            key: signed(shift),
+            speed,
+            stems: muted.size ? STEMS.map((s) => s.name).filter((n) => !muted.has(n)) : undefined,
+            ...(loop?.end != null ? { from: loop.start, to: loop.end } : {}),
+        };
+        try {
+            const job = await follow(await api("/api/write", body), button);
+            const link = $("save-link");
+            link.href = job.file;
+            link.setAttribute("download", "");
+            link.hidden = false;
+        } catch (error) {
+            if (error.message !== "Stopped") fail(button, $("save-error"), error);
+        }
     }
 
     // MARK: Notes
 
+    const NOTES_OPTIONS = [{ name: "auto", label: "Auto" }, ...STEMS.filter((s) => s.name !== "drums")];
+
+    /** Transcribe names the instrument picked, and the loop once it has an end. */
+    function drawTranscribeLabel() {
+        const button = $("transcribe");
+        if (button.classList.contains("failed") || button.classList.contains("working")) return;
+        const picked = NOTES_OPTIONS.find((o) => o.name === notesStem);
+        const looped = currentLoop()?.end != null;
+        const what = notesStem === "auto" ? "Transcribe" : `Transcribe ${picked.label.toLowerCase()}`;
+        const label = looped ? (notesStem === "auto" ? "Transcribe loop" : `${what} in loop`) : what;
+        if (button.textContent !== label) button.textContent = label;
+    }
+
     function drawNotesPicker() {
-        const options = [{ name: "auto", label: "Auto" }, ...STEMS.filter((s) => s.name !== "drums")];
-        const picked = options.find((o) => o.name === notesStem);
-        if (!$("transcribe").classList.contains("failed")) {
-            $("transcribe").textContent = notesStem === "auto" ? "Transcribe" : `Transcribe ${picked.label.toLowerCase()}`;
-        }
+        const options = NOTES_OPTIONS;
+        drawTranscribeLabel();
         $("notes-stem").replaceChildren(...options.map((option) => {
             const button = document.createElement("button");
             button.setAttribute("aria-pressed", String(option.name === notesStem));
@@ -803,7 +1142,9 @@
         if (!state?.song) return;
         button.disabled = true;
         try {
-            const job = await follow(await api("/api/write", { song: state.song, notes: notesStem, format: "json" }), button);
+            const loop = currentLoop();
+            const part = loop?.end != null ? { from: loop.start, to: loop.end } : {};
+            const job = await follow(await api("/api/write", { song: state.song, notes: notesStem, format: "json", ...part }), button);
             const data = await (await fetch(job.file)).json();
             closeSheet();
             $("sheet").hidden = false;
@@ -972,6 +1313,12 @@
     $("play-all").onclick = () => setStems(new Set());
     $("transcribe").onclick = transcribe;
     $("link-form").onsubmit = playLink;
+    // Return in the link field plays the link, as in a single-line field.
+    $("link").addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        $("link-form").requestSubmit();
+    });
     $("link").oninput = () => {
         clearFailures();
         $("link-play").disabled = !$("link").value.trim();
@@ -987,8 +1334,26 @@
         clearTimeout(filesTimer);
         filesTimer = setTimeout(loadFiles, 200);
     };
-    $("out-mac").onclick = () => setOutput("mac");
-    $("out-phone").onclick = () => setOutput("phone");
+    $("out-mac").onclick = () => {
+        showOutputMenu(false);
+        setOutput("mac");
+    };
+    $("out-phone").onclick = () => {
+        showOutputMenu(false);
+        $("output-button").classList.remove("failed");
+        setOutput("phone");
+    };
+    $("output-button").onclick = (event) => {
+        event.stopPropagation();
+        showOutputMenu($("output-menu").hidden);
+    };
+    document.addEventListener("pointerdown", (event) => {
+        if (!$("output-menu").hidden && !event.target.closest("#output-menu, #output-button")) showOutputMenu(false);
+    });
+    $("loop-button").onclick = pressLoop;
+    stepButton("mac-back", -1);
+    stepButton("mac-forward", 1);
+    $("save").onclick = save;
     $("mac-play").onclick = () => {
         if (!state) return;
         // The glyph changes at once, and the next state from the Mac confirms it.
@@ -999,26 +1364,19 @@
         drawTransport();
         transport({ action });
     };
-    $("mac-back").onclick = () => transport({ action: "back" });
-    $("mac-forward").onclick = () => transport({ action: "forward" });
-    $("mac-seek").oninput = () => {
-        macSeeking = true;
-        drawTransport();
+    // The playhead moves on every frame while the song view shows; the bars draw again only when one changes colour.
+    const frame = () => {
+        if (open && document.visibilityState === "visible") tick();
+        requestAnimationFrame(frame);
     };
-    $("mac-seek").onchange = () => {
-        const seconds = (Number($("mac-seek").value) / 1000) * (state.duration || 0);
-        state.position = seconds;
-        stateAt = performance.now();
-        macSeeking = false;
-        transport({ action: "seek", seconds });
-    };
-    setInterval(() => { if (open && document.visibilityState === "visible") drawTransport(); }, 250);
+    requestAnimationFrame(frame);
+    setInterval(() => { if (open && document.visibilityState === "visible") drawTransport(); }, 500);
     // A compact bar with the song's name and a back button shows once the song's head scrolls away.
     new IntersectionObserver(([entry]) => $("top").classList.toggle("scrolled", !entry.isIntersecting), { rootMargin: "-20px 0px 0px 0px" })
         .observe($("head"));
 
     // The song view's symbols are fetched while the home view shows, so that its icons are there when a song opens.
-    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "iphone", "music.note", "minus", "plus", "gobackward.5", "goforward.5"]) {
+    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "iphone", "music.note", "minus", "plus", "gobackward.5", "goforward.5", "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down"]) {
         new Image().src = `/api/symbol/${name}`;
     }
 
