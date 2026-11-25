@@ -149,6 +149,9 @@
     }
     addEventListener("orientationchange", () => setTimeout(syncInsets, 300));
     screen.orientation?.addEventListener("change", () => setTimeout(syncInsets, 300));
+    // A cold launch can give the first reading before the app has its final size, as Cling's page found.
+    addEventListener("resize", syncInsets);
+    addEventListener("pageshow", syncInsets);
 
     // The offline page of the installed app needs HTTPS, which the Mac serves only on its Tailscale name.
     if (location.protocol === "https:" && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
