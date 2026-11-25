@@ -39,6 +39,7 @@ struct ShortcutsSheet: View {
         let key = KeyGroup(name: "Key", symbol: "tuningfork", hue: 20, rows: [
             Row(caps: [.key("A–G")], name: "key"),
             Row(caps: [.key("⌥"), .key("A–G")], name: "\(otherMode) key"),
+            Row(caps: [.key("⌥"), .gesture("click key", symbol: "cursorarrow.click")], name: "relative key"),
             Row(caps: [.key("⇧"), .key("A–G")], name: "sharp or flat"),
             Row(caps: [.key("←"), .key("→")], name: card ? "fifth" : "semitone"),
             Row(caps: [.key("↑"), .key("↓")], name: "octave"),

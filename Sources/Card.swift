@@ -60,6 +60,8 @@ struct HUDSymbol: View {
 
 /// The title line of both layouts: the symbol, then the key that is heard with its relative on the same line, or
 /// Listening before the first estimate. While a new song waits for its key, the kept key that it is going to, faded.
+/// A click on the key listens to the song again, and an Option-click names the key in the other mode: the relative
+/// key, which has the same notes, so the song doesn't change.
 struct TitleLine: View {
     @ObservedObject var model: HUDModel
     let palette: Palette
@@ -73,6 +75,11 @@ struct TitleLine: View {
     private var progress: Double? { model.phase == .listening ? model.progress : nil }
     /// A click on the key listens to the song again, once a key shows that isn't the one a new song waits for.
     private var redetectable: Bool { model.pending == nil && (model.phase == .done || model.phase == .listening) }
+    /// An Option-click on the key names it in the other mode, once the key of the song is known.
+    private var switchable: Bool { model.pending == nil && model.key != nil }
+    /// Option is held over the key, so its pill names the relative key that a click switches to.
+    private var switching: Bool { hovering && switchable && model.flipped }
+    private var pillShown: Bool { switching || hovering && redetectable }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -83,19 +90,31 @@ struct TitleLine: View {
                     Accidental.text(key.relative.name, color: palette.muted)
                         .font(.system(size: relativeSize, weight: .medium, design: .rounded))
                         .foregroundStyle(palette.muted)
-                        .opacity(hovering ? 0 : 1)
+                        .opacity(pillShown ? 0 : 1)
                         // In the relative key's place, over it, so the title doesn't move when it shows.
                         .overlay(alignment: .leading) {
-                            if hovering { RedetectPill(palette: palette).fixedSize().transition(.opacity) }
+                            if switching {
+                                TitlePill(symbol: "arrow.left.arrow.right", text: key.relative.name, palette: palette).fixedSize().transition(.opacity)
+                            } else if pillShown {
+                                TitlePill(symbol: "arrow.clockwise", text: "Re-detect key", palette: palette).fixedSize().transition(.opacity)
+                            }
                         }
                 }
                 // Less faded than before the title filled, since the part that hasn't filled is already faint.
                 .opacity(model.pending == nil ? 1 : 0.65)
                 .contentTransition(.interpolate)
                 .contentShape(Rectangle())
-                .onHover { hovering = $0 && redetectable }
-                .onTapGesture { if redetectable { hovering = false; model.onRedetect() } }
-                .animation(.easeOut(duration: 0.12), value: hovering)
+                .onHover { hovering = $0 }
+                .onTapGesture {
+                    if NSEvent.modifierFlags.contains(.option), switchable {
+                        model.onShift(model.shift, !model.relative)
+                    } else if redetectable {
+                        hovering = false
+                        model.onRedetect()
+                    }
+                }
+                .animation(.easeOut(duration: 0.12), value: pillShown)
+                .animation(.easeOut(duration: 0.12), value: switching)
             } else if model.phase == .listening {
                 ListenTitle(text: "Listening", size: listeningSize, progress: progress, palette: palette)
                     .transition(.opacity)
@@ -108,15 +127,18 @@ struct TitleLine: View {
     }
 }
 
-/// The pill that shows over the key while the pointer is on it: a click on the key listens to the song again.
-private struct RedetectPill: View {
+/// The pill that shows over the key while the pointer is on it: a click on the key listens to the song again, and
+/// with Option held it names the relative key that an Option-click switches to.
+private struct TitlePill: View {
+    let symbol: String
+    let text: String
     let palette: Palette
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "arrow.clockwise")
+            Image(systemName: symbol)
                 .font(.system(size: 10, weight: .bold))
-            Text("Re-detect key")
+            Text(text)
                 .font(.system(size: 11.5, weight: .semibold, design: .rounded))
         }
         .foregroundStyle(palette.ink)

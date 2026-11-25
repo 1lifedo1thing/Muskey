@@ -3885,6 +3885,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // closed, so the window keeps the keyboard.
         notes.onPickKey = { [weak self] shift, relative in
             guard let self, model.pending == nil else { return }
+            if Self.logKeys { log("notes: key picked, \(Shift.text(shift))\(relative ? " in the other mode" : "")") }
             setShift(shift, relative: relative)
         }
         notes.onSpeedStep = { [weak self] step in self?.changeSpeed(by: step) }

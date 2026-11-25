@@ -1281,13 +1281,18 @@ private struct StatusArrow: View {
 }
 
 /// The key in the status bar. The pointer over it shows the relative key in a pill above it and the arrows that move
-/// the key a semitone, and a click opens the HUD's key row to pick another key. Every change goes through the HUD's
-/// pitch change, so the HUD and the window show the same key.
+/// the key a semitone, and a click opens the HUD's key row to pick another key. An Option-click names the key in the
+/// other mode, with the same notes. Every change goes through the HUD's pitch change, so the HUD and the window show
+/// the same key.
 private struct NotesKeyControl: View {
     @ObservedObject var model: NotesModel
     let palette: Palette
     @State private var hovering = notesHoverInRenders.contains("key")
     @State private var picking = false
+    /// Option is held: the pill above names the relative key that a click switches to, and the key row shows the
+    /// other mode, as over the HUD.
+    @State private var option = notesHoverInRenders.contains("option")
+    @State private var optionTimer: Timer?
     @Environment(\.colorScheme) private var colorScheme
 
     /// The key that the song plays in now, named in the mode that the HUD names it.
@@ -1308,9 +1313,16 @@ private struct NotesKeyControl: View {
         .frame(maxHeight: .infinity)
         .background(RoundedRectangle(cornerRadius: 6).fill(palette.ink.opacity(active ? 0.07 : 0)).padding(.vertical, 4).padding(.horizontal, 1))
         .contentShape(Rectangle())
-        .onTapGesture { if model.key != nil { picking = true } }
+        .onTapGesture {
+            guard model.key != nil else { return }
+            if NSEvent.modifierFlags.contains(.option) {
+                model.onPickKey(model.shift, !model.relative)
+            } else {
+                picking = true
+            }
+        }
         // Before the arrows, which have tooltips of their own: a tooltip around them would cover theirs.
-        .help(model.key == nil ? "" : "Pick a key")
+        .help(model.key == nil ? "" : "Pick a key (⌥-click for the relative key)")
         .overlay(alignment: .leading) {
             StatusArrow(symbol: "chevron.left", help: "Semitone down (↓)", shown: active, palette: palette) { model.onTranspose(-1) }
                 .disabled(model.shift <= Shift.range.lowerBound)
@@ -1322,33 +1334,77 @@ private struct NotesKeyControl: View {
                 .padding(.trailing, 2)
         }
         .overlay(alignment: .top) {
-            // The relative key, the same notes in the other mode, as the HUD shows it beside the key.
+            // The relative key, the same notes in the other mode, as the HUD shows it beside the key. With Option held,
+            // a click switches to it, as the ⌥ in the pill says.
             if let relative = shown?.relative, hovering, !picking {
-                Text(relative.name)
-                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                    .foregroundStyle(palette.muted)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.thinMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(palette.ink.opacity(0.1), lineWidth: 0.5))
-                    .fixedSize()
-                    .offset(y: -21)
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
+                HStack(spacing: 5) {
+                    Text(relative.name)
+                        .foregroundStyle(option ? palette.ink : palette.muted)
+                    if option {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 8.5, weight: .heavy))
+                            .foregroundStyle(palette.ink)
+                    } else {
+                        Keycap(text: "⌥", palette: palette, small: true)
+                    }
+                }
+                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                .padding(.leading, 8)
+                .padding(.trailing, option ? 8 : 4)
+                .frame(height: 20)
+                .background(.thinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(palette.ink.opacity(option ? 0.25 : 0.1), lineWidth: 0.5))
+                .fixedSize()
+                .offset(y: -22)
+                .allowsHitTesting(false)
+                .transition(.opacity)
             }
         }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: active)
         .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.12), value: option)
+        .onChange(of: hovering || picking) { _, watching in watchOption(watching) }
+        .onDisappear { watchOption(false) }
         .popover(isPresented: $picking, arrowEdge: .top) {
             if let key = model.key {
-                // The chips show the mode of the key that the song is in now, as over the HUD without Option.
-                KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys, flipped: model.relative,
-                          palette: palette, stepKeys: ("↓", "↑")) { shift, relative in
-                    model.onPickKey(shift, relative)
+                VStack(spacing: 8) {
+                    // The chips show the mode of the key that the song is in now, and the other mode while Option is
+                    // held, as over the HUD.
+                    KeyPicker(original: key, shift: model.shift, relative: model.relative, showsRelatives: model.relativeKeys,
+                              flipped: option != model.relative, palette: palette, stepKeys: ("↓", "↑")) { shift, relative in
+                        model.onPickKey(shift, relative)
+                    }
+                    // The one row has no other way to the other mode, and two rows still flip with Option.
+                    if let shown {
+                        HStack(spacing: 5) {
+                            Keycap(text: "⌥", palette: palette, small: true)
+                            Text("\(shown.minor ? "major" : "minor") keys")
+                                .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                                .foregroundStyle(palette.muted)
+                        }
+                        .opacity(0.8)
+                    }
                 }
                 .padding(12)
             }
+        }
+    }
+
+    /// Option is read 30 times a second while the pointer is over the key or the key row shows, as over the HUD:
+    /// Muskey gets no modifier changes while another app is in front, which it is until the first click.
+    private func watchOption(_ watching: Bool) {
+        optionTimer?.invalidate()
+        optionTimer = nil
+        guard watching, notesHoverInRenders.isEmpty else { return option = false }
+        func held() -> Bool {
+            let flags = NSEvent.modifierFlags
+            return flags.contains(.option) && !flags.contains(.command)
+        }
+        option = held()
+        optionTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+            let now = held()
+            if option != now { option = now }
         }
     }
 }
