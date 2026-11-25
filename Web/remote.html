@@ -24,21 +24,6 @@
         <div class="mac" id="mac" hidden><span class="dot"></span><span id="mac-name"></span></div>
     </header>
 
-    <section class="section" id="install-section" hidden>
-        <div class="card">
-            <div class="row install-row">
-                <button class="install-main" id="install">
-                    <span class="icon" id="install-icon"></span>
-                    <span class="grow">
-                        <span class="install-label">Install Muskey</span>
-                        <span class="pill" id="install-hint" hidden>Share › Add to Home Screen</span>
-                    </span>
-                </button>
-                <button class="install-hide" id="install-hide" aria-label="Hide"><span class="icon" style="--symbol: url(/api/symbol/xmark)"></span></button>
-            </div>
-        </div>
-    </section>
-
     <section class="section">
         <div class="label">Now playing</div>
         <div class="card" id="now-card">
@@ -177,6 +162,20 @@
 </div>
 
 <script src="/web/sheet.js"></script>
+<!-- Install Muskey: a pill floating at the bottom of Home, as on legume. -->
+<div class="install-pill" id="install" hidden role="region" aria-label="Install Muskey">
+    <div class="install-pill-inner">
+        <img class="install-pill-icon" src="/icon-192.png" alt="" width="38" height="38">
+        <div class="install-pill-text">
+            <span class="install-pill-title">Install Muskey</span>
+            <span class="install-pill-hint" id="install-share" hidden>Tap <span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.up)" aria-label="Share"></span> then <strong>Add to Home Screen</strong></span>
+            <span class="install-pill-hint" id="install-menu" hidden>Tap <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-label="Menu"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg> then <strong>Add to Home Screen</strong></span>
+        </div>
+        <button class="install-pill-button" id="install-button" hidden>Install</button>
+        <button class="install-pill-close" id="install-hide" aria-label="Hide"><span class="icon" style="--symbol: url(/api/symbol/xmark)"></span></button>
+    </div>
+</div>
+
 <script src="/web/remote.js"></script>
 </body>
 </html>

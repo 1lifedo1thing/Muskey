@@ -388,6 +388,7 @@
     function show(view) {
         for (const name of ["home", "files", "song"]) $(name).hidden = view !== name;
         scrollTo(0, 0);
+        drawInstall();
     }
 
     let songCover;
@@ -1583,40 +1584,64 @@
 
     // MARK: Install
 
-    /** Install Muskey shows in a browser that can install the page: on a tap, the browser's install dialog where the
-     * browser offers one (Chrome, Android, over HTTPS), or the steps in Safari's Share menu on an iPhone or iPad. */
+    /** Install Muskey floats at the bottom of Home, as on legume, 2 seconds after the page loads: with Install where the
+     * browser offers its install dialog (Chrome, Android, over HTTPS), or with the steps of the Share menu on an iPhone
+     * or iPad. Android always gets the button, and without the dialog (Incognito, plain HTTP) a tap on it shows the
+     * steps of Chrome's menu. A hidden pill stays away for 21 days. */
     const INSTALL_HIDDEN_KEY = "muskey:install-hidden";
+    const INSTALL_QUIET_DAYS = 21;
     const appleTouch = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const android = /Android/i.test(navigator.userAgent);
     let installPrompt = null;
+    let installReady = false;
+    let installSteps = false;
 
     function installHidden() {
         try {
-            return localStorage.getItem(INSTALL_HIDDEN_KEY) === "1";
+            const at = Number(localStorage.getItem(INSTALL_HIDDEN_KEY));
+            return at > 1 && Date.now() - at < INSTALL_QUIET_DAYS * 86400000;
         } catch {
             return false;
         }
     }
 
+    function hideInstall() {
+        try {
+            localStorage.setItem(INSTALL_HIDDEN_KEY, String(Date.now()));
+        } catch {}
+        drawInstall();
+    }
+
     function drawInstall() {
-        const shown = !standalone && !installHidden() && (installPrompt !== null || appleTouch);
-        $("install-section").hidden = !shown;
-        if (!shown) return;
-        $("install-icon").style.setProperty("--symbol", symbol(installPrompt ? "arrow.down.app" : "square.and.arrow.up"));
-        $("install-hint").hidden = installPrompt !== null;
+        const pill = $("install");
+        const shown = installReady && !standalone && !installHidden() && !$("home").hidden && (installPrompt !== null || appleTouch || android);
+        document.documentElement.classList.toggle("has-install-pill", shown);
+        if (!shown) {
+            pill.classList.remove("open");
+            pill.hidden = true;
+            return;
+        }
+        $("install-button").hidden = installSteps || !(installPrompt || android);
+        $("install-share").hidden = Boolean(installPrompt) || android || !appleTouch;
+        $("install-menu").hidden = !installSteps;
+        if (pill.hidden) {
+            pill.hidden = false;
+            // The next frame, so the pill eases in from below.
+            requestAnimationFrame(() => pill.classList.add("open"));
+        }
     }
 
     addEventListener("beforeinstallprompt", (event) => {
         event.preventDefault();
         installPrompt = event;
+        installSteps = false;
         drawInstall();
     });
-    addEventListener("appinstalled", () => {
-        installPrompt = null;
-        try {
-            localStorage.setItem(INSTALL_HIDDEN_KEY, "1");
-        } catch {}
+    addEventListener("appinstalled", hideInstall);
+    setTimeout(() => {
+        installReady = true;
         drawInstall();
-    });
+    }, 2000);
 
     // MARK: Files on the Mac
 
@@ -1873,26 +1898,27 @@
         sendFile(file);
     };
     $("mac-files").onclick = openFiles;
-    $("install").onclick = async () => {
-        // Safari has no install dialog, and the pill on the row names the steps.
-        if (!installPrompt) return;
+    $("install-button").onclick = async () => {
+        // Without the browser's dialog, the steps of Chrome's menu take the button's place.
+        if (!installPrompt) {
+            installSteps = true;
+            return drawInstall();
+        }
+        // The event works once: a second prompt() on it throws.
         const prompt = installPrompt;
         installPrompt = null;
         try {
             await prompt.prompt();
-            report(`install: ${(await prompt.userChoice).outcome}`, "info");
+            const { outcome } = await prompt.userChoice;
+            report(`install: ${outcome}`, "info");
+            if (outcome === "accepted") return hideInstall();
         } catch (error) {
             report(`install: ${error.message}`);
+            installSteps = true;
         }
         drawInstall();
     };
-    $("install-hide").onclick = () => {
-        try {
-            localStorage.setItem(INSTALL_HIDDEN_KEY, "1");
-        } catch {}
-        drawInstall();
-    };
-    drawInstall();
+    $("install-hide").onclick = hideInstall;
     $("files-search").oninput = () => {
         clearTimeout(filesTimer);
         filesTimer = setTimeout(loadFiles, 200);

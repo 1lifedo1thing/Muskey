@@ -338,29 +338,68 @@ a.button { text-decoration: none; }
 .button.big { height: 52px; border-radius: 16px; font-size: 17px; }
 #link-play { min-width: 84px; }
 .open-row { width: 100%; text-align: left; font-size: 17px; font-weight: 500; }
-/* Install Muskey: the browser's install dialog on a tap, or the steps of Safari in a pill, with ✕ to hide it. */
-.install-row { padding: 0 6px 0 0; gap: 0; }
-.install-main {
+/* Install Muskey, floating at the bottom of Home as on legume: one line of title and one of hint, never wrapping,
+   with the page under it still usable around the pill. */
+.install-pill {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
     display: flex;
-    flex: 1;
-    min-width: 0;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 8px 12px 14px;
-    border: 0;
-    background: none;
-    color: inherit;
-    font: inherit;
-    font-size: 17px;
-    font-weight: 500;
-    text-align: left;
+    justify-content: center;
+    padding: 0 10px calc(10px + var(--safe-bottom));
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 0.38s ease-in, transform 0.38s ease-in;
 }
-.install-main > .icon:first-child { width: 20px; height: 20px; color: var(--honey-text); }
-.install-main .grow { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
-.install-label { white-space: nowrap; }
-.install-hide { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 50%; background: none; color: var(--muted); }
-.install-hide .icon { width: 12px; height: 12px; }
-.install-hide:active { background: var(--fill); }
+.install-pill.open { opacity: 1; transform: none; }
+.install-pill[hidden], .install-pill [hidden] { display: none; }
+.install-pill-inner {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: 480px;
+    min-height: 56px;
+    padding: 6px 6px 6px 8px;
+    border: 0.5px solid var(--card-line);
+    border-radius: 999px;
+    background: var(--card);
+    box-shadow: 0 6px 24px rgb(33 20 26 / 0.16), 0 1px 3px rgb(33 20 26 / 0.1);
+}
+.install-pill-icon { flex: none; width: 40px; height: 40px; border-radius: 10px; }
+.install-pill-text { display: flex; flex: 1 1 auto; flex-direction: column; justify-content: center; min-width: 0; line-height: 1.25; }
+.install-pill-title, .install-pill-hint { display: block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.install-pill-title { font-size: 15px; font-weight: 700; }
+.install-pill-hint { font-size: 12.5px; color: var(--muted); }
+.install-pill-hint strong { color: var(--ink); font-weight: 650; }
+.install-pill-hint .icon, .install-pill-hint svg { width: 12px; height: 12px; vertical-align: -2px; }
+.install-pill-button {
+    flex: none;
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 999px;
+    background: var(--honey);
+    color: var(--honey-ink);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+}
+.install-pill-button:active { transform: translateY(1px); }
+.install-pill-close { display: grid; flex: none; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: var(--muted); }
+.install-pill-close .icon { width: 12px; height: 12px; }
+.install-pill-close:active { background: var(--fill); }
+@media (prefers-color-scheme: dark) {
+    .install-pill-inner { box-shadow: 0 6px 24px rgb(0 0 0 / 0.5); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .install-pill { transition: none; }
+}
+/* The last rows of Home scroll clear of the pill. */
+html.has-install-pill #home { padding-bottom: calc(24px + 66px + var(--safe-bottom)); }
 .open-row:active { background: var(--fill-2); }
 .open-row > .icon:first-child { width: 20px; height: 20px; color: var(--honey-text); }
 .open-row.failed { color: var(--failed); }
