@@ -4760,9 +4760,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Opening the app again while it runs is the way to Settings when the menu bar icon is hidden.
+    /// Opening the app again while it runs, from Finder, the Dock or Spotlight, shows the HUD as the hotkey does. While
+    /// the HUD, the mini player or a window of Muskey shows, it changes nothing: app switchers like rcmd send the same
+    /// event when they only bring Muskey to the front, as when the notes window is focused. Settings opens with ⌘, from
+    /// the HUD, and from the menu bar icon.
     func applicationShouldHandleReopen(_: NSApplication, hasVisibleWindows _: Bool) -> Bool {
-        settingsWindow.show()
+        let windows = NSApp.windows.filter { window in
+            window.isVisible && window.screen != nil && (window.styleMask.contains(.titled) || window === miniPanel)
+        }
+        if model.shown || !windows.isEmpty {
+            let names = windows.map { $0 === miniPanel ? "mini player" : $0.title.isEmpty ? "untitled window" : $0.title }
+            log("reopen: \(model.shown ? "the HUD" : names.joined(separator: ", ")) already shows")
+            return false
+        }
+        log("reopen: showing the HUD")
+        if state == .idle { toggle() }
         return false
     }
 
