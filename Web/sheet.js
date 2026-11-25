@@ -1440,6 +1440,16 @@
             this.pillFret = element("span", "ms-pill-fret");
             this.pill.append(this.pillName, this.pillFret);
             this.pageElement.append(this.paper, this.overlay, this.hoverLine, this.hoverTime, this.pill);
+            // In Display P3, like the window, so that the accent isn't clipped to sRGB where the screen shows more.
+            const context = (canvas) => {
+                try {
+                    return canvas.getContext("2d", { colorSpace: "display-p3" }) || canvas.getContext("2d");
+                } catch {
+                    return canvas.getContext("2d");
+                }
+            };
+            this.paperContext = context(this.paper);
+            this.overlayContext = context(this.overlay);
 
             const footer = element("div", "ms-footer");
             this.pager = element("div", "ms-pager");
@@ -1591,7 +1601,11 @@
         togglePicker(open = !this.pickerOpen) {
             if (open) this.fillPicker();
             if (this.native) {
-                if (open && !this.pickerOpen) this.picker.showPopover();
+                if (open && !this.pickerOpen) {
+                    this.picker.showPopover();
+                    // The toggle event comes a moment later, after the picker would have painted in the corner.
+                    this.placePicker();
+                }
                 else if (!open && this.pickerOpen) this.picker.hidePopover();
             } else {
                 this.picker.hidden = !open;
@@ -1619,6 +1633,11 @@
 
         // MARK: State
 
+        /** The first bar of the page that the bottom half shows. */
+        firstBar() {
+            return this.layout ? this.shown.bottom * this.layout.linesPerPage * this.layout.barsPerLine : 0;
+        }
+
         update(change, { notify = true } = {}) {
             const next = { ...this.state, ...change };
             next.shift = Math.max(SHIFT_RANGE[0], Math.min(SHIFT_RANGE[1], next.shift | 0));
@@ -1629,7 +1648,7 @@
             if (!changed) return;
             const modelChanged = next.shift !== this.state.shift || next.relative !== this.state.relative || next.capo !== this.state.capo;
             // The page keeps showing the bar that was at its top.
-            const firstBar = this.layout ? this.shown.bottom * this.layout.linesPerPage * this.layout.barsPerLine : 0;
+            const firstBar = this.firstBar();
             this.state = next;
             if (modelChanged) this.rebuild({ firstBar });
             else this.relayout({ firstBar });
@@ -1823,15 +1842,21 @@
 
         setTime(seconds) {
             if (!Number.isFinite(seconds)) return;
-            this.clock = { time: seconds, at: performance.now(), playing: this.clock ? this.clock.playing : false, rate: this.clock ? this.clock.rate : 1 };
+            const motion = this.clock || this.motion || { playing: false, rate: 1 };
+            this.clock = { time: seconds, at: performance.now(), playing: motion.playing, rate: motion.rate };
             this.follow(true);
             this.drawOverlay();
             this.schedule();
         }
 
         setPlaying(playing, rate = 1) {
-            const time = this.now();
-            this.clock = { time: time ?? 0, at: performance.now(), playing: !!playing, rate: rate > 0 ? rate : 1 };
+            const motion = { playing: !!playing, rate: rate > 0 ? rate : 1 };
+            // Before the first time arrives there is no place to play from, so the state waits for it.
+            if (!this.clock) {
+                this.motion = motion;
+                return;
+            }
+            this.clock = { time: this.now(), at: performance.now(), ...motion };
             this.drawOverlay();
             this.schedule();
         }
@@ -1864,7 +1889,7 @@
 
         /** The two halves of the page, each with the page it shows, and a page that turns over the next one. */
         drawPaper() {
-            const ctx = this.paper.getContext("2d");
+            const ctx = this.paperContext;
             const { width, height } = this.size;
             const layout = this.layout;
             ctx.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
@@ -1946,7 +1971,7 @@
 
         /** The bar that plays, the moving line and the notes that it lights, on a page half that lies flat. */
         drawOverlay() {
-            const ctx = this.overlay.getContext("2d");
+            const ctx = this.overlayContext;
             const { width, height } = this.size;
             ctx.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
             ctx.clearRect(0, 0, width, height);
@@ -2119,7 +2144,8 @@
                     }
                 }
             });
-            const resize = new ResizeObserver(() => this.relayout());
+            // A phone that turns keeps the bar that was at the top of the page in sight.
+            const resize = new ResizeObserver(() => this.relayout({ firstBar: this.firstBar() }));
             resize.observe(page);
             this.cleanups.push(() => resize.disconnect());
             const schemes = window.matchMedia("(prefers-color-scheme: dark)");
