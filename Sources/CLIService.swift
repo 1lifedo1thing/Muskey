@@ -223,6 +223,8 @@ extension DetectedKey {
         let folder = Self.folder.appending(path: job.id)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let name = (tags.title ?? file.deletingPathExtension().lastPathComponent).replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        if let from = request.from, let to = request.to, to <= from { throw Failure("the part ends before it starts") }
+        if (request.from ?? 0) < 0 || (request.to ?? 1) <= 0 { throw Failure("the part starts before the song") }
         let range = request.from.map { $0 ... (request.to ?? .infinity) } ?? request.to.map { 0 ... $0 }
         let known = knownKey([tags.title, tags.artist, tags.album])
 
@@ -299,6 +301,7 @@ extension DetectedKey {
         job.step = "Reading"
         let audio = try await Task.detached(priority: .userInitiated) { try SongRender.read(file) }.value
         try Task.checkCancellation()
+        if let range, range.lowerBound >= audio.seconds - 0.25 { throw Failure("the part starts after the end of the song") }
         var changes = SongChanges(speed: request.speed ?? 1, range: range.map { max(0, $0.lowerBound) ... min(audio.seconds, $0.upperBound) })
         if let key = request.key {
             changes.semitones = try await semitones(for: key, file: file, duration: audio.seconds, job: job, songKey: songKey).semitones
@@ -361,6 +364,7 @@ extension DetectedKey {
         let path = file.path
         job.step = "Finding the beats"
         let duration = await ChordDetector.duration(file)
+        if let range, duration > 0, range.lowerBound >= duration - 0.25 { throw Failure("the part starts after the end of the song") }
         let grid = await Task.detached(priority: .utility) { await ChordDetector.analyse(file, duration: duration) }.value
         try Task.checkCancellation()
 

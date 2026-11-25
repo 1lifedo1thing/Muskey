@@ -216,8 +216,10 @@ private final class WebConnection: @unchecked Sendable {
         var query: [String: String] = [:]
         if let queryPart = target.split(separator: "?", maxSplits: 1).dropFirst().first {
             for pair in queryPart.split(separator: "&") {
-                let kv = pair.split(separator: "=", maxSplits: 1).map { String($0).replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? String($0) }
-                query[kv[0]] = kv.count > 1 ? kv[1] : ""
+                let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                    .map { String($0).replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? String($0) }
+                guard let name = kv.first, !name.isEmpty else { continue }
+                query[name] = kv.count > 1 ? kv[1] : ""
             }
         }
         return WebRequest(method: String(parts[0]), path: pathPart.removingPercentEncoding ?? pathPart, query: query, headers: headers, body: body)

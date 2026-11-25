@@ -66,6 +66,17 @@ import Network
         server?.listen(on: WebAddresses.current().map(\.address))
     }
 
+    /// Stops listening when no link is valid and the web remote is off.
+    func stopIfIdle() {
+        removeExpired()
+        let links = (try? FileManager.default.contentsOfDirectory(atPath: Self.folder.path)) ?? []
+        guard server != nil, !WebRemote.enabled, !links.contains(where: Self.isToken) else { return }
+        server?.stop()
+        server = nil
+        monitor?.cancel()
+        monitor = nil
+    }
+
     private func scheduleListen() {
         relisten?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.server?.listen(on: WebAddresses.current().map(\.address)) }

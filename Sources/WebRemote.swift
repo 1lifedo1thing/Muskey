@@ -40,9 +40,9 @@ struct WebNotes: Encodable {
 
     nonisolated static var enabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
 
-    /// Starts the server when the remote is on.
+    /// Starts the server when the remote is on, and stops it when nothing else needs it.
     func update() {
-        guard Self.enabled else { return }
+        guard Self.enabled else { return WebLinks.shared.stopIfIdle() }
         if Self.storedKey == nil { reset() }
         WebLinks.shared.start()
     }
@@ -54,6 +54,8 @@ struct WebNotes: Encodable {
 
     /// The link that pairs a device, at the address that reaches the furthest.
     var pairingLink: String? {
+        // Settings can ask before `update` ran for the toggle that turned the remote on.
+        if Self.storedKey == nil { reset() }
         guard let base = WebLinks.base, let key = Self.storedKey else { return nil }
         return "\(base)/pair/\(key)"
     }
@@ -263,6 +265,8 @@ struct WebNotes: Encodable {
         if let key = action.key, Int(key) == nil || abs(Int(key) ?? 0) > 12 { return .text("Wrong key", status: 400) }
         if let stems = action.stems, !stems.allSatisfy(muskeyStemNames.contains) { return .text("Wrong instruments", status: 400) }
         if let speed = action.speed, !(0.5 ... 1.5).contains(speed) { return .text("Wrong speed", status: 400) }
+        if let from = action.from, let to = action.to, to <= from { return Self.json(WebJob(CLIResponse(error: "The part ends before it starts", done: true))) }
+        if (action.from ?? 0) < 0 || (action.to ?? 1) <= 0 { return .text("Wrong part", status: 400) }
         if let notes = action.notes, notes != "auto", !muskeyStemNames.contains(notes) || notes == "drums" { return .text("Wrong instrument", status: 400) }
         guard let item = await item(action.song) else { return Self.json(WebJob(CLIResponse(error: "That song is no longer in Recents", done: true))) }
         var request = CLIRequest(command: write ? .write : .play)
