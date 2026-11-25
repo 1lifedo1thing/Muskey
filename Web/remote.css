@@ -312,8 +312,10 @@ button:disabled { cursor: default; }
     overflow-x: auto;
     scroll-snap-type: x proximity;
     scrollbar-width: none;
-    padding: 6px 4px;
+    padding: 6px 14px;
     margin: -6px 0;
+    /* The keys cut by the edges fade out, as on a list that scrolls sideways. */
+    mask-image: linear-gradient(to right, transparent, #000 16px, #000 calc(100% - 16px), transparent);
 }
 .keys.both { grid-template-rows: 46px 38px; }
 .keys::-webkit-scrollbar { display: none; }
@@ -392,7 +394,9 @@ button:disabled { cursor: default; }
     .stem .disc { background: oklch(0.47 0.085 var(--hue)); color: oklch(0.9 0.07 var(--hue)); }
     .stem.muted .disc { box-shadow: inset 0 0 0 2px oklch(0.68 0.2 25 / 0.2); }
 }
-.small-button { height: 30px; padding: 0 12px; border-radius: 15px; background: var(--fill); font-size: 13px; font-weight: 700; color: var(--ink); }
+.small-button { position: relative; height: 32px; padding: 0 14px; border-radius: 16px; background: var(--fill); font-size: 14px; font-weight: 700; color: var(--ink); }
+/* A finger reaches it from 44 points around, though it looks as small as the label beside it. */
+.small-button::before { content: ""; position: absolute; inset: -6px -8px; }
 
 /* Part */
 .time {

@@ -43,6 +43,8 @@
         return Math.min(steps, 12 - steps);
     };
     const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
+    /** A shift as the HUD writes it, with a real minus sign. */
+    const shown = (n) => (n < 0 ? `\u2212${-n}` : signed(n));
     const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
     /** The tonic with its sharp or flat faded, and a small m for minor, as the HUD writes a key. */
@@ -244,7 +246,7 @@
             if (state.shift) {
                 const badge = document.createElement("span");
                 badge.className = "shift";
-                badge.textContent = signed(state.shift);
+                badge.textContent = shown(state.shift);
                 content.append(badge);
             }
             target.append(pill(content, state.shift || state.relative ? "honey" : ""));
@@ -399,7 +401,7 @@
             if (shift) {
                 const badge = document.createElement("span");
                 badge.className = "shift";
-                badge.textContent = signed(shift);
+                badge.textContent = shown(shift);
                 content.append(badge);
             }
             change.replaceChildren(content);
@@ -411,7 +413,7 @@
         button.className = "chip";
         const inColumn = offset === selectedOffset;
         if (!key) {
-            button.textContent = signed(offset);
+            button.textContent = shown(offset);
             if (inColumn) button.classList.add("selected");
             if (offset === 0) button.classList.add("original");
         } else {
@@ -773,6 +775,11 @@
                 refreshState();
             }
         };
+    }
+
+    // The song view's symbols are fetched while the home view shows, so that its icons are there when a song opens.
+    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "headphones", "speaker.wave.2.fill"]) {
+        new Image().src = `/api/symbol/${name}`;
     }
 
     loadSongs();
