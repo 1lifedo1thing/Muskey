@@ -180,8 +180,7 @@ struct WebNotes: Encodable {
 
     nonisolated static func handle(_ request: WebRequest) async -> WebResponse {
         guard enabled, let key = storedKey else { return .notFound }
-        let addresses = WebAddresses.current().map(\.address) + ["localhost"]
-        guard let host = host(request.headers["host"]), addresses.contains(host) else { return .text("Unknown host", status: 403) }
+        guard let host = host(request.headers["host"]), WebAddresses.allowedHosts().contains(host) else { return .text("Unknown host", status: 403) }
         let parts = request.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
 
         if parts.count == 2, parts[0] == "pair" {

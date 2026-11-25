@@ -332,6 +332,12 @@ enum WebAddresses {
     /// The private addresses that a browser on the same network or VPN can reach: RFC 1918, link-local IPv4, the
     /// 100.64/10 range on a tunnel (Tailscale and other VPNs), IPv6 unique-local, and 127.0.0.1. The most useful first:
     /// Tailscale, then Wi-Fi or Ethernet, then other VPNs, then this Mac.
+    /// The names that a request's Host may carry: the Mac's addresses and localhost. Any other name is refused, so that a
+    /// web page elsewhere can't reach the remote through a DNS name that resolves to the Mac.
+    static func allowedHosts() -> [String] {
+        current().map(\.address) + ["localhost"]
+    }
+
     static func current() -> [Address] {
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, let first = head else { return [] }
