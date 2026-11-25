@@ -39,7 +39,7 @@ final class KeyLookup: @unchecked Sendable {
         case failed(String)
     }
 
-    var log: ((String) -> Void)?
+    var log = EchoLog(category: "KeyLookup")
 
     private static let limit = 5000
     private static let askAgainAfter: TimeInterval = 30 * 24 * 3600
@@ -100,15 +100,15 @@ final class KeyLookup: @unchecked Sendable {
                 case let .found(found, tempo):
                     store(found, tempo: tempo, for: id)
                     key = load()[id]?.key
-                    log?(String(format: "online key: %@, %@ (%.2fs)", found.name, tempo.map { String(format: "%.1f BPM", $0) } ?? "no tempo", elapsed))
+                    log(String(format: "online key: %@, %@ (%.2fs)", found.name, tempo.map { String(format: "%.1f BPM", $0) } ?? "no tempo", elapsed))
                 case .unknown:
                     store(nil, tempo: nil, for: id)
-                    log?(String(format: "online key: song not known (%.2fs)", elapsed))
+                    log(String(format: "online key: song not known (%.2fs)", elapsed))
                 case let .wait(seconds):
                     pausedUntil = Date() + seconds
-                    log?(String(format: "online key: asked to wait %.0fs", seconds))
+                    log(String(format: "online key: asked to wait %.0fs", seconds), .notice)
                 case let .failed(reason):
-                    log?("online key: \(reason)")
+                    log("online key: \(reason)", .error)
                 }
                 for callback in waiting.removeValue(forKey: id) ?? [] { callback(key) }
             }
@@ -124,7 +124,7 @@ final class KeyLookup: @unchecked Sendable {
         entries[id] = entry
         self.entries = entries
         file.save(entries)
-        log?("online key: \(key.name) overruled by a listen that found \(heard.name)")
+        log("online key: \(key.name) overruled by a listen that found \(heard.name)")
     }
 
     func forget(_ id: String) {

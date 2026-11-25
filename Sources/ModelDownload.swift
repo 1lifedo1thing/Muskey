@@ -86,7 +86,7 @@ final class ModelDownload: NSObject, ObservableObject {
 
     private var task: URLSessionDownloadTask?
     private var progress: NSKeyValueObservation?
-    var log: (String) -> Void = { _ in }
+    var log = EchoLog(category: "ModelDownload")
 
     private init(name: String, url: URL, sha256: String, size: Int, installed: @escaping () -> Bool, remove: @escaping () -> Void,
                  install: @escaping @Sendable (URL) throws -> Void)
@@ -153,7 +153,7 @@ final class ModelDownload: NSObject, ObservableObject {
     }
 
     private func fail(_ reason: String) {
-        log("\(name) \(reason)")
+        log("\(name) \(reason)", .error)
         state = .failed
     }
 
@@ -168,7 +168,7 @@ final class ModelDownload: NSObject, ObservableObject {
             print("can't copy \(path): \(error)")
             exit(1)
         }
-        log = { print($0) }
+        log.echo = { print($0) }
         let started = Date()
         install(copy)
         Task { @MainActor in
@@ -181,7 +181,7 @@ final class ModelDownload: NSObject, ObservableObject {
     /// `--stems-download`, `--winds-download`, `--whisper-download` and `--dettato-download` run a download the way
     /// Settings does, print how it ended, and quit.
     func downloadForTesting() {
-        log = { print($0) }
+        log.echo = { print($0) }
         let started = Date()
         start()
         Task { @MainActor in
@@ -205,7 +205,7 @@ final class ModelDownload: NSObject, ObservableObject {
                 switch result {
                 case .success:
                     self.state = .idle
-                    self.log("\(self.name) installed")
+                    self.log("\(self.name) installed", .notice)
                 case let .failure(error):
                     self.fail("install failed: \(error)")
                 }

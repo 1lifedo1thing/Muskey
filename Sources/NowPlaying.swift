@@ -1,6 +1,9 @@
 import AppKit
 import ImageIO
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "NowPlaying")
 
 /// Watches the song that the Mac plays, through the helper in Contents/Helpers that reads MediaRemote. It calls
 /// `onTrack` on every update, for the record in the HUD, and `onSongChange` when another song starts playing.
@@ -90,7 +93,6 @@ final class NowPlaying {
     /// The song that the last change was reported for, or that was playing when watching started.
     private var reported: [String?]?
     private var pending: DispatchWorkItem?
-    var log: (String) -> Void = { _ in }
 
     private static var helperURL: URL {
         Bundle.main.bundleURL.appending(path: "Contents/Helpers/com.apple.controlcenter.Muskey.NowPlaying")
@@ -125,7 +127,7 @@ final class NowPlaying {
         process.terminationHandler = { [weak self] ended in
             DispatchQueue.main.async {
                 guard let self, self.process === ended else { return }
-                self.log("now playing helper exited (\(ended.terminationStatus))")
+                log.notice("now playing helper exited (\(ended.terminationStatus))")
                 self.process = nil
                 self.watching = false
             }
@@ -133,7 +135,7 @@ final class NowPlaying {
         do {
             try process.run()
         } catch {
-            log("starting the now playing helper failed: \(error)")
+            log.error("starting the now playing helper failed: \(String(describing: error), privacy: .public)")
             watching = false
             return
         }
@@ -148,13 +150,13 @@ final class NowPlaying {
 
     /// Plays or pauses the song, the way the play key does, through the helper while it runs.
     func togglePlayPause() {
-        guard let stdinPipe else { return log("play or pause: the now playing helper isn't running") }
+        guard let stdinPipe else { return log.error("play or pause: the now playing helper isn't running") }
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data("playpause\n".utf8))
     }
 
     /// Plays or pauses the song whatever it does now, through the helper while it runs.
     func play(_ on: Bool) {
-        guard let stdinPipe else { return log("\(on ? "play" : "pause"): the now playing helper isn't running") }
+        guard let stdinPipe else { return log.error("\(on ? "play" : "pause", privacy: .public): the now playing helper isn't running") }
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data((on ? "play\n" : "pause\n").utf8))
     }
 
@@ -167,14 +169,14 @@ final class NowPlaying {
 
     /// Moves the song to `seconds` into it, the way dragging the time in Control Center does, through the helper.
     func seek(to seconds: Double) {
-        guard let stdinPipe else { return log("seek: the now playing helper isn't running") }
+        guard let stdinPipe else { return log.error("seek: the now playing helper isn't running") }
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data(String(format: "seek %.3f\n", seconds).utf8))
     }
 
     /// Sends the seek command with the time to the player running as `pid`, the way Control Center's scrubber does,
     /// for players that leave the elapsed time alone.
     func seek(to seconds: Double, pid: Int32) {
-        guard let stdinPipe else { return log("seek: the now playing helper isn't running") }
+        guard let stdinPipe else { return log.error("seek: the now playing helper isn't running") }
         try? stdinPipe.fileHandleForWriting.write(contentsOf: Data(String(format: "seekclient %d %.3f\n", pid, seconds).utf8))
     }
 
@@ -185,14 +187,14 @@ final class NowPlaying {
         let other = { (track: Track?) in track.map { $0.playing && $0.bundleID != bundleID } ?? false }
         if let stdinPipe, track != nil {
             guard other(track) else { return done() }
-            log("pausing \(track?.bundleID ?? "the other player") before playing")
+            log.info("pausing \(self.track?.bundleID ?? "the other player", privacy: .public) before playing")
             try? stdinPipe.fileHandleForWriting.write(contentsOf: Data("pause\n".utf8))
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: done)
             return
         }
-        Self.run(["get"]) { [weak self] track in
+        Self.run(["get"]) { track in
             guard other(track) else { return done() }
-            self?.log("pausing \(track?.bundleID ?? "the other player") before playing")
+            log.info("pausing \(track?.bundleID ?? "the other player", privacy: .public) before playing")
             Self.run(["pause"]) { _ in DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: done) }
         }
     }
@@ -317,9 +319,10 @@ final class NowPlaying {
         var track = track
         if Self.logReports {
             let now = Date().timeIntervalSince1970
-            log(String(format: "report: elapsed %.3f, stamped %.3f s ago, rate %.2f, gives %.3f%@", track.elapsed ?? -1, now - (track.timestamp ?? now),
-                       track.rate ?? 0, track.position(at: Date()) ?? -1,
-                       clock.map { String(format: ", clock %.3f %.3f s ago", $0.elapsed, now - $0.at) } ?? ""))
+            let line = String(format: "report: elapsed %.3f, stamped %.3f s ago, rate %.2f, gives %.3f%@", track.elapsed ?? -1, now - (track.timestamp ?? now),
+                              track.rate ?? 0, track.position(at: Date()) ?? -1,
+                              clock.map { String(format: ", clock %.3f %.3f s ago", $0.elapsed, now - $0.at) } ?? "")
+            log.debug("\(line, privacy: .public)")
         }
         if let clock, track.bundleID == clock.bundleID {
             track.elapsed = clock.elapsed

@@ -280,6 +280,9 @@ private struct GeneralPane: View {
                     LabeledContent("Machine ID") { MachineIDPill() }
                 }
             }
+            Section("Logs") {
+                KeptLogsRow(logs: .shared)
+            }
         }
         .formStyle(.grouped)
     }

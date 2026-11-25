@@ -237,7 +237,7 @@ enum LyricsCoverage {
 final class LyricsSync {
     /// The timing changed from estimated to heard, or the speech model started or finished downloading.
     var onChange: () -> Void = {}
-    var log: (String) -> Void = { _ in }
+    var log = EchoLog(category: "LyricsSync")
     /// Whisper, when Settings has it, which times lyrics in place of Apple's speech model and writes lyrics for
     /// songs that LRCLIB doesn't have.
     var whisper: () -> WhisperBackend? = { nil }
@@ -427,7 +427,7 @@ final class LyricsSync {
             }
             return true
         } catch {
-            log("lyrics: hearing the vocals failed: \(error)")
+            log("lyrics: hearing the vocals failed: \(error)", .error)
             tap.stop()
             stopCollecting()
             return false
@@ -522,7 +522,7 @@ final class LyricsSync {
                 guard let self else { return }
                 self.fitsRunning -= 1
                 switch result {
-                case let .failure(error): self.log("lyrics: the fit failed: \(error.localizedDescription)")
+                case let .failure(error): self.log("lyrics: the fit failed: \(error.localizedDescription)", .error)
                 case .success(nil): break
                 case let .success(found?):
                     let took = String(format: "%.1f s", Date().timeIntervalSince(began))
@@ -545,7 +545,7 @@ final class LyricsSync {
         let verdict = LiveFit.verdict(of: lyrics, found)
         let lines = "\(found.starts.count) of \(found.sung) lines"
         if verdict == .unsure {
-            guard last else { return log("lyrics: the fit of \(lines) in \(took) can't tell yet whether their times hold") }
+            guard last else { return log("lyrics: the fit of \(lines) in \(took) can't tell yet whether their times hold", .debug) }
             // A song whose singing the model can't make out isn't heard again on every play, as long as enough of
             // its lines were sung to tell. A play that ended sooner leaves the check to the next one.
             guard found.sung >= Self.checkAfter.lines * 2 else {
@@ -832,17 +832,17 @@ final class LyricsSync {
     /// Three failures in a row: lyrics being written stop with a failure, and lyrics being timed are heard by Apple's
     /// speech model instead, for this song.
     private func whisperFailed(_ error: Error) {
-        log("lyrics: Whisper failed: \(error)")
+        log("lyrics: Whisper failed: \(error)", .error)
         whisperFailures += 1
         guard whisperFailures == 3 else { return }
         if writing {
-            log("lyrics: stopped writing them, Whisper keeps failing")
+            log("lyrics: stopped writing them, Whisper keeps failing", .error)
             // Keeps what was written, and lets Retry start over.
             end()
             onWritingFailed()
         } else if let text {
             stopListening()
-            log("lyrics: listening with Apple speech, Whisper keeps failing")
+            log("lyrics: listening with Apple speech, Whisper keeps failing", .notice)
             listen(to: text, apple: true)
         }
     }
@@ -860,7 +860,7 @@ final class LyricsSync {
             let backend = apple || (transcribed && !writing) ? nil : whisper()
             guard attempt == started else { return }
             guard backend != nil || locale != nil else {
-                log("lyrics: no speech model for their language")
+                log("lyrics: no speech model for their language", .notice)
                 // The lyrics timing model needs no language, so the fit still times the lines for the next play.
                 if fitting != nil, separates(), collect() { log("lyrics: hearing the vocals to time them by the fit") }
                 return
@@ -926,7 +926,7 @@ final class LyricsSync {
                 log("lyrics: listening with \(backend == nil ? locale!.identifier : "Whisper")\(separate ? " to the vocals" : "")")
             } catch {
                 guard attempt == started else { return }
-                log("lyrics: listening failed: \(error)")
+                log("lyrics: listening failed: \(error)", .error)
                 tap.stop()
                 listener?.stop()
                 vocals?.stop()
@@ -1114,10 +1114,10 @@ private final class Finisher {
     var written: [Lyrics.Line]
     var covered: [ClosedRange<Double>]
     var failed = false
-    let log: (String) -> Void
+    let log: EchoLog
 
     init(song: String, store: LyricsStore, whisper: WhisperTranscriber, vocals: VocalsFeeding?, feedRate: Double, closed: [LyricsSync.Span],
-         earlier: [Lyrics.Line], written: [Lyrics.Line], covered: [ClosedRange<Double>], log: @escaping (String) -> Void)
+         earlier: [Lyrics.Line], written: [Lyrics.Line], covered: [ClosedRange<Double>], log: EchoLog)
     {
         self.song = song
         self.store = store

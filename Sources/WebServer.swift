@@ -7,7 +7,7 @@ import SystemConfiguration
 // addresses of this Mac (the local network, Tailscale and other VPNs) and never on 0.0.0.0, so nothing outside those
 // networks can reach it. Files go out a chunk at a time, with byte ranges, which Safari needs to play audio.
 
-let webLog = Logger(subsystem: "com.lowtechguys.Muskey", category: "Web")
+private let webLog = Logger(subsystem: LOG_SUBSYSTEM, category: "WebServer")
 
 struct WebRequest {
     let method: String

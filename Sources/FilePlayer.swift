@@ -3,6 +3,9 @@ import AVFoundation
 import CoreTransferable
 import CryptoKit
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "FilePlayer")
 
 /// A file or a link dropped on the HUD: a file from Finder, a link from a browser, or a link dragged as text.
 struct DroppedSong: Transferable {
@@ -75,7 +78,6 @@ final class FilePlayer {
     var onStarted: (URL, Song?) -> Void = { _, _ in }
     /// Pauses the song of another app before Muskey Player starts one, and calls its argument once that is done.
     var pauseOthers: (@escaping () -> Void) -> Void = { $0() }
-    var log: (String) -> Void = { _ in }
     /// Muskey Player starts or stops having a song, for Stop Playing in the menu.
     var onChange: () -> Void = {}
     /// Muskey Player moved its song to a place, in seconds, for any move. Now Playing reports some of them seconds later.
@@ -157,7 +159,7 @@ final class FilePlayer {
     func add(_ urls: [URL], next: Bool, folders: [URL: URL] = [:]) {
         let items = Self.playable(urls).map { QueueItem(url: $0, cached: cache.song(for: $0), folder: folders[$0]) }
         guard !items.isEmpty else { return }
-        log("adding \(items.count) song\(items.count == 1 ? "" : "s") to the queue\(next ? " after the song that plays" : "")")
+        log.info("adding \(items.count) song\(items.count == 1 ? "" : "s", privacy: .public) to the queue\(next ? " after the song that plays" : "", privacy: .public)")
         let at = next ? min(queue.count, (currentID == nil ? resume : index + 1)) : queue.count
         queue.insert(contentsOf: items, at: at)
         if !hasSong, download == nil { play(items[0].id) }
@@ -251,7 +253,7 @@ final class FilePlayer {
 
     /// Stop Playing: Muskey Player quits, with the songs opened together.
     func close() {
-        log("stop playing")
+        log.info("stop playing")
         download?.cancel()
         download = nil
         install?.cancel()
@@ -273,7 +275,7 @@ final class FilePlayer {
     /// A link or a path that was pasted or typed, with or without `https://`.
     /// A folder that was opened holds no song that Muskey Player plays.
     func noSongs(in folder: URL) {
-        log("no songs in the folder \(folder.lastPathComponent)")
+        log.notice("no songs in the folder \(folder.lastPathComponent, privacy: .public)")
         show(.unplayable(name: folder.lastPathComponent))
     }
 
@@ -333,7 +335,6 @@ final class FilePlayer {
         show(.installing(progress: nil))
         let install = DownloaderInstall()
         self.install = install
-        install.log = log
         install.onProgress = { [weak self, weak install] progress in
             guard let self, self.install === install else { return }
             show(.installing(progress: progress))
@@ -349,7 +350,7 @@ final class FilePlayer {
 
     /// Cancel, or the ✕ of a failure: whatever step runs stops, and the song that plays goes on.
     func dismiss() {
-        if lastActivity != nil { log("opening cancelled") }
+        if lastActivity != nil { log.info("opening cancelled") }
         download?.cancel()
         download = nil
         install?.cancel()
@@ -392,7 +393,7 @@ final class FilePlayer {
             return play(Song(path: url.path))
         }
         if var song = cache.song(for: url) {
-            log("opening a link that was downloaded before")
+            log.info("opening a link that was downloaded before")
             song.name = SongName.link(url)
             return play(song)
         }
@@ -401,13 +402,12 @@ final class FilePlayer {
         // A link to a file is named by the file, as its song is unless the file carries a title.
         let name = direct ? SongName.link(url) ?? site : site
         guard direct || Downloader.find() != nil else {
-            log("a link needs yt-dlp, which isn't installed")
+            log.notice("a link needs yt-dlp, which isn't installed")
             return show(.needsDownloader(name: name))
         }
         show(.opening(step: direct ? .downloading : .reading, name: name, progress: nil))
         let download = LinkDownload(url: url, folder: cache.folder, direct: direct)
         self.download = download
-        download.log = log
         // A failure keeps the title that the download found.
         var known = name
         var artist: String?
@@ -458,7 +458,7 @@ final class FilePlayer {
         pauseOthers { [weak self] in
             guard let self, handing == current else { return }
             guard launch(), let input else { return show(.unplayable(name: shown)) }
-            log("opening \(song.title == nil ? "a file" : "a downloaded song") in Muskey Player")
+            log.info("opening \(song.title == nil ? "a file" : "a downloaded song", privacy: .public) in Muskey Player")
             starting = song
             reading = true
             try? input.fileHandleForWriting.write(contentsOf: Data("open \(json)\n".utf8))
@@ -486,7 +486,7 @@ final class FilePlayer {
         process.terminationHandler = { [weak self] ended in
             DispatchQueue.main.async {
                 guard let self, self.process === ended else { return }
-                self.log("Muskey Player exited (\(ended.terminationStatus))")
+                log.notice("Muskey Player exited (\(ended.terminationStatus))")
                 self.process = nil
                 self.input = nil
                 self.hasSong = false
@@ -495,7 +495,7 @@ final class FilePlayer {
         do {
             try process.run()
         } catch {
-            log("starting Muskey Player failed: \(error)")
+            log.error("starting Muskey Player failed: \(String(describing: error), privacy: .public)")
             return false
         }
         self.process = process
@@ -517,12 +517,12 @@ final class FilePlayer {
     private func event(_ line: String) {
         if line.hasPrefix("ready") {
             reading = false
-            log("Muskey Player plays the song (\(line.dropFirst(6)) seconds)")
+            log.info("Muskey Player plays the song (\(line.dropFirst(6), privacy: .public) seconds)")
             show(nil)
             // A dropped file and the same file opened by its path can name it through /private/tmp and /tmp.
             let resolved = { (path: String?) in path.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } }
             let replaced = hasSong && current != nil
-            if replaced, resolved(current?.path) == resolved(starting?.path) { log("Muskey Player plays the same file again from its start") }
+            if replaced, resolved(current?.path) == resolved(starting?.path) { log.info("Muskey Player plays the same file again from its start") }
             current = starting
             hasSong = true
             onPlaying()
@@ -535,7 +535,7 @@ final class FilePlayer {
             }
         } else if line.hasPrefix("failed") {
             reading = false
-            log("Muskey Player can't play the song: \(line.dropFirst(7))")
+            log.error("Muskey Player can't play the song: \(line.dropFirst(7), privacy: .public)")
             current = nil
             show(.unplayable(name: opening.map { $0.isFileURL ? $0.lastPathComponent : SongName.link($0) ?? $0.host() ?? $0.absoluteString } ?? "Song"))
         } else if line == "ended", currentID == nil ? resume < queue.count : index + 1 < queue.count {
@@ -546,7 +546,7 @@ final class FilePlayer {
             let values = line.dropFirst(3).split(separator: " ").compactMap { Double($0) }
             if values.count == 3 { onClock(values[0], values[1], values[2]) }
         } else if line == "next" || line == "previous" {
-            log("\(line) song in Muskey Player")
+            log.info("\(line, privacy: .public) song in Muskey Player")
             skip(line == "next" ? 1 : -1)
         }
     }
@@ -583,7 +583,6 @@ enum Downloader {
 /// SHA-256 sums published with it, and runs it once to see that it works.
 final class DownloaderInstall: NSObject, URLSessionDownloadDelegate {
     var onProgress: (Double?) -> Void = { _ in }
-    var log: (String) -> Void = { _ in }
     private var done: ((Bool) -> Void)?
     private var session: URLSession?
     private static let release = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
@@ -648,7 +647,7 @@ final class DownloaderInstall: NSObject, URLSessionDownloadDelegate {
     private func finish(_ ok: Bool, _ line: String) {
         guard let done else { return }
         self.done = nil
-        log(line)
+        log.log(level: ok ? .notice : .error, "\(line, privacy: .public)")
         session?.invalidateAndCancel()
         done(ok)
     }
@@ -662,7 +661,6 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
 
     /// The step, the song once the page names it, and the part done while it is known.
     var onProgress: (OpenStep, FilePlayer.Song?, Double?) -> Void = { _, _, _ in }
-    var log: (String) -> Void = { _ in }
     private let url: URL
     private let folder: URL
     private let direct: Bool
@@ -730,7 +728,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
 
     func urlSession(_: URLSession, task _: URLSessionTask, didCompleteWithError error: Error?) {
         if let error, !cancelled {
-            log("downloading a link failed: \(error.localizedDescription)")
+            log.error("downloading a link failed: \(error.localizedDescription, privacy: .public)")
             finish(nil)
         }
     }
@@ -829,7 +827,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
                     return
                 }
                 let error = errorText.split(separator: "\n").last { $0.hasPrefix("ERROR") }.map(String.init) ?? "exit \(ended.terminationStatus)"
-                log("yt-dlp failed: \(error)")
+                log.error("yt-dlp failed: \(error, privacy: .public)")
                 // Sites change faster than yt-dlp's releases, so the copy that Muskey installed updates itself once.
                 if !updated, downloader == Downloader.installed {
                     onProgress(.updating, nil, nil)
@@ -850,7 +848,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
         do {
             try process.run()
         } catch {
-            log("starting yt-dlp failed: \(error)")
+            log.error("starting yt-dlp failed: \(String(describing: error), privacy: .public)")
             return finish(nil)
         }
         // A download that writes nothing for two minutes is stuck, and none takes longer than 20 minutes.
@@ -859,7 +857,7 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
                 guard let self, self.process === process, process.isRunning else { return }
                 if Date().timeIntervalSince(lastLine) > 120 || Date().timeIntervalSince(started) > 1200 {
-                    log("yt-dlp stopped answering, ending it")
+                    log.error("yt-dlp stopped answering, ending it")
                     process.terminate()
                     return
                 }

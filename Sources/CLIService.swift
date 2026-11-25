@@ -1,6 +1,9 @@
 import AVFoundation
 import AppKit
+import os
 import SwiftUI
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "CLIService")
 
 // The app's side of the `muskey` command line tool: a message port that only processes of the same user can reach,
 // and the jobs that the tool waits for. Playing goes through the app delegate, which shows the song in the HUD.
@@ -51,7 +54,6 @@ import SwiftUI
 @MainActor final class CLIService {
     static let shared = CLIService()
 
-    var log: (String) -> Void = { _ in }
     /// Plays the inputs of a request in the HUD with its changes, or listens to the song that plays now.
     var play: (CLIRequest, CLIJob) -> Void = { _, job in job.fail("Muskey is still starting") }
     /// Serves a file at a private link, and gives the link.
@@ -67,7 +69,6 @@ import SwiftUI
     /// after the answer, and the tool asks how it goes.
     func start() {
         guard port == nil else { return }
-        writer.log = { [weak self] in self?.log($0) }
         writer.serve = { [weak self] in self?.serve($0) }
         writer.knownKey = { [weak self] in self?.knownKey($0) }
         CLIWriter.removeOldFiles()
@@ -78,11 +79,11 @@ import SwiftUI
             let data = (try? JSONEncoder().encode(response)) ?? Data()
             return Unmanaged.passRetained(data as CFData)
         }, nil, nil) else {
-            return log("cli: the message port couldn't be opened, another Muskey may have it")
+            return log.error("cli: the message port couldn't be opened, another Muskey may have it")
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), CFMessagePortCreateRunLoopSource(nil, port, 0), .commonModes)
         self.port = port
-        log("cli: listening")
+        log.info("cli: listening")
     }
 
     /// A request from the web remote, answered as the tool's are.
@@ -108,19 +109,19 @@ import SwiftUI
         case .cancel:
             if let id = request.job, let job = jobs[id] {
                 job.cancel()
-                log("cli: job \(id) stopped")
+                log.info("cli: job \(id, privacy: .public) stopped")
             }
             return CLIResponse(done: true)
         case .play:
             let job = CLIJob()
             jobs[job.id] = job
-            log("cli: play \(describe(request))")
+            log.info("cli: play \(self.describe(request), privacy: .public)")
             play(request, job)
             return job.response
         case .write:
             let job = CLIJob()
             jobs[job.id] = job
-            log("cli: write \(request.format?.rawValue ?? "?") from \(describe(request))")
+            log.info("cli: write \(request.format?.rawValue ?? "?", privacy: .public) from \(self.describe(request), privacy: .public)")
             writer.write(request, job: job)
             return job.response
         }
@@ -168,7 +169,6 @@ extension DetectedKey {
 /// Writes a song with its changes, or its notes, for the tool. One job runs at a time, with a stems separation of
 /// its own, so a job never takes over the separation of the song in the HUD.
 @MainActor final class CLIWriter {
-    var log: (String) -> Void = { _ in }
     var serve: (String) -> String? = { _ in nil }
     /// The key that the HUD shows for a song (title, artist, album) without listening: a remembered one or Noiseblend's.
     var knownKey: ([String?]) -> DetectedKey? = { _ in nil }
@@ -201,7 +201,7 @@ extension DetectedKey {
             } catch {
                 job.fail(error.localizedDescription)
             }
-            if let error = job.response.error { log("cli: job \(job.id) failed: \(error)") }
+            if let error = job.response.error { log.error("cli: job \(job.id, privacy: .public) failed: \(error, privacy: .public)") }
         }
     }
 
@@ -243,7 +243,7 @@ extension DetectedKey {
         }
         job.step = nil
         job.progress = nil
-        log("cli: job \(job.id) wrote a \(format.rawValue) file")
+        log.info("cli: job \(job.id, privacy: .public) wrote a \(format.rawValue, privacy: .public) file")
         job.finish("Wrote \(out.lastPathComponent)")
     }
 
@@ -256,7 +256,6 @@ extension DetectedKey {
         guard direct || Downloader.find() != nil else { throw Failure("a link to a page needs yt-dlp. Install it from the HUD with Open URL") }
         job.step = "Downloading"
         let download = LinkDownload(url: url, folder: links.folder, direct: direct)
-        download.log = log
         download.onProgress = { step, _, progress in
             job.step = step == .converting ? "Converting" : "Downloading"
             job.progress = progress
@@ -388,7 +387,7 @@ extension DetectedKey {
                 job.progress = 0
                 builder.progress = { job.progress = $0 }
                 job.onCancel = { [builder] in builder.cancel() }
-                cache = await NotesPipeline.stems(for: path, builder: builder, log: log)
+                cache = await NotesPipeline.stems(for: path, builder: builder)
                 job.onCancel = {}
                 builder.progress = { _ in }
             }
@@ -406,7 +405,7 @@ extension DetectedKey {
                 throw Failure("no instrument plays in the song")
             }
             stem = richest
-            log("cli: the \(stem.name.lowercased()) plays the most")
+            log.info("cli: the \(stem.name.lowercased(), privacy: .public) plays the most")
             kept = NotesStore.load(path: path, stem: stem)
         } else {
             throw Failure("no instrument to transcribe")

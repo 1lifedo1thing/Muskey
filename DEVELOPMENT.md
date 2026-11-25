@@ -236,6 +236,39 @@ While **Send error reports** is on in Settings > General, Muskey sends its crash
 
 `make build` keeps the dSYMs of the release in `build/dSYMs`, and `make upload` sends them to Sentry after a full release, so that the reports name Muskey's functions.
 
+### Logs
+
+Muskey writes its log to the unified log of macOS, under the subsystem `com.lowtechguys.Muskey`. Each line has a category named after the source file that wrote it, like `App`, `FilePlayer`, `LyricsSync` or `WebRemote`.
+
+To follow the log while Muskey runs:
+
+```sh
+log stream --predicate 'subsystem == "com.lowtechguys.Muskey"' --level debug
+```
+
+To read the last 10 minutes of it:
+
+```sh
+log show --predicate 'subsystem == "com.lowtechguys.Muskey"' --info --debug --last 10m
+```
+
+Add `AND category == "SlowStream"` to the predicate to read a single file's lines.
+
+Each line has a level:
+
+- **Debug** for lines that come often: the reports of every second or two, every request of the web remote, the timing of the stem windows, and the lines of `--log-keys` and the other flags for testing.
+- **Info** for routine events, like a song that opens or the lyrics that show.
+- **Notice** for changes that a bug report needs, like a song change, the key that a listen found, or the pitch change starting and stopping.
+- **Error** for failures.
+
+macOS writes the notice and error lines to disk, and keeps the debug and info lines in memory for a short while. There are three ways to have it keep them on disk as well:
+
+- Builds made with `make` or `make install` keep them, through `OSLogPreferences` in their Info.plist.
+- **Keep debug logs** in Settings > General keeps them for a chosen time, from 1 hour to Always. The first time, it asks for an administrator password and installs a LaunchDaemon, `/Library/LaunchDaemons/com.lowtechguys.Muskey.keep-debug-logs.plist`. The daemon runs `log config --subsystem com.lowtechguys.Muskey --mode level:debug,persist:debug`. It checks the time once a minute, and when the time is up, it resets the setting and removes itself. Its program is a root-owned copy of the `muskey` tool, which hands its arguments to `/bin/sh`, so that System Settings lists the daemon under Muskey.
+- `muskey logs persist on` changes the same setting from a terminal through `sudo`, with no end time. `muskey logs persist off` puts it back, and `muskey logs persist status` prints it.
+
+With `--log-keys`, each line of the app delegate ends with the host time in seconds (`@1234.567`, from `CACurrentMediaTime`), to line up a screen recording with the keys.
+
 ### Command line
 
 The `muskey` tool lives in `Contents/Helpers`, and Settings > Remote links it into `~/.local/bin`. It reaches the app through a message port named `com.lowtechguys.Muskey.cli`, which only processes of the same user can open. Requests and answers are JSON, from `Shared/MuskeyIPC.swift`, which both are built with. When the port is missing, the tool opens Muskey in the background and waits up to 20 seconds for it.
@@ -402,4 +435,4 @@ A scroll over a stem changes its volume, from 0 to 150 %, by 1 % for every 3 poi
 | `--test-sentry` | Send one event to the `dev` environment of Muskey's Sentry project, print its ID, and quit |
 | `--test-hang S` | Block the main thread for S seconds, 3 seconds after launch, and report hangs to Sentry from 2 seconds on |
 
-Muskey writes each result to `~/Library/Logs/Muskey.log`.
+Muskey writes each result to its log, which [Logs](#logs) explains how to read.

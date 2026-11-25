@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "WebStream")
 
 /// The Mac's output for the phones that picked **Phone** in the web remote. The pitch change copies what it plays into
 /// a ring, and every 20 ms the frames written since are sent to each phone as AAC in ADTS frames (about 160 kbps), or
@@ -20,7 +23,6 @@ final class WebStream: @unchecked Sendable {
 
     /// True on the main thread when the first phone starts listening, false a few seconds after the last one left.
     var onListening: (Bool) -> Void = { _ in }
-    var log: (String) -> Void = { _ in }
 
     var listeners: Int { queue.sync { sinks.count } }
 
@@ -39,7 +41,7 @@ final class WebStream: @unchecked Sendable {
                 start()
                 DispatchQueue.main.async { [onListening] in onListening(true) }
             }
-            log("remote: a phone listens (\(sinks.count) now, \(Int(rate)) Hz)")
+            log.info("remote: a phone listens (\(self.sinks.count) now, \(Int(rate)) Hz)")
         }
         return rate
     }
@@ -60,7 +62,7 @@ final class WebStream: @unchecked Sendable {
 
     private func drop(_ sink: WebSink?) {
         sinks.removeAll { $0.sink === sink || $0.sink.closed }
-        log("remote: a phone stopped listening (\(sinks.count) left)")
+        log.info("remote: a phone stopped listening (\(self.sinks.count) left)")
         guard sinks.isEmpty, endWork == nil else { return }
         // Safari may close the stream and open it again, so the Mac waits a moment before it plays out loud again.
         let work = DispatchWorkItem { [self] in

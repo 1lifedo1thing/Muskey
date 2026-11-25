@@ -1,15 +1,14 @@
 import AppKit
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "HangWatch")
 
 /// Watches the main thread from a background queue and logs every time it stops answering, the way the hang detection
 /// of Lowtech does in Clop and rcmd. A block is sent to the main thread twice a second, and the time it waited is
 /// the length of the hang. Past `sampleAfter` seconds, `sample(1)` reads the main thread's stack while the hang
 /// still lasts, so a hang that never ends is in the log too. Nothing restarts the app.
 final class HangWatch: @unchecked Sendable {
-    init(log: @escaping @Sendable (String) -> Void) {
-        self.log = log
-    }
-
     /// A wait shorter than this is not logged.
     static let threshold = 0.5
     /// A hang this long gets its main thread stack sampled, once per hang and at most once a minute.
@@ -33,7 +32,6 @@ final class HangWatch: @unchecked Sendable {
         }
     }
 
-    private let log: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "muskey.hang-watch", qos: .userInteractive)
     private var timer: DispatchSourceTimer?
 
@@ -53,7 +51,11 @@ final class HangWatch: @unchecked Sendable {
                 sampled = pending.id
                 lastSample = now
                 let stack = Self.mainThreadStack() ?? "(sample read nothing)"
-                log(String(format: "hang: the main thread hasn't answered for %.1f s\n%@", waited, stack))
+                log.error("\(String(format: "hang: the main thread hasn't answered for %.1f s", waited), privacy: .public)")
+                // The unified log cuts a message at about 1 KB, and a stack is often longer, so it goes in parts.
+                for part in Self.parts(of: stack) {
+                    log.error("\(part, privacy: .public)")
+                }
             }
             return
         }
@@ -77,10 +79,25 @@ final class HangWatch: @unchecked Sendable {
         let waited = time - pending.sent
         guard waited >= Self.threshold else { return }
         if sampled == id {
-            log(String(format: "hang: the main thread answered again after %.1f s", waited))
+            log.notice("\(String(format: "hang: the main thread answered again after %.1f s", waited), privacy: .public)")
         } else {
-            log(String(format: "hang: the main thread didn't answer for %.2f s", waited))
+            log.notice("\(String(format: "hang: the main thread didn't answer for %.2f s", waited), privacy: .public)")
         }
+    }
+
+    /// Whole lines of a stack, joined into parts of at most 900 bytes.
+    private static func parts(of stack: String) -> [String] {
+        var parts: [String] = []
+        var part = ""
+        for line in stack.split(separator: "\n", omittingEmptySubsequences: false) {
+            if !part.isEmpty, part.utf8.count + line.utf8.count + 1 > 900 {
+                parts.append(part)
+                part = ""
+            }
+            part += part.isEmpty ? String(line.prefix(900)) : "\n" + line
+        }
+        if !part.isEmpty { parts.append(part) }
+        return parts
     }
 
     /// The main thread's part of a `sample(1)` of Muskey, which takes about 0.2 s and needs no permission.

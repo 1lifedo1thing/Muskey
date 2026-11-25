@@ -1,5 +1,8 @@
 import Accelerate
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "SlowStream")
 
 /// Slows down a song that another player plays. The player plays on at its own speed, so the output falls behind
 /// it: the pitch change keeps the tap's audio in a backlog and reads it back slower (`ps_slow_*` in pitch.h). This
@@ -42,7 +45,6 @@ final class SlowStream {
     static let catchUp = 1.25
     /// Slowing had to stop because the player didn't take the moves back. Gets the speed that was asked for.
     var onFailed: (Double) -> Void = { _ in }
-    var log: (String) -> Void = { _ in }
 
     init(pitch: PitchChanger) {
         self.pitch = pitch
@@ -105,7 +107,7 @@ final class SlowStream {
         if let last, !last.playing, report.playing, report.song == last.song, report.song == pausedSong, let paused = pausedWritten {
             pausedWritten = nil
             if bounce {
-                log("slow: the pause around the move was the player's own")
+                log.debug("slow: the pause around the move was the player's own")
             } else if drain != nil || awaitingSplice != nil {
                 pendingResume = paused
             } else {
@@ -128,9 +130,10 @@ final class SlowStream {
                 let at = report.position(at: Date()) ?? 0
                 let frame = state.written - min(state.written, UInt64(max(0, at) * rate))
                 next = (report, frame)
-                log(String(format: "slow: %@ starts once the output reaches it, %.1f s from now", report.label, Double(frame - min(frame, state.reading)) / rate / max(readSpeed, 0.1)))
+                let line = String(format: "slow: %@ starts once the output reaches it, %.1f s from now", report.label, Double(frame - min(frame, state.reading)) / rate / max(readSpeed, 0.1))
+                log.info("\(line, privacy: .public)")
             } else {
-                log("slow: the player skipped to \(report.label), the output jumps to it")
+                log.info("slow: the player skipped to \(report.label, privacy: .public), the output jumps to it")
                 jump(to: report, at: report.position(at: Date()) ?? 0, state: state)
             }
             return
@@ -139,7 +142,7 @@ final class SlowStream {
         // A seek in the player that Muskey didn't ask for is heard at once.
         if report.song == current.track.song, let last, last.song == report.song, report.playing, last.playing,
            let before = last.position(at: Date()), let now = report.position(at: Date()), abs(now - before) > 2, !ownMove(near: now) {
-            log(String(format: "slow: the player moved the song to %.1f s, the output jumps to it", now))
+            log.info("\(String(format: "slow: the player moved the song to %.1f s, the output jumps to it", now), privacy: .public)")
             jump(to: report, at: now, state: state)
         }
     }
@@ -160,7 +163,7 @@ final class SlowStream {
     func moved(_ track: NowPlaying.Track, to seconds: Double) {
         let report = player() ?? track
         guard active, let state = pitch.slowState else { return move(report, seconds) }
-        log(String(format: "slow: the song moves to %.1f s, the output jumps to it", seconds))
+        log.info("\(String(format: "slow: the song moves to %.1f s, the output jumps to it", seconds), privacy: .public)")
         expectMove(to: seconds)
         move(report, seconds)
         jump(to: report, at: seconds, state: state)
@@ -180,12 +183,12 @@ final class SlowStream {
                 current = Heard(track: track, song: track.position(at: Date()) ?? 0, clock: pitch.slowState?.clock ?? 0)
                 lastPlayer = player()
                 startTimer()
-                log("slow: the output reads the song from the backlog")
+                log.notice("slow: the output reads the song from the backlog")
             }
             setReadSpeed(target)
         } else {
             // The song plays at its speed again at once, and the output catches up with the player from there.
-            log("slow: back at 100 %, the output catches up with the player")
+            log.info("slow: back at 100 %, the output catches up with the player")
             setReadSpeed(1)
         }
         refresh()
@@ -195,7 +198,7 @@ final class SlowStream {
     /// the app, which shows the speed that was asked for as a failure.
     func stop(_ reason: String, failed: Bool = false) {
         guard active else { return }
-        log("slow: stopped, \(reason)")
+        log.log(level: failed ? .error : .notice, "slow: stopped, \(reason, privacy: .public)")
         let wanted = speed
         cancelDrain()
         speed = 1
@@ -310,7 +313,7 @@ final class SlowStream {
             let since = missingSince ?? Date()
             missingSince = since
             if Date().timeIntervalSince(since) > 3 {
-                log("slow: the pitch change stopped, the output plays the tap as it is")
+                log.info("slow: the pitch change stopped, the output plays the tap as it is")
                 finish()
             }
             return
@@ -320,7 +323,7 @@ final class SlowStream {
         guard state.engaged != 0 else { return }
         defer { lastWritten = state.written }
         if state.written < lastWritten, let report = player() {
-            log("slow: the output started over with an empty backlog")
+            log.info("slow: the output started over with an empty backlog")
             cancelDrain()
             next = nil
             current = Heard(track: report, song: report.position(at: Date()) ?? 0, clock: state.clock)
@@ -331,7 +334,7 @@ final class SlowStream {
             let song = Double(state.reading - pending.frame) / rate
             current = Heard(track: pending.track, song: song, clock: state.clock)
             next = nil
-            log("slow: the output reached \(pending.track.label)")
+            log.info("slow: the output reached \(pending.track.label, privacy: .public)")
             refresh()
         }
         let backlog = Double(state.written - min(state.written, state.reading)) / rate
@@ -342,9 +345,10 @@ final class SlowStream {
         }
         if Self.logState, Date().timeIntervalSince(loggedAt) >= 2, let current {
             loggedAt = Date()
-            log(String(format: "slow: backlog %.2f s, heard %.2f s, player %.2f s, read at %.2f, %d splices, %d missed",
-                       backlog, current.song + (state.clock - current.clock) / rate, player()?.position(at: Date()) ?? -1, readSpeed,
-                       state.splices, state.missed))
+            let line = String(format: "slow: backlog %.2f s, heard %.2f s, player %.2f s, read at %.2f, %d splices, %d missed",
+                              backlog, current.song + (state.clock - current.clock) / rate, player()?.position(at: Date()) ?? -1, readSpeed,
+                              state.splices, state.missed)
+            log.debug("\(line, privacy: .public)")
         }
         if let drain {
             return follow(drain, state: state)
@@ -363,14 +367,14 @@ final class SlowStream {
             // Back at 100 %, a player that plays another song than the one heard, and that the output isn't on its way
             // to, leaves no moment to catch up with.
             if speed == 1, let report = player(), report.playing, report.song != current?.track.song, next == nil {
-                log("slow: the player plays another song, the output plays the tap as it is")
+                log.info("slow: the player plays another song, the output plays the tap as it is")
                 finish()
             }
             return
         }
         if speed == 1, backlog <= 4 {
             if backlog > 0.05 { return setReadSpeed(Self.catchUp) }
-            log("slow: caught up with the player, the output plays the tap as it is")
+            log.info("slow: caught up with the player, the output plays the tap as it is")
             return finish()
         }
         // In a player that hasn't moved a song for Muskey yet, the first move comes early: one that the player ignores
@@ -418,7 +422,7 @@ final class SlowStream {
     private func startDrain(_ new: Drain, report: NowPlaying.Track) {
         drain = new
         expectMove(to: new.target)
-        log(String(format: "slow: the player moves back to %.1f s (%@)", new.target, new.why))
+        log.info("\(String(format: "slow: the player moves back to %.1f s (%@)", new.target, new.why), privacy: .public)")
         move(report, new.target)
     }
 
@@ -461,7 +465,7 @@ final class SlowStream {
             drain = nil
             searchID += 1
             failedDrains += 1
-            log(String(format: "slow: the audio after the move wasn't found before the output reached it (best match %.2f)", current.best))
+            log.error("\(String(format: "slow: the audio after the move wasn't found before the output reached it (best match %.2f)", current.best), privacy: .public)")
             if let folder = Self.dumpFolder { dump(current, state: state, to: folder) }
             if failedDrains >= 2 { stop("the player didn't play the song again after moving it back", failed: true) }
             return
@@ -510,9 +514,10 @@ final class SlowStream {
                 self.awaitingSplice = handed
                 self.drain = nil
                 self.failedDrains = 0
-                self.log(String(format: "slow: found the audio after the move (%.4f match, window %d), the output steps over %.1f s of it",
-                                found.score, Int((found.window.lowerBound - drain.reference.lowerBound) * 10 / UInt64(rate)),
-                                Double(to - found.window.lowerBound) / rate))
+                let line = String(format: "slow: found the audio after the move (%.4f match, window %d), the output steps over %.1f s of it",
+                                  found.score, Int((found.window.lowerBound - drain.reference.lowerBound) * 10 / UInt64(rate)),
+                                  Double(to - found.window.lowerBound) / rate)
+                log.info("\(line, privacy: .public)")
             }
         }
     }
@@ -525,9 +530,10 @@ final class SlowStream {
         let span = pitch.slowRead(from: start, count: Int(state.written - start))
         let file = URL(fileURLWithPath: folder).appendingPathComponent("fail-\(dumps).f32")
         try? span.samples.withUnsafeBufferPointer { Data(buffer: $0) }.write(to: file)
-        log(String(format: "slow: saved %@ (%.2f s): old audio at %.2f s for %.2f s, the move at %.2f s", file.path,
-                   Double(span.samples.count) / rate, Double(drain.reference.lowerBound - span.start) / rate,
-                   Double(drain.reference.upperBound - drain.reference.lowerBound) / rate, Double(drain.searchFrom - span.start) / rate))
+        let line = String(format: "slow: saved %@ (%.2f s): old audio at %.2f s for %.2f s, the move at %.2f s", file.path,
+                          Double(span.samples.count) / rate, Double(drain.reference.lowerBound - span.start) / rate,
+                          Double(drain.reference.upperBound - drain.reference.lowerBound) / rate, Double(drain.searchFrom - span.start) / rate)
+        log.debug("\(line, privacy: .public)")
     }
 }
 

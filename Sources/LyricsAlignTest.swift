@@ -66,7 +66,7 @@ enum LyricsAlignTest {
             exit(1)
         }
         let builder = StemsCacheBuilder()
-        builder.log = { print($0) }
+        builder.log.echo = { print($0) }
         Task { @MainActor in
             let duration = await ChordDetector.duration(url)
             let parsed = reference.hasSuffix(".ttml") ? TTML.lyrics(data, duration: duration) : String(data: data, encoding: .utf8).flatMap { Lyrics.parse(lrc: $0) }
@@ -92,7 +92,7 @@ enum LyricsAlignTest {
                 vocals = zip(audio.left, audio.right).map { ($0 + $1) * 0.5 }
                 vocalsRate = audio.rate
             } else {
-                guard let cache = await NotesPipeline.stems(for: file, builder: builder, log: { print($0) }) else {
+                guard let cache = await NotesPipeline.stems(for: file, builder: builder) else {
                     print("the stems couldn't be separated")
                     exit(1)
                 }

@@ -1,5 +1,8 @@
 import Foundation
 import Network
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "WebLinks")
 
 /// The private links that `muskey --link` prints. Each file is copied into a folder named after a random token of 128
 /// bits, so a link keeps working after Muskey restarts, and the folder's date ends it after three days. A request
@@ -33,7 +36,7 @@ import Network
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: folder.appending(path: name))
         } catch {
-            webLog.error("No link for \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            log.error("No link for \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
         start()

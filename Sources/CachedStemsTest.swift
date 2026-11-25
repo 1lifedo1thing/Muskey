@@ -239,7 +239,7 @@ enum CachedStemsTest {
                 if harness.cacheReady, !feed.lost, start + UInt64(rate) > ps_captured_written(shifter) {
                     harness.writer = CachedStemsWriter(shifter: shifter, rate: rate, feed: feed, generation: current, start: start)
                     if ProcessInfo.processInfo.environment["MUSKEY_TEST_LOG"] != nil {
-                        harness.writer?.log = { [unowned harness] in print(String(format: "      %.3f s  ", harness.now) + $0) }
+                        harness.writer?.log.echo = { [unowned harness] in print(String(format: "      %.3f s  ", harness.now) + $0) }
                     }
                     ps_stems_begin_cached(shifter, current, start)
                 } else {

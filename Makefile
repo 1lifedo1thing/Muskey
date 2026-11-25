@@ -142,6 +142,13 @@ $(BUILD)/obj/muskey: CLI/*.swift Shared/*.swift
 	@mkdir -p $(@D)
 	swiftc -O -target $(TARGET) CLI/*.swift Shared/*.swift -o $@
 
+# A build for testing has macOS keep the debug and info lines of Muskey's log on disk, through its Info.plist, so that
+# `log show --debug` can read back what happened before anyone streamed the log. A release build leaves the levels to
+# macOS and to Keep debug logs in Settings.
+LOG_LEVEL_KEY := :OSLogPreferences:com.lowtechguys.Muskey:DEFAULT-OPTIONS:Level
+KEEP_DEBUG_LOGS := /usr/libexec/PlistBuddy -c "Add $(LOG_LEVEL_KEY) dict" -c "Add $(LOG_LEVEL_KEY):Enable string Debug" \
+	-c "Add $(LOG_LEVEL_KEY):Persist string Debug"
+
 $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 	@mkdir -p $(@D)
 	xcrun actool muskey.icon --compile $(@D) --app-icon muskey --platform macosx --target-device mac \
@@ -162,6 +169,7 @@ $(BUNDLE): Sources/*.swift Shared/*.swift Sources/*.h Web/* Info.plist Muskey.en
 	mv $@/Contents/MacOS/$(APP).dSYM $(APP_DSYM)
 	strip -S $@/Contents/MacOS/$(APP)
 	cp Info.plist $@/Contents/Info.plist
+	$(if $(DEV),$(KEEP_DEBUG_LOGS) $@/Contents/Info.plist)
 	cp $(BUILD)/obj/Assets.car $(BUILD)/obj/muskey.icns $@/Contents/Resources/
 	ditto Web $@/Contents/Resources/Web
 	ditto $(SPARKLE)/Sparkle.framework $(SPARKLE_FRAMEWORK)

@@ -146,7 +146,7 @@ enum LyricsLiveTest {
             let jitter = (TestFlags.value("--live-jitter") ?? "0,0").split(separator: ",").compactMap { Double($0) }
             var output = Output(reference: truth.lines.map(\.time), texts: truth.lines.map(\.text))
             var play = Output.Play(plan: "")
-            sync.log = {
+            sync.log.echo = {
                 print("    " + $0)
                 play.log.append($0)
             }

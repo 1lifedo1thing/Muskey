@@ -73,7 +73,7 @@ enum LyricsReplayTest {
         let sync = LyricsSync(store: store)
         let id = "replay"
         var position = 0.0
-        sync.log = { print("    " + $0) }
+        sync.log.echo = { print("    " + $0) }
         sync.whisper = { counter }
         sync.onNeedsLead = { print(String(format: "    the lyrics delay starts at %.1fs", position)) }
 

@@ -1,7 +1,10 @@
 import AppKit
 import Carbon.HIToolbox
+import os
 import SwiftUI
 import UniformTypeIdentifiers
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "NotesWindow")
 
 // MARK: Model
 
@@ -2525,7 +2528,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     var onLoopKey: (Bool) -> Void = { _ in }
     /// ⇧R, which loops the whole song as over the HUD.
     var onSongLoopKey: () -> Void = {}
-    var log: (String) -> Void = { _ in }
 
     var isShown: Bool { window?.isVisible == true }
 
@@ -2586,7 +2588,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         size = CGSize(width: max(size.width, window.minSize.width), height: max(size.height, window.minSize.height))
         let frame = CGRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2, width: size.width, height: size.height)
         window.setFrame(frame, display: true, animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-        log("notes: \(portrait ? "landscape" : "portrait") page")
+        log.info("notes: \(portrait ? "landscape" : "portrait", privacy: .public) page")
     }
 
     private func handle(_ event: NSEvent) -> Bool {
@@ -2648,7 +2650,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [format.type]
         panel.nameFieldStringValue = "\(title) \(score.stem.name).\(format.fileExtension)"
-        panel.beginSheetModal(for: window) { [weak self] response in
+        panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else { return }
             do {
                 switch format {
@@ -2656,9 +2658,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
                 case .midi: try score.midi.write(to: url)
                 case .textTab: try score.textTab.write(to: url, atomically: true, encoding: .utf8)
                 }
-                self?.log("notes: saved \(format.name) to \(url.lastPathComponent)")
+                log.info("notes: saved \(format.name, privacy: .public) to \(url.lastPathComponent, privacy: .public)")
             } catch {
-                self?.log("notes: saving \(format.name) failed: \(error.localizedDescription)")
+                log.error("notes: saving \(format.name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

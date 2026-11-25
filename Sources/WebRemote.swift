@@ -1,4 +1,7 @@
 import AppKit
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "WebRemote")
 
 /// The notes of a song as the sheet in a browser reads them: a transcription and the artist for the line under its title.
 struct WebNotes: Encodable {
@@ -48,8 +51,6 @@ struct WebNotes: Encodable {
     var waveform: () -> SongWaveform? = { nil }
     /// The phone shows the song that plays, where a tap on an instrument can come at any moment.
     var songShown: () -> Void = {}
-    /// Muskey's log, which also gets what the page reports: failed requests, audio errors and plays that iOS refused.
-    var log: (String) -> Void = { _ in }
     private var pageLines: [Date] = []
 
     /// A line from the page, at most 30 a minute and 400 characters each.
@@ -59,7 +60,7 @@ struct WebNotes: Encodable {
         guard pageLines.count < 30 else { return }
         pageLines.append(now)
         let line = String(text.replacingOccurrences(of: "\n", with: " ").prefix(400))
-        log("remote page: \(line)")
+        log.info("remote page: \(line, privacy: .public)")
     }
 
     /// What the remote shows of the song that plays on the Mac.
@@ -299,7 +300,7 @@ struct WebNotes: Encodable {
         case "api/upload" where request.method == "POST" && parts.count == 2:
             guard let file = request.bodyFile else { return .text("Send the song as the body", status: 400) }
             let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
-            await MainActor.run { shared.log(String(format: "remote: received %@ from a phone (%.1f MB)", file.lastPathComponent, Double(size) / 1_000_000)) }
+            log.info("\(String(format: "remote: received %@ from a phone (%.1f MB)", file.lastPathComponent, Double(size) / 1_000_000), privacy: .public)")
             let play = CLIRequest(command: .play, inputs: [file.path])
             return json(WebJob(await MainActor.run { CLIService.shared.handle(play) }))
         case "api/files" where reads && parts.count == 2:
@@ -389,7 +390,8 @@ struct WebNotes: Encodable {
         let quiet = ["api/state", "api/job", "api/symbol", "api/cover", "api/nowcover", "api/songs", "api/log"].contains(route) || route.hasPrefix("web/")
         let media = route == "api/song" || route == "api/file"
         if request.method == "POST" && route != "api/log" || media && response.status >= 400 || !quiet && !media && response.status >= 400 {
-            await MainActor.run { shared.log("remote: \(request.method) /\(parts.joined(separator: "/")) \(response.status)\(Self.errorText(response))") }
+            log.log(level: response.status >= 400 ? .error : .debug,
+                    "remote: \(request.method, privacy: .public) /\(parts.joined(separator: "/"), privacy: .public) \(response.status)\(Self.errorText(response), privacy: .public)")
         }
         return response
     }

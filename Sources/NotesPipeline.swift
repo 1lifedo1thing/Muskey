@@ -1,5 +1,8 @@
 import Accelerate
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "NotesPipeline")
 
 /// Everything the notes window needs for a song, kept in one file so that the window can be opened and tested without
 /// the transcription model or the stems (`--notes-file FILE`).
@@ -117,9 +120,9 @@ enum NotesPipeline {
     }
 
     /// The stems of the whole song from the cache, separating them first when the cache doesn't have them yet.
-    @MainActor static func stems(for path: String, builder: StemsCacheBuilder, log: @escaping (String) -> Void) async -> StemsCache? {
+    @MainActor static func stems(for path: String, builder: StemsCacheBuilder) async -> StemsCache? {
         if let cache = StemsCache.open(for: path) { return cache }
-        log("separating the whole song into stems")
+        log.info("separating the whole song into stems")
         let done: Bool = await withCheckedContinuation { continuation in
             let previous = builder.onDone
             builder.onDone = { donePath, ok in
@@ -142,11 +145,11 @@ enum NotesPipeline {
         let out = URL(fileURLWithPath: TestFlags.value("--notes-out") ?? FileManager.default.temporaryDirectory.appending(path: "muskey-notes").path)
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         let builder = StemsCacheBuilder()
-        builder.log = { print($0) }
+        builder.log.echo = { print($0) }
         Task { @MainActor in
             let started = Date()
             let duration = await ChordDetector.duration(url)
-            guard let cache = await stems(for: path, builder: builder, log: { print($0) }) else {
+            guard let cache = await stems(for: path, builder: builder) else {
                 print("notes: the stems couldn't be separated")
                 exit(1)
             }

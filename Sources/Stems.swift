@@ -2,6 +2,9 @@ import Accelerate
 import AVFoundation
 import CoreML
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "Stems")
 
 /// The parts of a song that the separation model gives back, in the model's order, then the winds that the winds
 /// model finds in the song.
@@ -149,8 +152,6 @@ final class StemModel: @unchecked Sendable {
     let kind: Kind
     private let model: MLModel
     private let spectrogram = Spectrogram()
-    /// Where a window that had to be separated again is told of.
-    nonisolated(unsafe) static var log: (String) -> Void = { _ in }
 
     private static let cacheLock = NSLock()
     private static var cached: [Kind: StemModel] = [:]
@@ -240,7 +241,7 @@ final class StemModel: @unchecked Sendable {
             let output = try model.prediction(from: features)
             masks = output.featureValue(for: "masks")?.multiArrayValue
             if let masks, Self.usable(masks) { break }
-            Self.log("stems: the model gave back \(masks == nil ? "no masks" : "empty masks") for a window\(attempt == 0 ? ", separating it again" : "")")
+            log.error("stems: the model gave back \(masks == nil ? "no masks" : "empty masks", privacy: .public) for a window\(attempt == 0 ? ", separating it again" : "", privacy: .public)")
             masks = nil
         }
         Self.cacheLock.withLock { _ = Self.ran.insert(kind) }
@@ -389,8 +390,6 @@ final class StemSeparator: @unchecked Sendable {
 
     /// Runs on the separation thread when the model fails to load, or fails on two windows in a row.
     var onFailure: (Error) -> Void = { _ in }
-    /// Runs on the separation thread with the time that the windows take, after the first one and then every 20.
-    var log: (String) -> Void = { _ in }
 
     private var finished = false
 
@@ -445,17 +444,16 @@ final class StemSeparator: @unchecked Sendable {
                 // the lyrics delay, is separated as the song plays, since the song may have paused or moved since.
                 if let feed, !feed.lost, start + UInt64(rate) > ps_captured_written(shifter) {
                     let writer = CachedStemsWriter(shifter: shifter, rate: rate, feed: feed, generation: generation, start: start)
-                    writer.log = log
                     cached = writer
                     ps_stems_begin_cached(shifter, generation, start)
-                    log("stems: from the cache")
+                    log.info("stems: from the cache")
                 } else {
                     cached = nil
                     if stream == nil {
                         do {
                             let winds = StemModel.sharedWinds()
                             stream = StemStream(model: try StemModel.shared(), winds: winds)
-                            log("stems: \(winds == nil ? "6 stems" : "7 stems, with winds")")
+                            log.info("stems: \(winds == nil ? "6 stems" : "7 stems, with winds", privacy: .public)")
                         } catch {
                             onFailure(error)
                             return
@@ -507,7 +505,7 @@ final class StemSeparator: @unchecked Sendable {
                     spent += took
                     slowest = max(slowest, took)
                     if windows <= 3 || windows % 20 == 0 {
-                        log(String(format: "stems: %d windows, %.0f ms each, slowest %.0f ms", windows, spent / Double(windows), slowest))
+                        log.debug("\(String(format: "stems: %d windows, %.0f ms each, slowest %.0f ms", windows, spent / Double(windows), slowest), privacy: .public)")
                     }
                 }
                 for block in blocks {

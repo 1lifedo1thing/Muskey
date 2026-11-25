@@ -7,6 +7,8 @@ import ServiceManagement
 import SwiftUI
 import SystemConfiguration
 
+private let appLog = Logger(subsystem: LOG_SUBSYSTEM, category: "App")
+
 struct DetectedKey: Equatable {
     /// Each key spelled the way it is usually written, indexed by pitch class from C.
     private static let majorNames = ["C", "D♭", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
@@ -1304,7 +1306,7 @@ final class HUDPanel: NSPanel {
     private var pressHit = ""
     private var pressedAt = Date.distantPast
     private var pressDragged = false
-    var log: (String) -> Void = { _ in }
+    var log: (String, OSLogType) -> Void = { _, _ in }
     /// Runs on each move of the pointer while the panel takes clicks.
     var pointerMoved: () -> Void = {}
 
@@ -1340,7 +1342,7 @@ final class HUDPanel: NSPanel {
         case .leftMouseDragged:
             if !pressDragged {
                 pressDragged = true
-                log("HUD drag: pressed on \(pressHit), " + (pressStart == nil ? "which keeps the drag" : "the panel follows the drag"))
+                log("HUD drag: pressed on \(pressHit), " + (pressStart == nil ? "which keeps the drag" : "the panel follows the drag"), .debug)
             }
             guard let start = pressStart, !Self.controlTracksDrag else { break }
             let mouse = NSEvent.mouseLocation
@@ -1359,7 +1361,7 @@ final class HUDPanel: NSPanel {
             // A press held this long is usually a drag, so a press without a single drag event means that the
             // system never sent the drag to the panel.
             if !pressDragged, Date().timeIntervalSince(pressedAt) > 0.4 {
-                log(String(format: "HUD drag: pressed on %@ for %.1f s, with no drag events", pressHit, Date().timeIntervalSince(pressedAt)))
+                log(String(format: "HUD drag: pressed on %@ for %.1f s, with no drag events", pressHit, Date().timeIntervalSince(pressedAt)), .debug)
             }
             guard draggingPanel else { break }
             draggingPanel = false
@@ -1513,7 +1515,7 @@ final class HUDPanel: NSPanel {
         guard let glass = glassOnScreen(in: heading ?? frame), let visible = screen(holding: glass)?.visibleFrame else { return }
         let home = NSRect(origin: Self.home(on: visible, size: frame.size), size: frame.size)
         pushed = .zero
-        log("HUD back to its home")
+        log("HUD back to its home", .info)
         keepOnScreen(animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, from: home)
     }
 
@@ -1572,7 +1574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = HUDModel()
     private lazy var panel: HUDPanel = {
         let panel = HUDPanel(model: model)
-        panel.log = { [weak self] in self?.log($0) }
+        panel.log = { [weak self] in self?.log($0, $1) }
         panel.pointerMoved = { [weak self] in
             self?.checkClipboard()
             self?.followPointer()
@@ -1630,7 +1632,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// is true for a key that Noiseblend gave and no listen confirmed yet.
     private var songKey: (song: [String?]?, key: DetectedKey, final: Bool, online: Bool)? {
         didSet {
-            if songKey?.key != oldValue?.key { log("menu bar: \(songKey.map(\.key.name) ?? "turntable")") }
+            if songKey?.key != oldValue?.key { log("menu bar: \(songKey.map(\.key.name) ?? "turntable")", .debug) }
             updateWatching(shown: model.shown)
             refreshStatus()
             // A key found after the notes window opened gives the notes their key signature.
@@ -1683,7 +1685,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             addingLocation ? add([url], next: false) : open([url])
         }
-        if Self.logKeys { panel.onLog = { [weak self] in self?.log($0) } }
+        if Self.logKeys { panel.onLog = { [weak self] in self?.log($0, .debug) } }
         // The HUD takes the keyboard back while a key is picked, and the app that was in front otherwise.
         panel.onClose = { [weak self] in
             guard let self else { return }
@@ -1791,7 +1793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentSpeed != 1 ? String(format: "the tempo change (%.0f %%)", currentSpeed * 100) : nil,
             model.stemsEngaged || model.stemsAdjusted ? "the stems" : nil,
         ].compactMap { $0 }
-        log("paused for \(seconds) s with the HUD hidden, stopping \(stopped.isEmpty ? "the pitch change" : stopped.joined(separator: ", "))")
+        log("paused for \(seconds) s with the HUD hidden, stopping \(stopped.isEmpty ? "the pitch change" : stopped.joined(separator: ", "))", .notice)
         // A slowed song's player is up to 30 seconds ahead of what was heard, so it moves back to the moment heard
         // before the slowing stops, and plays on from there. A player that is already there isn't moved.
         if slow.active, let heard = nowPlaying.track, let player = nowPlaying.player, heard.song == player.song,
@@ -1834,7 +1836,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let until = pauseDeferredUntil, Date() < until { return }
         }
         pauseDeferredUntil = nil
-        if pitch.paused == track.playing, Self.logKeys || pitch.stemsEngaged { log(track.playing ? "song plays" : "song paused") }
+        if pitch.paused == track.playing, Self.logKeys || pitch.stemsEngaged { log(track.playing ? "song plays" : "song paused", .debug) }
         if !track.playing {
             // A move during the pause: the stems from the cache wait for the song at its new place, from the moment it
             // plays again.
@@ -1903,7 +1905,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.playing = playing
         guard flash, model.shown else { return }
         model.playFlash = PlayFlash(playing: playing, id: (model.playFlash?.id ?? 0) + 1)
-        if Self.logKeys { log(playing ? "glyph play" : "glyph pause") }
+        if Self.logKeys { log(playing ? "glyph play" : "glyph pause", .debug) }
     }
 
     /// Return while the lyrics show: karaoke, or back to the lyrics.
@@ -1959,9 +1961,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if prefs.karaokeRestarts { restartForKaraoke() }
             if let asked = karaokeAskedAt {
                 karaokeAskedAt = nil
-                log(String(format: "karaoke: set up %.0f ms after it was asked for", (CACurrentMediaTime() - asked) * 1000))
+                log(String(format: "karaoke: set up %.0f ms after it was asked for", (CACurrentMediaTime() - asked) * 1000), .debug)
                 DispatchQueue.main.async { [self] in
-                    log(String(format: "karaoke: main thread free %.0f ms after it was asked for", (CACurrentMediaTime() - asked) * 1000))
+                    log(String(format: "karaoke: main thread free %.0f ms after it was asked for", (CACurrentMediaTime() - asked) * 1000), .debug)
                 }
             }
         } else if karaokeMutedVocals {
@@ -2040,7 +2042,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A player that ignores the move: the song plays on, and rewinds to where karaoke opened.
         let giveUp = { [weak self] in
             guard let self, case let .seeking(at, _) = karaokeRestart, at == asked else { return }
-            log(restartsFromStart ? "karaoke: the player didn't move the song to its start" : "seek: the player didn't move the song")
+            log(restartsFromStart ? "karaoke: the player didn't move the song to its start" : "seek: the player didn't move the song", .error)
             karaokeRestart = nil
             pitch.awaitingSeek = false
             model.seekWait = nil
@@ -2214,7 +2216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try tap.start { samples in analyzer.append(samples) { _, _ in } }
         } catch {
             cancelAutoListen()
-            return log("always listening: \(error)")
+            return log("always listening: \(error)", .error)
         }
         log("always listening to \(track.title ?? "")")
         if songKey?.song != track.song { lookUpKey(track) }
@@ -2372,7 +2374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Settings may have opened again before this ran, and then the same window stays.
             guard let self, let controller, openSettings === controller, controller.window?.isVisible != true else { return }
             openSettings = nil
-            log("settings: closed and released")
+            log("settings: closed and released", .debug)
         }
         openSettings = controller
         return controller
@@ -2398,9 +2400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_: Notification) {
         if let dir = Self.stringOption("--render") { return renderPreviews(to: dir) }
-        if TestFlags.has("--log-playhead") { WaveformView.trace = { [weak self] in self?.log(String(format: "playhead %.3f", $0)) } }
+        if TestFlags.has("--log-playhead") { WaveformView.trace = { [weak self] in self?.log(String(format: "playhead %.3f", $0), .debug) } }
         if TestFlags.has("--log-notes-frames") {
-            notesFrameLog = { [weak self] count, gap in self?.log(String(format: "notes frames: %d in a second, longest wait %.0f ms", count, gap * 1000)) }
+            notesFrameLog = { [weak self] count, gap in self?.log(String(format: "notes frames: %d in a second, longest wait %.0f ms", count, gap * 1000), .debug) }
         }
         if let path = Self.stringOption("--render-menubar") {
             StatusItem.renderSheet(to: path)
@@ -2525,7 +2527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let seconds = Self.stringOption("--test-hang").flatMap(Double.init) {
             // Blocks the main thread on purpose, 3 s after the launch, so the log shows how a hang is written.
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                self?.log(String(format: "test hang: blocking the main thread for %.1f s", seconds))
+                self?.log(String(format: "test hang: blocking the main thread for %.1f s", seconds), .notice)
                 Thread.sleep(forTimeInterval: seconds)
             }
         }
@@ -2600,7 +2602,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.store(in: &prefChanges)
         // A key forgotten in Settings stops showing in the menu bar for the song that plays, and Always listening
         // listens to that song again. Noiseblend's key for the song is forgotten too, so the song starts over.
-        keyLookup.log = { [weak self] in self?.log($0) }
         keyCache.onForget = { [weak self] id in
             guard let self else { return }
             if let id { keyLookup.forget(id) } else { keyLookup.clear() }
@@ -2612,7 +2613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         model.onShift = { [weak self] shift, relative in
-            if Self.logKeys { self?.log("click \(shift)\(relative ? " other mode" : "")") }
+            if Self.logKeys { self?.log("click \(shift)\(relative ? " other mode" : "")", .debug) }
             self?.change(to: shift, relative: relative)
         }
         model.onClose = { [weak self] in self?.dismiss() }
@@ -2623,7 +2624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onLyrics = { [weak self] in self?.toggleLyrics() }
         model.onSpeed = { [weak self] in self?.changeSpeed(by: $0) }
         model.onKaraoke = { [weak self] in
-            if Self.logKeys { self?.log("click karaoke") }
+            if Self.logKeys { self?.log("click karaoke", .debug) }
             self?.toggleKaraoke()
         }
         model.onLyricsRetry = { [weak self] in self?.retryLyrics() }
@@ -2657,7 +2658,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onStemsReset = { [weak self] in self?.playAllStems() }
         model.onStemsRetry = { [weak self] in self?.retryStems() }
         model.onSeparate = { [weak self] in self?.separate() }
-        lyricsSync.log = { [weak self] in self?.log($0) }
         lyricsSync.onChange = { [weak self] in self?.lyricsTimingChanged() }
         lyricsSync.whisper = { [weak self] in self?.whisperBackend() }
         lyricsSync.onOffset = { [weak self] song, key, offset in
@@ -2682,7 +2682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // enough. Never the words.
             let position = model.track?.position(at: Date()) ?? 0
             log(String(format: "lyrics: %d lines written, the last at %.0fs, heard at %.0fs", lyrics.lines.count, lyrics.lines.last?.time ?? 0,
-                       position - pitch.stemsDelay))
+                       position - pitch.stemsDelay), .debug)
             model.lyrics = .found(lyrics)
             updateLyricLine()
         }
@@ -2712,7 +2712,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onSettings = { [weak self] in self?.settingsWindow.show() }
         statusItem.onOpenFile = { [weak self] in self?.openFile() }
         statusItem.onOpenLocation = { [weak self] in self?.openLocation() }
-        filePlayer.log = { [weak self] in self?.log($0) }
         filePlayer.onActivity = { [weak self] in self?.openActivity = $0 }
         filePlayer.onPlaying = { [weak self] in self?.filePlays() }
         filePlayer.pauseOthers = { [weak self] done in
@@ -2769,7 +2768,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // registered: ↑, ↓ and Return reach the recents from the panel's own key events.
         recentsKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if let self, Self.logKeys, model.recentsFlipped {
-                log("recents: key \(event.keyCode) in \(event.window === panel ? "the HUD" : event.window == nil ? "no window" : "another window")")
+                log("recents: key \(event.keyCode) in \(event.window === panel ? "the HUD" : event.window == nil ? "no window" : "another window")", .debug)
             }
             guard let self, event.window == nil || event.window === panel, model.recentsFlipped, model.opening == nil,
                   event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
@@ -2798,8 +2797,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Muskey Player drops its loop when it opens a file, while the same song in another file stays the same song.
         filePlayer.onReplace = { [weak self] in self?.clearLoop() }
-        stemsCache.log = { [weak self] in self?.log($0) }
-        StemModel.log = { [weak self] message in DispatchQueue.main.async { self?.log(message) } }
         stemsCache.live = { [separating = pitch.separatingLive] in separating.value }
         stemsCache.onDone = { [weak self] path, ok in
             guard let self else { return }
@@ -2839,7 +2836,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return event }
             return pinch(event) ? nil : event
         }
-        nowPlaying.log = { [weak self] in self?.log($0) }
         nowPlaying.heard = { [weak self] report in self?.slow.heard(report) ?? report }
         nowPlaying.onPlayerReport = { [weak self] in self?.slow.playerReported($0) }
         slow.player = { [weak self] in self?.nowPlaying.player }
@@ -2847,7 +2843,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         slow.movesKnown = { [weak self] id in self?.seekPaths[id] != nil || Self.forcedSeekPath != nil }
         slow.refresh = { [weak self] in self?.nowPlaying.refresh() }
         slow.onReadSpeed = { [weak self] in self?.syncSpeed() }
-        slow.log = { [weak self] in self?.log($0) }
         slow.onFailed = { [weak self] wanted in
             guard let self else { return }
             slowFailedPlayer = slowedPlayer
@@ -2949,9 +2944,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         // The key row and the instruments that the pointer shows in karaoke, for testing the hover from a script.
         if Self.logKeys {
-            model.$karaokeKeys.removeDuplicates().dropFirst().sink { [weak self] in self?.log($0 ? "karaoke: key row shown" : "karaoke: key row hidden") }
+            model.$karaokeKeys.removeDuplicates().dropFirst().sink { [weak self] in self?.log($0 ? "karaoke: key row shown" : "karaoke: key row hidden", .debug) }
                 .store(in: &prefChanges)
-            model.$karaokeStems.removeDuplicates().dropFirst().sink { [weak self] in self?.log($0 ? "karaoke: instruments shown" : "karaoke: instruments hidden") }
+            model.$karaokeStems.removeDuplicates().dropFirst().sink { [weak self] in self?.log($0 ? "karaoke: instruments shown" : "karaoke: instruments hidden", .debug) }
                 .store(in: &prefChanges)
         }
         karaokeChange = model.$lyricsFocus.removeDuplicates().dropFirst().sink { [weak self] on in
@@ -2978,11 +2973,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         pitch.onFailure = { [weak self] error in self?.pitchFailed("\(error)") }
         pitch.onStemsFailure = { [weak self] error in self?.stemsFailed("\(error)") }
-        pitch.stemsLog = { [weak self] line in DispatchQueue.main.async { self?.log(line) } }
-        ModelDownload.stems.log = { [weak self] in self?.log($0) }
-        ModelDownload.winds.log = { [weak self] in self?.log($0) }
-        ModelDownload.whisper.log = { [weak self] in self?.log($0) }
-        ModelDownload.aligner.log = { [weak self] in self?.log($0) }
         stopPitchOnSignals()
         network.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async { self?.networkChanged(online: path.status == .satisfied) }
@@ -3002,11 +2992,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // `--status-key Em` starts with the menu bar showing that key, as if a listen had found it for the song.
         if let name = Self.stringOption("--status-key") {
-            guard let key = DetectedKey(name: name) else { return log("--status-key needs a key like Cm, F# or Eb") }
+            guard let key = DetectedKey(name: name) else { return log("--status-key needs a key like Cm, F# or Eb", .error) }
             songKey = (nowPlaying.track?.song, key, true, false)
         }
         if let name = Self.stringOption("--keep") {
-            guard let key = DetectedKey(name: name) else { return log("--keep needs a key like Cm, F# or Eb") }
+            guard let key = DetectedKey(name: name) else { return log("--keep needs a key like Cm, F# or Eb", .error) }
             keptKey = key
             log("keeping \(key.name) for the next songs")
         }
@@ -3058,7 +3048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         return openNotes(path: path, track: track, stem: stem)
                     }
                 }
-                self?.log("notes: no song played for --notes-open")
+                self?.log("notes: no song played for --notes-open", .notice)
             }
         }
         // `--notes-file FIXTURE` opens the notes window on the notes that `--notes-headless` wrote, without a song.
@@ -3086,14 +3076,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--open-menu-after S` opens the menu bar menu after S seconds, so a posted key reaches the open menu.
         if let after = Self.stringOption("--open-menu-after").flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + after) { [self] in
-                log("menu: opened")
+                log("menu: opened", .debug)
                 statusItem.openMenu()
             }
         }
         if let title = Self.stringOption("--menu") {
             let after = Self.stringOption("--menu-after").flatMap(Double.init) ?? 3
             DispatchQueue.main.asyncAfter(deadline: .now() + after) { [self] in
-                log(statusItem.perform(title) ? "menu: \(title)" : "menu: no item \(title)")
+                log(statusItem.perform(title) ? "menu: \(title)" : "menu: no item \(title)", .debug)
             }
         }
         if let urls = openedEarly {
@@ -3125,7 +3115,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The `muskey` tool reaches the app through `CLIService`, which plays its songs here.
     @MainActor private func startCLI() {
         let cli = CLIService.shared
-        cli.log = { [weak self] in self?.log($0) }
         cli.play = { [weak self] request, job in self?.cliPlay(request, job: job) }
         cli.knownKey = { [weak self] song in self?.knownKey(for: song)?.key }
         cli.serve = { WebLinks.shared.serve($0) }
@@ -3138,8 +3127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.songShown = { [weak self] in self?.remoteSongShown() }
         WebRemote.shared.loop = { [weak self] in self?.remoteLoop($0) }
         WebRemote.shared.waveform = { [weak self] in self?.model.wave.waveform }
-        WebRemote.shared.log = { [weak self] in self?.log($0) }
-        WebStream.shared.log = { [weak self] line in DispatchQueue.main.async { self?.log(line) } }
         WebStream.shared.onListening = { [weak self] on in self?.phoneListens(on) }
         pitch.stream = WebStream.shared.ring
         WebRemote.shared.update()
@@ -3265,7 +3252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard remoteMuteBefore == nil else { return true }
         guard let before = OutputMute.muted else { return false }
         guard before || OutputMute.set(true) else {
-            log("remote: the sound output can't be muted")
+            log("remote: the sound output can't be muted", .error)
             return false
         }
         remoteMuteBefore = before
@@ -3700,7 +3687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func followPointer() {
         let on = panel.pointerOnGlass
         guard model.hovering != on else { return }
-        if Self.logKeys { log("hover \(on ? "started" : "ended") with a move of the pointer") }
+        if Self.logKeys { log("hover \(on ? "started" : "ended") with a move of the pointer", .debug) }
         model.hovering = on
     }
 
@@ -3747,7 +3734,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             over = moved && cover == nil
             if let cover, Self.logKeys, hit != coverLogged {
                 coverLogged = hit
-                log("focus: a window of \(cover.owner) at level \(cover.layer) is above the glass under the pointer")
+                log("focus: a window of \(cover.owner) at level \(cover.layer) is above the glass under the pointer", .debug)
             }
         }
         guard over != pointerOverWaveform else {
@@ -3792,12 +3779,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.makeMain()
         }
         NSApp.takeFocus()
-        log("focus: Muskey is the active app while the pointer is over the waveform, in place of \(Self.appName(front))")
+        log("focus: Muskey is the active app while the pointer is over the waveform, in place of \(Self.appName(front))", .debug)
         logFront()
         // macOS can leave the other app in front, as right after it got the front back: Muskey asks once more.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self, pointerOverWaveform, focusReturn != nil, let now = NSWorkspace.shared.frontmostApplication, now != .current else { return }
-            log("focus: \(Self.appName(now)) stayed in front, Muskey asks for the front again")
+            log("focus: \(Self.appName(now)) stayed in front, Muskey asks for the front again", .debug)
             focusReturn = now
             NSApp.takeFocus()
             logFront()
@@ -3820,16 +3807,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         focusReturn = nil
         panel.holdsFront = false
         guard NSWorkspace.shared.frontmostApplication == .current else {
-            return log("focus: another app became active while the pointer was over the waveform")
+            return log("focus: another app became active while the pointer was over the waveform", .debug)
         }
         // A window of Muskey that took the keyboard while the pointer was over the waveform keeps the front: Settings, the
         // notes window, Open URL, a dialog.
-        if let key = NSApp.keyWindow, key !== panel { return log("focus: \(key.title.isEmpty ? "another window" : key.title) keeps Muskey in front") }
+        if let key = NSApp.keyWindow, key !== panel { return log("focus: \(key.title.isEmpty ? "another window" : key.title) keeps Muskey in front", .debug) }
         guard NSApp.modalWindow == nil, !dialogOpen, !app.isTerminated else { return }
         pickerKeyboardUntil = model.picking ? Date().addingTimeInterval(1) : nil
         NSApp.yieldActivation(to: app)
         app.activate()
-        log("focus: \(Self.appName(app)) is the active app again, the pointer left the waveform")
+        log("focus: \(Self.appName(app)) is the active app again, the pointer left the waveform", .debug)
         logFront()
     }
 
@@ -3840,7 +3827,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let front = NSWorkspace.shared.frontmostApplication.map(Self.appName) ?? "no app"
             let keyboard = panel.isKeyWindow ? "the HUD" : NSApp.keyWindow.map { $0.title.isEmpty ? "\(type(of: $0))" : $0.title } ?? "no window of Muskey"
-            log("focus: \(front) is in front, \(keyboard) has the keyboard")
+            log("focus: \(front) is in front, \(keyboard) has the keyboard", .debug)
         }
     }
 
@@ -3874,7 +3861,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func keepHover() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self, !model.hovering, panel.pointerOnGlass else { return }
-            log("hover kept after the layout changed under the pointer")
+            log("hover kept after the layout changed under the pointer", .debug)
             model.hovering = true
         }
     }
@@ -4049,7 +4036,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try recorder.writeCapture(to: URL(fileURLWithPath: notes.path))
         } catch {
             notes.phase = .failed
-            log("notes: the capture couldn't be written: \(error.localizedDescription)")
+            log("notes: the capture couldn't be written: \(error.localizedDescription)", .error)
             return
         }
         runNotes(notes)
@@ -4100,7 +4087,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notesDownloads = []
             model.notesPicking?.downloading = nil
             model.notesPicking?.missing = nil
-            log("notes: models installed")
+            log("notes: models installed", .notice)
             return startNotes()
         }
         let total = Double(downloads.map(\.size).reduce(0, +))
@@ -4231,7 +4218,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.onTurnPage = { [weak self] in self?.notesWindow.turnPage() }
         notesWindow.onLoopKey = { [weak self] snapping in self?.pressLoop(snapping: snapping) }
         notesWindow.onSongLoopKey = { [weak self] in self?.toggleSongLoop() }
-        notesWindow.log = { [weak self] in self?.log($0) }
         notesWindow.onClosed = { [weak self] in self?.notesClosed() }
         notesSinks = []
         model.$shift.sink { [weak notes] in notes?.shift = $0 }.store(in: &notesSinks)
@@ -4253,7 +4239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // closed, so the window keeps the keyboard.
         notes.onPickKey = { [weak self] shift, relative in
             guard let self, model.pending == nil else { return }
-            if Self.logKeys { log("notes: key picked, \(Shift.text(shift))\(relative ? " in the other mode" : "")") }
+            if Self.logKeys { log("notes: key picked, \(Shift.text(shift))\(relative ? " in the other mode" : "")", .debug) }
             setShift(shift, relative: relative)
         }
         notes.onSpeedStep = { [weak self] step in self?.changeSpeed(by: step) }
@@ -4329,7 +4315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, let notes, case let .working(step, _) = notes.phase else { return timer.invalidate() }
                 let now = Date()
                 log(String(format: "notes progress: %@ %.1f%%, %@", step.name, notes.progress(at: now) * 100,
-                           notes.secondsLeft(at: now).map { String(format: "%.0f s left", $0) } ?? "no estimate"))
+                           notes.secondsLeft(at: now).map { String(format: "%.0f s left", $0) } ?? "no estimate"), .debug)
             }
         }
         notesTask = Task { @MainActor [weak self, weak notes] in
@@ -4350,7 +4336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let cache = await notesStems(path, notes: notes, song: song) else {
                 if !Task.isCancelled {
                     notes.phase = .failed
-                    log("notes: the stems couldn't be separated")
+                    log("notes: the stems couldn't be separated", .error)
                 }
                 return
             }
@@ -4414,7 +4400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 log("notes: transcription stopped")
             } catch {
                 notes.phase = .failed
-                log("notes: transcription failed: \(error.localizedDescription)")
+                log("notes: transcription failed: \(error.localizedDescription)", .error)
             }
         }
     }
@@ -4449,7 +4435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if stemsCacheFailed.contains(path) { return nil }
         }
-        log("notes: the stems weren't separated after 30 minutes")
+        log("notes: the stems weren't separated after 30 minutes", .error)
         return nil
     }
 
@@ -4549,7 +4535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let result = await Task.detached(priority: .utility) { await QueueItem.analyse(file, duration: duration) }.value
             guard let self else { return }
             queueAnalysis = nil
-            if Self.logKeys { log("queue: \(item.title) in \(result.key?.name ?? "no key")\(result.bpm.map { String(format: " at %.0f BPM", $0) } ?? "")") }
+            if Self.logKeys { log("queue: \(item.title) in \(result.key?.name ?? "no key")\(result.bpm.map { String(format: " at %.0f BPM", $0) } ?? "")", .debug) }
             filePlayer.setAnalysis(item.id, key: result.key, bpm: result.bpm)
         }
     }
@@ -4754,7 +4740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         swipeTravel.height += abs(event.scrollingDeltaY)
         if !swiped, abs(swipeTravel.width) > 60, abs(swipeTravel.width) > 2 * swipeTravel.height {
             swiped = true
-            if Self.logKeys { log(String(format: "swipe %.0f points", swipeTravel.width)) }
+            if Self.logKeys { log(String(format: "swipe %.0f points", swipeTravel.width), .debug) }
             let right = swipeTravel.width > 0
             skip(right != prefs.naturalSwipes ? 1 : -1)
         }
@@ -4790,12 +4776,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let region = scrollRegion(at: event), let value = adjustedValue(region) {
                 adjusting = nil
                 adjustCandidate = (region, value, .zero)
-                if Self.logKeys { log("scroll begins over \(region)") }
+                if Self.logKeys { log("scroll begins over \(region)", .debug) }
             } else if Self.logKeys, let view = panel.contentView {
                 let local = view.convert(event.locationInWindow, from: nil)
                 let places = model.scroll.frames.values.map { String(format: "%.0f,%.0f %.0fx%.0f", $0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height) }
                 log(String(format: "scroll begins over nothing to adjust at %.0f,%.0f (flipped %@, height %.0f): ", local.x, local.y, view.isFlipped ? "yes" : "no", view.bounds.height)
-                    + places.joined(separator: " | "))
+                    + places.joined(separator: " | "), .debug)
             }
         }
         if var candidate = adjustCandidate {
@@ -4808,7 +4794,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             adjustCandidate = nil
             // Sideways: the swipe has seen every event so far and goes on.
-            if Self.logKeys { log(abs(candidate.travel.height) > candidate.travel.width ? "the scroll adjusts" : "the scroll is a swipe") }
+            if Self.logKeys { log(abs(candidate.travel.height) > candidate.travel.width ? "the scroll adjusts" : "the scroll is a swipe", .debug) }
             guard abs(candidate.travel.height) > candidate.travel.width else { return false }
             adjusting = (candidate.region, candidate.start, candidate.travel.height)
             model.scroll.region = candidate.region
@@ -5043,7 +5029,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } catch {
             prefs.hotkeyFailed = true
-            log("\(error); is \(shortcut.symbols) taken by another app?")
+            log("\(error); is \(shortcut.symbols) taken by another app?", .error)
         }
     }
 
@@ -5065,7 +5051,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try service.register()
                 UserDefaults.standard.set(path, forKey: "loginItemPath")
             } catch {
-                DispatchQueue.main.async { self?.log("adding the login item failed: \(error)") }
+                DispatchQueue.main.async { self?.log("adding the login item failed: \(error)", .error) }
             }
         }
     }
@@ -5467,7 +5453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if model.picking, keptKey != nil { keptKey = model.heard }
             refreshStatus()
         }
-        log(String(format: "%@ (relative %@)  strength %.3f  %.1fs", key.name, key.relative.name, result.strength, elapsed))
+        log(String(format: "%@ (relative %@)  strength %.3f  %.1fs", key.name, key.relative.name, result.strength, elapsed), .notice)
         if let remembered, remembered != key { log("the full listen found \(key.name), not the \(remembered.name) that it started on") }
         let tempo = heardTempo(bpm, in: listenSong ?? nowPlaying.track?.song)
         if let song = listenSong, let track = nowPlaying.track, track.playing || listenFromFile, track.song == song {
@@ -5490,7 +5476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The picker opened on an estimate, so it keeps that key rather than turning into an error.
         if model.picking {
             model.phase = .done
-            return log(reason)
+            return log(reason, .notice)
         }
         model.key = nil
         model.phase = phase
@@ -5498,7 +5484,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setInteraction(clickable: false, keyboard: false)
         panel.present()
         updateHoverKeys()
-        log(reason)
+        log(reason, .notice)
         dismiss(after: 2)
     }
 
@@ -5556,7 +5542,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.recentsShown = true
             log("recents shown: \(model.recents.count) song\(model.recents.count == 1 ? "" : "s")")
             if Self.logKeys {
-                log("recents: the HUD \(panel.isKeyWindow ? "has" : "doesn't have") the keyboard, \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nothing") is in front")
+                log("recents: the HUD \(panel.isKeyWindow ? "has" : "doesn't have") the keyboard, \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nothing") is in front", .debug)
             }
         }
     }
@@ -5774,7 +5760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Keys of the key picker, from the picker's own key events or from the hotkeys that hovering over the HUD
     /// registers. Returns false for a key it doesn't use.
     @discardableResult private func handleKey(_ code: Int, shift: Bool, option: Bool) -> Bool {
-        if Self.logKeys { log("key \(code)\(shift ? " shift" : "")\(option ? " option" : "")") }
+        if Self.logKeys { log("key \(code)\(shift ? " shift" : "")\(option ? " option" : "")", .debug) }
         // A save in progress leaves the HUD only Escape, which closes it while the save goes on.
         if model.saving != nil {
             if code == kVK_Escape { dismiss() }
@@ -6161,7 +6147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let test = Self.stringOption("--save-pick").flatMap(SaveFormat.init(rawValue:)) {
             let timer = Timer(timeInterval: 1, repeats: false) { [weak self] _ in
                 pick(test)
-                self?.log("save: picked \(test.name) for the test, the name reads \(panel.nameFieldStringValue)")
+                self?.log("save: picked \(test.name) for the test, the name reads \(panel.nameFieldStringValue)", .debug)
             }
             RunLoop.main.add(timer, forMode: .common)
         }
@@ -6413,7 +6399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard saveJob == job else { return }
         saveJob = nil
         if let error {
-            log("save: \(job.name) failed: \(error.localizedDescription)")
+            log("save: \(job.name) failed: \(error.localizedDescription)", .error)
             failedSave = job
             saveActivity = .saveFailed(name: job.name)
             return
@@ -6442,7 +6428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard seekable != model.seekable || restartable != model.restartable else { return }
         model.restartable = restartable
         model.seekable = seekable
-        if Self.logKeys { log("seek keys \(seekable ? "on" : "off")") }
+        if Self.logKeys { log("seek keys \(seekable ? "on" : "off")", .debug) }
         updateHoverKeys()
     }
 
@@ -6553,7 +6539,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // A player that ignored the seek is still near where the song would have been without it.
                 guard let before, abs(position - (before + Date().timeIntervalSince(asked) * rate)) < 1.5 else {
-                    log(String(format: "seek: the song is at %.1f s, neither where it was nor where it was sent", position))
+                    log(String(format: "seek: the song is at %.1f s, neither where it was nor where it was sent", position), .notice)
                     return done?(false) ?? ()
                 }
                 if Self.forcedSeekPath == nil, let next = path.next(for: id) {
@@ -6561,7 +6547,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return movePlayer(now, to: target, path: next, done: done)
                 }
                 unseekable.insert(id)
-                log("seek: \(id) left the song where it was")
+                log("seek: \(id) left the song where it was", .notice)
                 syncSeekable()
                 done?(false)
             }
@@ -6569,7 +6555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + (tries == 0 ? 2.5 : 1.5), execute: work)
         }
         if Self.ignoredSeekPaths.contains(path), path != .script {
-            log("seek: nothing sent through the \(path.name), for the test")
+            log("seek: nothing sent through the \(path.name), for the test", .debug)
             return check(asked)
         }
         switch path {
@@ -6578,7 +6564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             check(asked)
         case .command:
             guard let pid = track.pid else {
-                log("seek: Now Playing gives no process for \(id)")
+                log("seek: Now Playing gives no process for \(id)", .notice)
                 return path.next(for: id).map { movePlayer(track, to: target, path: $0, done: done) } ?? (done?(false) ?? ())
             }
             nowPlaying.seek(to: target, pid: pid)
@@ -6591,12 +6577,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .sent:
                     check(Date())
                 case .refused:
-                    log("seek: Automation for \(id) isn't allowed")
+                    log("seek: Automation for \(id) isn't allowed", .error)
                     unseekable.insert(id)
                     syncSeekable()
                     done?(false)
                 case let .failed(reason):
-                    log("seek: \(reason)")
+                    log("seek: \(reason)", .error)
                     unseekable.insert(id)
                     syncSeekable()
                     done?(false)
@@ -6775,7 +6761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Now Playing reports some of these seconds later, so the stems from the cache learn of the move from the player,
     /// and wait for the new place when nobody asked them.
     private func playerMoved(to seconds: Double) {
-        if Self.logKeys { log(String(format: "Muskey Player moved to %.2f s", seconds)) }
+        if Self.logKeys { log(String(format: "Muskey Player moved to %.2f s", seconds), .debug) }
         nowPlaying.moved(to: seconds, bundleID: FilePlayer.bundleID)
         guard playsInFilePlayer, let feed = pitch.stemsFeed else { return }
         feed.moved(to: seconds)
@@ -7085,7 +7071,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 guard !Task.isCancelled, let self, waveformKey == key else { return }
                 model.wave.waveform = waveform
-                log(waveform == nil ? "waveform: the file can't be read" : "waveform: read the whole file")
+                log(waveform == nil ? "waveform: the file can't be read" : "waveform: read the whole file", waveform == nil ? .error : .info)
                 syncWaveformStems()
             }
             return
@@ -7111,7 +7097,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try recorder.start(SystemAudioTap())
                 log("waveform: drawing the song while it plays")
             } catch {
-                log("waveform: the tap failed: \(error)")
+                log("waveform: the tap failed: \(error)", .error)
             }
             waveformTimer?.invalidate()
             waveformTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.publishRecordedWaveform() }
@@ -7237,7 +7223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard waveformPinchable else { return }
         let before = model.wave.zoom
         withAnimation(.snappy(duration: 0.2)) { model.wave.zoom(by: factor) }
-        if Self.logKeys, before != model.wave.zoom { log(String(format: "waveform zoom %.1f", model.wave.zoom)) }
+        if Self.logKeys, before != model.wave.zoom { log(String(format: "waveform zoom %.1f", model.wave.zoom), .debug) }
     }
 
     /// The pointer of `event` is over the list of the queue, while it shows.
@@ -7271,7 +7257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A pinch with the pointer over the waveform zooms it. Returns true when the waveform zoomed.
     private func pinch(_ event: NSEvent) -> Bool {
         let over = model.shown && overWaveform(screen: NSEvent.mouseLocation)
-        if event.phase == .began { log("pinch began " + (over ? "over the waveform" : "away from the waveform")) }
+        if event.phase == .began { log("pinch began " + (over ? "over the waveform" : "away from the waveform"), .debug) }
         guard over else { return false }
         zoomWaveform(1 + Double(event.magnification))
         return true
@@ -7296,7 +7282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The model couldn't load or run. Every stem plays again, and the pill on the stems row offers Retry.
     private func stemsFailed(_ reason: String) {
-        log("stems failed: \(reason)")
+        log("stems failed: \(reason)", .error)
         model.stemsMuted = []
         model.stemVolumes = [:]
         pitch.stemVolumes = [:]
@@ -7433,14 +7419,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if target == nil, state != .idle, listenSong == track.song { return }
         redetecting = false
         if !model.shown { stayOpen = false }
-        log(target.map { "song changed, moving it to \($0.name)" } ?? "song changed, listening for its key")
+        log(target.map { "song changed, moving it to \($0.name)" } ?? "song changed, listening for its key", .notice)
         switch AudioCapturePermission.status {
         case .granted: break
-        case .denied: return log("system audio recording is not allowed")
+        case .denied: return log("system audio recording is not allowed", .error)
         case .undetermined:
             // Each song change while the dialog is up asks again, so only the song that still plays gets a listen.
             return AudioCapturePermission.request { [self] granted in
-                guard granted else { return log("system audio recording was not allowed") }
+                guard granted else { return log("system audio recording was not allowed", .error) }
                 if keptKey != nil || model.shown, nowPlaying.track?.song == track.song, state != .listening { songChanged(track) }
             }
         }
@@ -7483,7 +7469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A song change listen that heard nothing keeps the shift that the song plays at.
     private func followFailed(_ reason: String) {
-        log(reason)
+        log(reason, .notice)
         model.pending = nil
         state = .showing
         if model.picking {
@@ -7774,7 +7760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Only a check that was clicked shows that it failed. One that started by itself leaves the pill as it was.
             func failed(_ reason: String) {
                 guard let self else { return }
-                log("lyrics: \(reason)")
+                log("lyrics: \(reason)", .notice)
                 guard synced, lyricsSong == song, lyricsOriginal == lyrics else { return }
                 model.lyricsTiming = lyricsFixManual ? .failed : .unchecked
                 lyricsFixManual = false
@@ -7960,7 +7946,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !errors.isEmpty, let last = sung.last else { return }
         log(String(format: "lyrics: at %.0fs, %d lines timed, error of the lines sung: median %.2fs (signed %+.2fs), %d of %d within 1s, last line %.1fs for %.1fs",
                    position, lyricsSync.anchored, errors[errors.count / 2], signed[signed.count / 2], errors.filter { $0 <= 1 }.count, errors.count,
-                   last.0, last.1))
+                   last.0, last.1), .debug)
     }
 
     /// `--lyrics-lookup "TITLE|ARTIST|ALBUM|SECONDS"` asks the lyrics services for a song's lyrics the way the panel does,
@@ -7989,7 +7975,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cleaned = KeyLookup.clean(track.title ?? "", artist: track.artist ?? "")
         print("sent: \(cleaned.title) | \(cleaned.artist)")
         let lookup = KeyLookup(url: FileManager.default.temporaryDirectory.appending(path: "muskey-key-lookup-\(UUID().uuidString).json"))
-        lookup.log = { print($0) }
+        lookup.log.echo = { print($0) }
         lookup.find(track) { key in
             print(key.map { "key: \($0.name) (\($0.camelot))" } ?? "no key")
             exit(0)
@@ -8127,7 +8113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForQueue != model.queueShown || hoverKeysForRecents != model.recentsFlipped || hoverKeysForLoopEnd != (model.wave.loopEnd != nil)
                 || hoverKeysForChords != !model.chords.isEmpty || hoverKeysForNotes != (model.notesPicking != nil) || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
-        if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")") }
+        if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")", .debug) }
         hoverKeys = []
         guard wanted else { return }
         hoverKeysForKey = keyed
@@ -8276,7 +8262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.pitchFailed = false
         model.shift = semitones
         if let relative { model.relative = relative }
-        if Self.logKeys { log("heard \(model.heard?.name ?? "no key"), \(Shift.text(semitones))") }
+        if Self.logKeys { log("heard \(model.heard?.name ?? "no key"), \(Shift.text(semitones))", .debug) }
         pitch.semitones = semitones
         if byPerson {
             model.moved = nil
@@ -8391,7 +8377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let adjustable = playsInFilePlayer || slowable || slow.active
         if model.speedAdjustable != adjustable {
             model.speedAdjustable = adjustable
-            log("tempo keys \(adjustable ? "on" : "off") (playing: \(nowPlaying.track?.bundleID ?? "nothing"))")
+            log("tempo keys \(adjustable ? "on" : "off") (playing: \(nowPlaying.track?.bundleID ?? "nothing"))", .debug)
             updateHoverKeys()
             if adjustable, let speed = testSpeed {
                 testSpeed = nil
@@ -8496,7 +8482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try pitch.start()
                 WebStream.shared.rate = pitch.sampleRate
                 log(String(format: "pitch change started (%.0f ms to build%@)", (CACurrentMediaTime() - started) * 1000,
-                           pitch.hearsOneProcess ? ", hearing only Muskey Player" : ""))
+                           pitch.hearsOneProcess ? ", hearing only Muskey Player" : ""), .notice)
             } catch {
                 pitchFailed("\(error)")
             }
@@ -8511,7 +8497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func pitchFailed(_ reason: String) {
-        log("pitch change failed: \(reason)")
+        log("pitch change failed: \(reason)", .error)
         slow.stop("the pitch change failed")
         pitch.stop()
         model.shift = 0
@@ -8602,7 +8588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if shift == 0, pitch.running, pitch.correction != 0 {
             return log(String(format: "original key, corrected by %+.2f semitones for the tempo", pitch.correction))
         }
-        log(shift == 0 ? "pitch change stopped\(gaps)" : "pitch change \(Shift.text(shift)): \(base.name) to \(model.shown(base.transposed(by: shift)).name)")
+        log(shift == 0 ? "pitch change stopped\(gaps)" : "pitch change \(Shift.text(shift)): \(base.name) to \(model.shown(base.transposed(by: shift)).name)", .notice)
     }
 
     /// Cancels a listen in progress, or closes the result or the key picker. A pitch change keeps running.
@@ -8644,49 +8630,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoListenIfNeeded()
     }
 
-    /// The log file is written on a queue of its own, in the order of the lines, so a busy disk never holds up the
-    /// main thread. The lines still queued when the app exits are written first.
-    nonisolated private static let logQueue: DispatchQueue = {
-        atexit { AppDelegate.flushLog() }
-        return DispatchQueue(label: "muskey.log", qos: .utility)
-    }()
-
-    nonisolated private static func flushLog() { logQueue.sync {} }
-
     /// Logs every time the main thread stops answering for half a second or more.
-    private let hangWatch = HangWatch { line in AppDelegate.logFromAnyQueue(line) }
+    private let hangWatch = HangWatch()
 
-    /// A log line written from a queue other than the main one.
-    nonisolated static func logFromAnyQueue(_ line: String) {
-        let stamped = "\(ISO8601DateFormatter().string(from: Date()))  \(line)\n"
-        print(stamped, terminator: "")
-        logQueue.async { append(stamped) }
-    }
-
-    private func log(_ line: String) {
+    /// The app delegate's lines go through here rather than straight to `appLog`, so that a line built from many parts
+    /// stays one call, and so that `--log-keys` can add the host time to each of them.
+    private func log(_ line: String, _ level: OSLogType = .info) {
         // With `--log-keys`, each line also gets the host time in seconds, to line up a recording with the keys.
         let host = Self.logKeys ? String(format: "  @%.3f", CACurrentMediaTime()) : ""
-        let stamped = "\(ISO8601DateFormatter().string(from: Date()))  \(line)\(host)\n"
-        print(stamped, terminator: "")
-        Self.logQueue.async { Self.append(stamped) }
-    }
-
-    nonisolated private static func append(_ stamped: String) {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/Muskey.log")
-        guard let data = stamped.data(using: .utf8) else { return }
-        // The log starts over past 5 MB, with the previous one kept as Muskey.old.log.
-        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 5_000_000 {
-            let old = url.deletingLastPathComponent().appending(path: "Muskey.old.log")
-            try? FileManager.default.removeItem(at: old)
-            try? FileManager.default.moveItem(at: url, to: old)
-        }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(data)
-            try? handle.close()
-        } else {
-            try? data.write(to: url)
-        }
+        appLog.log(level: level, "\(line, privacy: .public)\(host, privacy: .public)")
     }
 }
 

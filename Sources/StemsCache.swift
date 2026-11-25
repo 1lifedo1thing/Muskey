@@ -489,7 +489,7 @@ final class CachedStemsWriter {
     private var answer: (number: UInt32, from: UInt64)?
     /// The pauses mapped so far, told to the shifter once the stems from where the song carries on are written.
     private var mapped: (skips: UInt32, from: UInt64)?
-    var log: (String) -> Void = { _ in }
+    var log = EchoLog(category: "StemsCache")
 
     /// How much of the song a search compares, how far ahead the stems are written, and how often they are checked.
     private let reference: Int, ahead: UInt64, refill: UInt64, checkEvery: UInt64
@@ -642,7 +642,7 @@ final class CachedStemsWriter {
             if abs(moved - expected) > 0.25 * StemsCache.rate {
                 self.moved(to: mapping, now: now, seek: ps_stems_seek(shifter))
             } else {
-                log(String(format: "cached stems: %.0f ms off", (moved - expected) / StemsCache.rate * 1000))
+                log(String(format: "cached stems: %.0f ms off", (moved - expected) / StemsCache.rate * 1000), .debug)
                 let at = ps_stems_rewrite(shifter, generation, from, UInt64(rate * 0.15))
                 if at > 0 { place(Span(from: at, mapping: mapping, fade: Int(rate * 0.01)), writingFrom: at) }
                 unmatchedSince = nil
@@ -657,7 +657,7 @@ final class CachedStemsWriter {
         guard abs(drift) > 2 * step || step != span.mapping.step else { return .going }
         // Off by a little: the tap dropped some audio, the player drifted, or it plays at another speed now. The stems
         // cross over to where the song is, a little ahead of the output.
-        log(String(format: "cached stems: %.1f ms off, at %.0f%% speed", drift / StemsCache.rate * 1000, step / (StemsCache.rate / rate) * 100))
+        log(String(format: "cached stems: %.1f ms off, at %.0f%% speed", drift / StemsCache.rate * 1000, step / (StemsCache.rate / rate) * 100), .debug)
         let mapping = Mapping(frame: from, position: found, step: step)
         let at = ps_stems_rewrite(shifter, generation, from, UInt64(rate * 0.15))
         if at > 0 { place(Span(from: at, mapping: mapping, fade: Int(rate * 0.01)), writingFrom: at) }
@@ -694,7 +694,7 @@ final class CachedStemsWriter {
         let since = unmatchedSince ?? from
         unmatchedSince = since
         guard now - since > UInt64(rate * 3) else { return .none }
-        log("cached stems: the song isn't where the cache has it, separating it as it plays")
+        log("cached stems: the song isn't where the cache has it, separating it as it plays", .notice)
         return .lost
     }
 
@@ -847,7 +847,7 @@ final class CachedStemsWriter {
 /// Separates the whole song that Muskey Player plays into the cache, in the background and one song at a time, the first
 /// time that its stems are used. Main thread only, apart from the separation itself.
 final class StemsCacheBuilder {
-    var log: (String) -> Void = { _ in }
+    var log = EchoLog(category: "StemsCache")
     /// The stems are separated for the output too, and come first: any thread.
     var live: () -> Bool = { false }
     /// The song at the path has its stems in the cache, or they couldn't be separated.
@@ -893,7 +893,7 @@ final class StemsCacheBuilder {
             } catch is CancellationError {
                 log("stems cache: stopped")
             } catch {
-                log("stems cache: separating the whole song failed: \(error)")
+                log("stems cache: separating the whole song failed: \(error)", .error)
             }
             DispatchQueue.main.async {
                 guard let self, self.job === job else { return }

@@ -5,6 +5,9 @@ import Foundation
 // and opens the app when it isn't running. The app does all the work; this tool only reads the arguments, waits and
 // moves the file that the app wrote into place, with the permissions of the shell that runs it.
 
+// A root-owned copy of this tool is the program of the daemon behind "Keep debug logs", so that call comes first.
+runKeepDebugLogsDaemon()
+
 let help = """
 Usage: muskey [INPUT...] [OPTIONS]
 
@@ -41,6 +44,10 @@ Output:
 
   -h, --help             Print this help
   -V, --version          Print the version
+
+Debug logs:
+  muskey logs persist on|off|status
+                         Keep Muskey's debug logs on disk so `log show` can read them later
 
 Examples:
   muskey song.mp3 --key Am
@@ -250,6 +257,12 @@ func send(_ request: CLIRequest) -> CLIResponse {
 }
 
 // MARK: Run
+
+// `muskey logs persist` is a command of its own, so it is read before the arguments are taken as songs. A folder named
+// logs still plays with `muskey logs`.
+if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "logs", CommandLine.arguments[2] == "persist" {
+    LogsPersist.run(Array(CommandLine.arguments.dropFirst(3)))
+}
 
 var options = parse(Array(CommandLine.arguments.dropFirst()))
 var request = options.request

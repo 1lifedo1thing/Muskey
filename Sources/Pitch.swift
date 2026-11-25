@@ -3,6 +3,9 @@ import AppKit
 import AudioToolbox
 import CoreAudio
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "Pitch")
 
 /// Shifts the pitch of everything the Mac plays, except Muskey itself, at the same tempo.
 /// A process tap mutes the original while it runs, and a private aggregate device on the default output plays
@@ -110,8 +113,6 @@ final class PitchChanger {
 
     /// Called on the main thread when the stems can't be separated; the stems are back on by then.
     var onStemsFailure: ((Error) -> Void)?
-    /// Called on the separation thread with how long the windows take.
-    var stemsLog: (String) -> Void = { _ in }
 
     /// The player paused the song. The output holds the stems where they are once the song goes silent, so the pause
     /// and the resume are heard at once instead of the stems' delay later.
@@ -211,7 +212,7 @@ final class PitchChanger {
             // song starts over. The tap of every app hears it at once, so it stays until the song has been heard for a
             // second, at most 10 seconds.
             guard heardProcess != nil, !hearsOneProcess else {
-                stemsLog("pitch change: \(heardProcess == nil ? "hearing every app" : "hearing only Muskey Player")")
+                log.info("pitch change: \(self.heardProcess == nil ? "hearing every app" : "hearing only Muskey Player", privacy: .public)")
                 return rebuild()
             }
             let from = framesHeard
@@ -222,7 +223,7 @@ final class PitchChanger {
                 guard framesHeard >= from + UInt64(rate) || waited >= 10 else { return }
                 timer.invalidate()
                 tapSwitch = nil
-                stemsLog(String(format: "pitch change: hearing only Muskey Player, after %.2f s", waited))
+                log.info("\(String(format: "pitch change: hearing only Muskey Player, after %.2f s", waited), privacy: .public)")
                 rebuild()
             }
         }
@@ -451,7 +452,6 @@ final class PitchChanger {
                     self.onStemsFailure?(error)
                 }
             }
-            separator.log = stemsLog
             separator.feed = stemsFeed
             separator.separating = separatingLive
             separator.start(shifter: shifter, rate: rate)
