@@ -41,6 +41,8 @@
     ```
 - Web remote
     > Turn on **Web remote** in Settings > General and open the pairing link on your phone to play songs from Recents on the Mac or on the phone, in another key, tempo or set of instruments, and to read their notes as tab, sheet music or a piano roll.
+    >
+    > A Spotify link sent from the phone plays in Spotify on the Mac with the Mac's sound muted, and the phone shows its key.
 
 ## Build from source
 

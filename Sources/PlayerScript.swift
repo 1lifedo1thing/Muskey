@@ -67,10 +67,10 @@ enum PlayerScript {
         }
     }
 
-    /// Asks macOS whether Muskey may script the process, and lets macOS ask the person when nobody has answered yet.
-    /// It waits for that answer.
-    private static func permission(_ pid: pid_t) -> OSStatus {
+    /// Asks macOS whether Muskey may script the process, and with `ask` lets macOS ask the person when nobody has
+    /// answered yet, which waits for that answer.
+    static func permission(_ pid: pid_t, ask: Bool = true) -> OSStatus {
         guard var target = NSAppleEventDescriptor(processIdentifier: pid).aeDesc?.pointee else { return OSStatus(procNotFound) }
-        return AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, true)
+        return AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, ask)
     }
 }

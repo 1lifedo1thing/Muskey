@@ -11,8 +11,9 @@ Usage: muskey [INPUT...] [OPTIONS]
 Plays songs in Muskey with a change of key, tempo or instruments, transcribes their notes, or writes the
 changed song or its notes to a file.
 
-INPUT is a song file, a folder of songs or a link. Without INPUT, Muskey listens to the song that plays now,
-as the hotkey does.
+INPUT is a song file, a folder of songs or a link. A Spotify link plays in Spotify, and Muskey listens to it.
+Without INPUT, Muskey listens to the song that plays now, as the hotkey does. Over SSH, a Spotify song mutes
+the Mac's sound output.
 
 Song:
   -k, --key KEY          Key to play in: Am, F#, Bbm, or semitones like +2 or -3
@@ -46,6 +47,7 @@ Examples:
   muskey ~/Music/Album
   muskey "https://youtu.be/…" --stems vocals,piano --key +2
   muskey --key G                                    listen to the song that plays, then move it to G
+  muskey spotify:track:4uLU6hMCjMI75M1A2tKUQC --key +2
   muskey song.mp3 --notes guitar
   muskey song.mp3 --key Em --mute vocals -o karaoke.m4a
   muskey song.mp3 --notes bass --from 1:12 --to 1:40 -o bass.pdf
@@ -258,10 +260,12 @@ request.inputs = options.inputs.map { input in
     let expanded = (input as NSString).expandingTildeInPath
     let path = expanded.hasPrefix("/") ? expanded : (currentFolder as NSString).appendingPathComponent(expanded)
     if FileManager.default.fileExists(atPath: path) { return (path as NSString).standardizingPath }
-    if input.contains("://") || input.range(of: #"^[\w-]+(\.[\w-]+)+(/\S*)?$"#, options: .regularExpression) != nil { return input }
+    if input.contains("://") || input.lowercased().hasPrefix("spotify:") || input.range(of: #"^[\w-]+(\.[\w-]+)+(/\S*)?$"#, options: .regularExpression) != nil { return input }
     fail("no file or folder at \(input)", code: 2)
 }
 if let from = request.from, let to = request.to, to <= from { fail("--to must come after --from", code: 2) }
+// A command sent over SSH comes from away from the Mac.
+request.remote = ProcessInfo.processInfo.environment["SSH_CONNECTION"] != nil
 if request.stems != nil, request.mute != nil { fail("use either --stems or --mute", code: 2) }
 
 if let output = options.output {
@@ -278,6 +282,8 @@ if let output = options.output {
     if FileManager.default.fileExists(atPath: request.inputs[0], isDirectory: &isFolder), isFolder.boolValue {
         fail("--output writes one song, not a folder", code: 2)
     }
+    let input = request.inputs[0].lowercased()
+    if input.hasPrefix("spotify:") || input.contains("open.spotify.com") { fail("a Spotify song can't be written to a file, only played", code: 2) }
     if format.isAudio, request.notes != nil { fail("--notes writes the notes: use .pdf, .html, .musicxml, .mid or .txt", code: 2) }
     if !format.isAudio { request.notes = request.notes ?? "auto" }
 } else if request.link {

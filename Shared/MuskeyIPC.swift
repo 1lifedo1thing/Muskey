@@ -60,6 +60,9 @@ struct CLIRequest: Codable {
     /// Serve the written file at a link too.
     var link = false
     var job: String?
+    /// Sent from away from the Mac (the web remote, or the tool over SSH): a song that Spotify plays mutes the Mac's
+    /// sound output.
+    var remote = false
 }
 
 struct CLIResponse: Codable {

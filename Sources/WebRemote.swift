@@ -37,6 +37,67 @@ struct WebNotes: Encodable {
 
     /// The songs of Recents with what Muskey knows of them, the newest first. Set by the app.
     var recents: () async -> [QueueItem] = { [] }
+    /// The HUD's song and key, the cover of the song that plays, and the switch for the Mac's sound. Set by the app.
+    var state: () -> State? = { nil }
+    var nowCover: () -> NSImage? = { nil }
+    var mute: (Bool) -> Void = { _ in }
+
+    /// What the remote shows of the song that plays on the Mac.
+    struct State: Encodable {
+        var title: String?
+        var artist: String?
+        /// The player, like Spotify or Muskey.
+        var app: String?
+        var playing: Bool
+        /// Muskey listens for the key now.
+        var listening: Bool
+        /// The key that the song was found in, like `Em`, and the change.
+        var key: String?
+        var shift: Int
+        var relative: Bool
+        var bpm: Double?
+        var speed: Double
+        var cover: Bool
+        /// The Mac's sound output is muted. Nil without an output device.
+        var muted: Bool?
+        /// Settings > HUD shows the keys in both modes.
+        var relativeKeys: Bool
+        /// The file that Muskey plays, left out of the answer.
+        var file: String?
+        /// The song of Recents that Muskey plays, by its ID.
+        var song: String?
+
+        enum CodingKeys: CodingKey {
+            case title, artist, app, playing, listening, key, shift, relative, bpm, speed, cover, muted, relativeKeys, song
+        }
+    }
+
+    /// The symbols of the HUD that the page draws, which are the only ones that it can ask for.
+    nonisolated static let symbols: Set<String> = [
+        "music.mic", "metronome.fill", "hifispeaker.fill", "guitars.fill", "pianokeys", "music.quarternote.3", "wind", "headphones",
+        "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "speaker.wave.2.fill", "speaker.slash.fill",
+        "waveform", "music.note.list", "arrow.clockwise", "xmark", "music.note", "ear",
+    ]
+
+    /// A symbol as a black PNG at three times its point size, which the page uses as a mask to colour it.
+    func symbolPNG(_ name: String) -> Data? {
+        guard Self.symbols.contains(name),
+              let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                  .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 60, weight: .semibold))
+        else { return nil }
+        let size = symbol.size
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width.rounded(.up)), pixelsHigh: Int(size.height.rounded(.up)),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0)
+        else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        symbol.draw(in: NSRect(origin: .zero, size: size))
+        NSColor.black.set()
+        NSRect(origin: .zero, size: size).fill(using: .sourceAtop)
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
+    }
 
     nonisolated static var enabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
 
@@ -134,9 +195,45 @@ struct WebNotes: Encodable {
         let id = parts.count == 3 ? parts[2] : nil
         let reads = request.method == "GET" || request.method == "HEAD"
         switch route {
-        case "web/sheet.js", "web/sheet.css":
+        case "web/sheet.js", "web/sheet.css", "web/remote.js", "web/remote.css":
             guard reads, parts.count == 2, let url = Bundle.main.url(forResource: parts[1], withExtension: nil, subdirectory: "Web") else { return .notFound }
             return WebLinks.file(url.path, request: request, extra: [("Cache-Control", "no-cache")])
+        case "api/state" where reads && parts.count == 2:
+            guard var state = await MainActor.run(body: { shared.state() }) else { return .notFound }
+            if let file = state.file { state.song = Self.id(URL(fileURLWithPath: file)) }
+            return json(state)
+        case "api/nowcover" where reads && parts.count == 2:
+            guard let jpeg = await MainActor.run(body: { SongTags.jpeg(shared.nowCover()) }) else { return .notFound }
+            return WebResponse(status: 200, headers: [("Content-Type", "image/jpeg"), ("Cache-Control", "no-store")], body: .data(jpeg))
+        case "api/symbol" where reads:
+            guard let id, let png = await MainActor.run(body: { shared.symbolPNG(id) }) else { return .notFound }
+            return WebResponse(status: 200, headers: [("Content-Type", "image/png"), ("Cache-Control", "private, max-age=86400")], body: .data(png))
+        case "api/spotify" where request.method == "POST" && parts.count == 2:
+            guard let body = try? JSONDecoder().decode([String: String].self, from: request.body), let link = body["link"], Spotify.uri(from: link) != nil else {
+                return json(WebJob(CLIResponse(error: "That isn't a Spotify link", done: true)))
+            }
+            var play = CLIRequest(command: .play, inputs: [link])
+            play.remote = true
+            let request = play
+            return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
+        case "api/live" where request.method == "POST" && parts.count == 2:
+            guard let action = try? JSONDecoder().decode(WebLive.self, from: request.body) else { return .text("Unreadable request", status: 400) }
+            if let key = action.key, Int(key) == nil, key.range(of: #"^[A-G](#|b)?m?$"#, options: .regularExpression) == nil { return .text("Wrong key", status: 400) }
+            if let speed = action.speed, !(0.5 ... 1.5).contains(speed) { return .text("Wrong speed", status: 400) }
+            if let stems = action.stems, !stems.allSatisfy(muskeyStemNames.contains) { return .text("Wrong instruments", status: 400) }
+            var play = CLIRequest(command: .play)
+            play.key = action.key
+            play.speed = action.speed
+            play.stems = action.stems
+            play.remote = true
+            let request = play
+            return json(WebJob(await MainActor.run { CLIService.shared.handle(request) }))
+        case "api/mute" where request.method == "POST" && parts.count == 2:
+            guard let body = try? JSONDecoder().decode([String: Bool].self, from: request.body), let muted = body["muted"] else {
+                return .text("Unreadable request", status: 400)
+            }
+            await MainActor.run { shared.mute(muted) }
+            return WebResponse(status: 204)
         case "api/songs" where reads && parts.count == 2:
             return json(await shared.songs().map(\.song))
         case "api/cover" where reads:
@@ -193,6 +290,13 @@ struct WebNotes: Encodable {
         let bpm: Double?
         let duration: Double?
         let cover: Bool
+    }
+
+    /// A change to the song that plays on the Mac: a key like `+2` or `Am`, a speed and the instruments to play.
+    struct WebLive: Decodable {
+        var key: String?
+        var speed: Double?
+        var stems: [String]?
     }
 
     /// What the page sends to play a song or write it with changes.

@@ -245,6 +245,14 @@ The `muskey` tool lives in `Contents/Helpers`, and Settings > General links it i
 - A job takes the key of the song from the HUD (a remembered key, a key heard since launch, or Noiseblend's), then from the notes kept for the song, and only then reads it from 30 seconds of the file. Notes that the notes window kept are cut to `--from` and `--to` without a new separation.
 - A job needs an input, so the tool never records the song that another app plays.
 
+#### Spotify links
+
+A Spotify link (`spotify:track:…` or `https://open.spotify.com/…/track/…`, and the same for albums, playlists, artists and episodes) is played by Spotify's AppleScript command `play track`, after Muskey opens Spotify when it isn't running. Muskey then listens to the song as the hotkey does and applies the changes. The first time, macOS shows a dialog to allow Muskey to control Spotify. Nobody may be at the Mac to click it, so the job fails at once with a message and the dialog stays on the Mac's screen.
+
+A link sent from the web remote, or by the tool over SSH (`SSH_CONNECTION` is set), mutes the Mac's sound output first: the device's mute, or its volume set to zero when it has no mute. The process tap still hears the song. **Mac sound** on the remote unmutes it, and so does the hotkey, which means that someone is at the Mac. The HUD closing doesn't, since nobody may be there to hear it.
+
+Spotify plays on the device that Spotify Connect has picked. When that is another device, the Mac plays nothing and Muskey doesn't find a key.
+
 #### Links
 
 `--link` copies the file into `~/Library/Caches/Muskey/Links/<token>/`, where the token is 128 random bits, and prints `http://<address>:25471/l/<token>/<name>`. The address is Tailscale's when it is up, or else the local network's.
@@ -258,7 +266,9 @@ While **Web remote** is on in Settings > General, the same server answers a page
 - its Host isn't one of the Mac's addresses, which stops a web page elsewhere from reaching the remote through a DNS name that resolves to the Mac
 - it changes something, and its Origin isn't the address of the remote
 
-The page (`Web/remote.html`) lists Recents by an ID made from each song's URL, never by a path. **Play on Mac** and **Listen Here** send the same requests as the tool through `CLIService`: a play, or a write job of an M4A that the browser plays with byte ranges. The notes come from a write job in JSON, and `Web/sheet.js` draws them as the notes window does, moving its line with the audio element. A key picked on the sheet is the key of the next render.
+The page (`Web/remote.html`, `remote.js` and `remote.css`) has the HUD's key row, tempo and instruments, drawn with the HUD's colours and with SF Symbols that the app renders as PNG masks (`/api/symbol/<name>`, from a fixed list). It asks for the HUD's state every 1.5 seconds: the song that plays, its key, the change, the tempo and whether the Mac's sound is muted. A change to the song that plays is sent at once, as a play without an input.
+
+The page lists Recents by an ID made from each song's URL, never by a path. **Play on Mac** and **Listen Here** send the same requests as the tool through `CLIService`: a play, or a write job of an M4A that the browser plays with byte ranges. The notes come from a write job in JSON, and `Web/sheet.js` draws them as the notes window does, moving its line with the audio element. A key picked on the sheet is the key of the next render.
 
 ## Limitations
 

@@ -45,7 +45,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Muskey moves the song to the time picked with the seek keys, in players that ignore the seeks from Now Playing.</string>
+	<string>Muskey moves the song to the time picked with the seek keys, in players that ignore the seeks from Now Playing, and plays Spotify links in Spotify.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Muskey listens to the song that plays to find its key, and plays it back in another key when one is picked.</string>
 	<key>NSHumanReadableCopyright</key>

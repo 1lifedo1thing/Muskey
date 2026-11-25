@@ -3130,6 +3130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cli.serve = { WebLinks.shared.serve($0) }
         WebLinks.shared.startIfNeeded()
         WebRemote.shared.recents = { [weak self] in await self?.remoteRecents() ?? [] }
+        WebRemote.shared.state = { [weak self] in self?.remoteState() }
+        WebRemote.shared.nowCover = { [weak self] in self?.model.artwork }
+        WebRemote.shared.mute = { [weak self] in self?.setOutputMuted($0) }
         WebRemote.shared.update()
         cli.start()
     }
@@ -3137,6 +3140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Plays the inputs of the tool in the HUD, or listens to the song that plays now, and applies the changes once
     /// the song plays and its key is known: the key, the speed, the region loop, the stems and the notes window.
     @MainActor private func cliPlay(_ request: CLIRequest, job: CLIJob) {
+        if request.inputs.count == 1, let uri = Spotify.uri(from: request.inputs[0]) { return cliSpotify(uri, request: request, job: job) }
+        if request.inputs.contains(where: Spotify.isLink) { return job.fail("that Spotify link names no song, album or playlist") }
         let urls = request.inputs.compactMap(FilePlayer.url(from:))
         guard urls.count == request.inputs.count else { return job.fail("Muskey can't open \(request.inputs.first ?? "the input")") }
         if (request.stems != nil || request.mute != nil || request.notes != nil), !StemModel.installed {
@@ -3166,7 +3171,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }) { [weak self] in self?.cliApply(request, job: job) }
     }
 
-    /// Calls `then` once `until` holds, checking four times a second, or fails the job after `seconds`.
+    /// Plays a Spotify link in Spotify, then listens to it once Spotify plays the new song, as the hotkey does, and
+    /// applies the changes. Sent from away from the Mac, the song plays with the Mac's sound output muted.
+    @MainActor private func cliSpotify(_ uri: String, request: CLIRequest, job: CLIJob) {
+        guard request.notes == nil else {
+            return job.fail("--notes needs a song file or a link. For a song from Spotify, press T over the HUD")
+        }
+        if (request.stems != nil || request.mute != nil), !StemModel.installed {
+            return job.fail("the separation model is not installed. Install it in Settings > Instruments and vocals")
+        }
+        if request.remote { muteForRemote() }
+        let before = nowPlaying.track
+        let sent = Date()
+        job.step = "Opening Spotify"
+        log("cli: playing \(uri.split(separator: ":").dropLast().joined(separator: ":")) in Spotify")
+        Spotify.play(uri) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .refused: return job.fail("Muskey isn't allowed to control Spotify. Allow it in System Settings > Privacy & Security > Automation")
+            case .needsConsent: return job.fail("Muskey needs permission to control Spotify. Click Allow in the dialog on the Mac, then send the link again")
+            case let .failed(reason): return job.fail(reason)
+            case .playing: break
+            }
+            job.step = "Listening"
+            cliWait(job, seconds: 60, until: { [weak self] in
+                guard let self, let track = nowPlaying.track, track.bundleID == Spotify.bundleID, track.playing else { return false }
+                // The song that Spotify played before is still reported for a moment after the new one starts.
+                let changed = before?.bundleID != Spotify.bundleID || track.song != before?.song || Date().timeIntervalSince(sent) > 4
+                guard changed else { return false }
+                if state == .idle { toggle() }
+                return model.pending == nil && model.key != nil && state == .showing && model.track?.song == track.song
+            }) { [weak self] in self?.cliApply(request, job: job) }
+        }
+    }
+
+    /// Whether the sound output was muted before Muskey muted it for the remote, while Muskey's mute lasts. The switch
+    /// on the remote and the hotkey end it, and the HUD closing doesn't, since nobody may be at the Mac to hear it.
+    private var remoteMuteBefore: Bool?
+
+    private func muteForRemote() {
+        guard remoteMuteBefore == nil, let before = OutputMute.muted else { return }
+        guard before || OutputMute.set(true) else { return log("remote: the sound output can't be muted") }
+        remoteMuteBefore = before
+        log("remote: sound output muted")
+    }
+
+    private func restoreRemoteMute() {
+        guard let before = remoteMuteBefore else { return }
+        remoteMuteBefore = nil
+        if !before, OutputMute.muted == true {
+            OutputMute.set(false)
+            log("remote: sound output unmuted")
+        }
+    }
+
+    /// The Mac's sound output from the remote's switch.
+    private func setOutputMuted(_ muted: Bool) {
+        if muted {
+            muteForRemote()
+        } else {
+            remoteMuteBefore = nil
+            OutputMute.set(false)
+        }
+    }
+
+    /// What the web remote shows of the HUD: the song that plays, its key and the change, and the Mac's sound output.
+    @MainActor private func remoteState() -> WebRemote.State {
+        let track = model.track ?? nowPlaying.track
+        let app = track?.bundleID.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first?.localizedName }
+        return WebRemote.State(
+            title: track?.title, artist: track?.artist, app: playsInFilePlayer ? "Muskey" : app, playing: track?.playing ?? false,
+            listening: state != .idle && model.phase == .listening, key: model.key?.code, shift: model.shift, relative: model.relative,
+            bpm: model.tempo?.bpm, speed: currentSpeed, cover: model.artwork != nil, muted: OutputMute.muted,
+            relativeKeys: prefs.relativeKeys, file: playsInFilePlayer ? filePlayer.current?.path : nil
+        )
+    }
+
     @MainActor private func cliWait(_ job: CLIJob, seconds: Double, until: @escaping () -> Bool, then: @escaping () -> Void) {
         Task { @MainActor in
             let deadline = Date().addingTimeInterval(seconds)
@@ -4799,7 +4879,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefs.hotkeyFailed = false
         guard let shortcut else { return }
         do {
-            hotKey = try HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in self?.toggle() }
+            hotKey = try HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
+                // Someone is at the Mac: the sound that the remote muted plays again.
+                self?.restoreRemoteMute()
+                self?.toggle()
+            }
         } catch {
             prefs.hotkeyFailed = true
             log("\(error); is \(shortcut.symbols) taken by another app?")
