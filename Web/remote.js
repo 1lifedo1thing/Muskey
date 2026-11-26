@@ -253,6 +253,10 @@
     /** A change made here a moment ago, which the next answers about the Mac's state don't undo. */
     let touched = 0;
     let transportAt = 0;
+    /** Play or pause tapped on the phone, which the page shows until the Mac reports the same, for at most 3 seconds. */
+    let tapped = null;
+    /** When play or pause was last tapped on the page. */
+    let pageTapAt = -Infinity;
 
     const original = () => parseKey(state?.key);
 
@@ -328,8 +332,17 @@
             if (asked < transportAt && state && next.title === state.title) {
                 next.playing = state.playing;
                 next.position = macPosition();
+            } else if (tapped && performance.now() < tapped.until && next.title === state?.title && next.playing !== tapped.playing) {
+                // A player can take a second to pause or play, and macOS reports it half a second later still, so the
+                // phone keeps what was tapped there until the Mac agrees or the time is up.
+                next.playing = tapped.playing;
+                next.position = macPosition();
+            } else if (tapped && next.playing === tapped.playing) {
+                tapped = null;
             }
             state = next;
+            // A pause that the Mac never made, or a play from the Mac, brings the phone's sound back.
+            if (state.playing) player.release();
             stateAt = performance.now();
         } catch {
             $("mac").classList.add("offline");
@@ -376,14 +389,30 @@
         }
     }
 
-    /** A button on the lock screen or in Control Center, sent to the Mac like the same button on the page. */
+    /** Play or pause from this phone: the sound on the phone stops at once and the glyphs change at once, and the Mac
+     * catches up. A player like Spotify can take a second to pause, and its last second would otherwise still play here. */
+    function setPlaying(playing, fromPage = true) {
+        if (!state) return;
+        if (fromPage) pageTapAt = performance.now();
+        if (playing) player.release();
+        else player.hold();
+        tapped = { playing, until: performance.now() + 3000 };
+        state.position = macPosition();
+        state.playing = playing;
+        stateAt = performance.now();
+        drawTransport();
+        drawNowPlaying();
+        transport({ action: playing ? "play" : "pause" });
+    }
+
+    /** A button on the lock screen or in Control Center, sent to the Mac like the same button on the page. Chromium
+     * sends Play or Pause by itself when the page's sound stops or starts, which would undo a tap on the page and then
+     * play and pause in a loop, so those two are left out for a moment after a tap. */
     function sessionAction(action, seconds) {
         if (!state) return;
         if (action === "play" || action === "pause") {
-            state.position = macPosition();
-            state.playing = action === "play";
-            stateAt = performance.now();
-            drawTransport();
+            if (performance.now() - pageTapAt < 1500) return report(`media session: ${action} ignored after a tap on the page`, "debug");
+            return setPlaying(action === "play", false);
         }
         drawNowPlaying();
         transport(seconds == null ? { action } : { action, seconds });
@@ -926,7 +955,6 @@
         live({ speed });
     }
 
-    /** A slide left or right over the tempo changes it by 1% for every 6 points. */
     /**
      * A tap on the record plays or pauses, like a click on the HUD's record. While paused, the cover is dimmed and a
      * little blurred under a white play glyph, and a finger on the record dims and blurs it more, as the pointer over
@@ -1121,33 +1149,40 @@
 
     let liveTimer = null;
     let livePending = {};
-    /** Sends changes to the Mac at most every 250 ms, so a run of taps or a slide sends a few requests. */
+    /** Sends a change to the Mac at once, and the changes that follow it within 250 ms together after that, so a run of
+     * taps or a slide sends a few requests and the first one is heard without waiting. */
     function live(change) {
         touched = Date.now();
         drawSaveAndNotes();
         livePending = { ...livePending, ...change };
         if (liveTimer) return;
-        liveTimer = setTimeout(async () => {
-            liveTimer = null;
-            const body = livePending;
-            livePending = {};
-            try {
-                await follow(await api("/api/live", body));
-                touched = Date.now();
-                refreshState();
-            } catch (error) {
-                if (error.message === "Stopped") return;
-                $("song-error").textContent = error.message;
-                $("song-error").hidden = false;
-            }
+        sendLive();
+        liveTimer = setTimeout(function next() {
+            if (!Object.keys(livePending).length) return (liveTimer = null);
+            sendLive();
+            liveTimer = setTimeout(next, 250);
         }, 250);
+    }
+
+    async function sendLive() {
+        const body = livePending;
+        livePending = {};
+        try {
+            await follow(await api("/api/live", body));
+            touched = Date.now();
+            refreshState();
+        } catch (error) {
+            if (error.message === "Stopped") return;
+            $("song-error").textContent = error.message;
+            $("song-error").hidden = false;
+        }
     }
 
     // MARK: Play, pause and seek on the Mac
 
-    /** The player's position, moved on from the last state by the time since, while the song plays. */
     /** Where a finger that slides over the waveform shows the song, until it lifts and the song moves there. */
     let scrubTime = null;
+    /** The player's position, moved on from the last state by the time since, while the song plays. */
     function macPosition() {
         if (scrubTime != null) return scrubTime;
         if (state?.position == null) return null;
@@ -1933,6 +1968,10 @@
         let abort = null;
         let playAt = 0;
         let generation = 0;
+        /** After a pause tapped on the phone: what was scheduled fades out in 60 ms, and what still arrives from the Mac,
+         * the end of its fade and the silence after it, is left out until a play. */
+        let held = false;
+        const sources = new Set();
         // What arrived since the last report, for the Mac's log: seconds of audio, their loudest sample, and the data.
         let receivedSeconds = 0;
         let receivedBytes = 0;
@@ -2082,6 +2121,7 @@
         function queue(buffer, loudest) {
             receivedSeconds += buffer.duration;
             peak = Math.max(peak, loudest);
+            if (held) return;
             const now = context.currentTime;
             // Too close to the speaker after a gap: start again a quarter second ahead. Too far ahead after a burst, like
             // the first frames out of the AAC decoder or a stall on Wi-Fi: leave this part out, so that the phone stays
@@ -2092,6 +2132,8 @@
             source.buffer = buffer;
             source.connect(gain);
             source.start(playAt);
+            sources.add(source);
+            source.onended = () => sources.delete(source);
             playAt += buffer.duration;
         }
 
@@ -2150,6 +2192,32 @@
                     element.load();
                     element = null;
                 }
+            },
+            hold() {
+                if (held) return;
+                held = true;
+                if (element) element.muted = true;
+                if (!context || !gain) return;
+                const now = context.currentTime;
+                gain.gain.cancelScheduledValues(now);
+                gain.gain.setValueAtTime(gain.gain.value, now);
+                gain.gain.linearRampToValueAtTime(0, now + 0.06);
+                for (const source of sources) {
+                    try {
+                        source.stop(now + 0.07);
+                    } catch {}
+                }
+                sources.clear();
+                playAt = 0;
+            },
+            release() {
+                if (!held) return;
+                held = false;
+                if (element) element.muted = testMute;
+                if (!context || !gain) return;
+                const now = context.currentTime;
+                gain.gain.cancelScheduledValues(now);
+                gain.gain.setValueAtTime(testMute ? 0 : 1, now);
             },
             /** Seconds between the Mac playing a moment and this phone playing it. */
             lag() {
@@ -3068,14 +3136,8 @@
     recordButton();
     $("mac-play").onclick = () => {
         if (!state) return;
-        // The glyph changes at once, and the next state from the Mac confirms it.
-        const action = state.playing ? "pause" : "play";
-        if (action === "play") preferPhone();
-        state.position = macPosition();
-        state.playing = !state.playing;
-        stateAt = performance.now();
-        drawTransport();
-        transport({ action });
+        if (!state.playing) preferPhone();
+        setPlaying(!state.playing);
     };
     // The playhead moves on every frame while the song view shows; the bars draw again only when one changes colour.
     const frame = () => {
