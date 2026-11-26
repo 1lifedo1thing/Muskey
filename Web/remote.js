@@ -2592,7 +2592,9 @@
     /** The room that the closed dock takes at the bottom of the screen, which the record stays above. */
     function measureDock() {
         if (!open || dockOpen > 0) return;
-        $("song").style.setProperty("--dock-room", `${Math.ceil($("dock").offsetHeight)}px`);
+        // The dock floats above the bottom edge, so the room it takes runs from its top to the bottom of the view.
+        const room = $("song").getBoundingClientRect().bottom - $("dock").getBoundingClientRect().top;
+        $("song").style.setProperty("--dock-room", `${Math.ceil(room)}px`);
     }
 
     /** The handle opens the dock with a tap, or follows a finger and settles open or closed. */
