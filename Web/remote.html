@@ -77,63 +77,63 @@
 </div>
 
 <div class="view" id="song" hidden>
-    <header class="top" id="top" aria-hidden="true">
-        <button class="back" id="top-close" aria-label="Close song" tabindex="-1"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
-        <div class="title" id="bar-title"></div>
-        <div class="spacer"></div>
+    <header class="song-top" id="top">
+        <button class="glass-round" id="close" aria-label="Close song"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
+        <div class="names in-bar" id="bar-names"><div class="song-title" id="bar-title"></div><div class="song-artist" id="bar-artist"></div></div>
+        <button class="glass-round" id="save" aria-label="Share" hidden><span class="icon" id="save-icon" style="--symbol: url(/api/symbol/square.and.arrow.up)"></span></button>
     </header>
-
-    <div class="head" id="head">
-        <button class="back" id="close" aria-label="Close song"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
-        <span class="cover-wrap" id="cover-wrap"><span id="song-cover"></span><span class="source-badge" id="source-badge" hidden></span></span>
-        <div class="grow" style="min-width: 0">
-            <div class="song-title" id="song-title"></div>
-            <div class="song-artist" id="song-artist"></div>
-        </div>
-        <button class="button compact" id="save" hidden><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Save</span></button>
-        <a class="button compact primary" id="save-link" hidden><span class="icon" style="--symbol: url(/api/symbol/square.and.arrow.down)"></span><span class="label-text">Download</span></a>
-    </div>
     <div class="error-line" id="save-error" hidden></div>
 
-    <section class="section">
-        <div class="label">Key <span class="label-side"><button class="reset" id="key-reset" aria-label="Reset key" hidden><span class="icon" style="--symbol: url(/api/symbol/arrow.counterclockwise)"></span></button><span class="pill" id="change-pill" hidden></span></span></div>
-        <div class="keyrow" id="keyrow">
-            <button class="step down" id="key-down" aria-label="Semitone down"><span class="icon" style="--symbol: url(/api/symbol/chevron.left)"></span></button>
-            <div class="keys" id="keys" role="group" aria-label="Key"></div>
-            <button class="step up" id="key-up" aria-label="Semitone up"><span class="icon" style="--symbol: url(/api/symbol/chevron.right)"></span></button>
-        </div>
-    </section>
+    <div class="stage" id="stage">
+        <div class="wheel-box"><div class="wheel" id="wheel">
+            <div class="song-glow" id="glow" aria-hidden="true"></div>
+            <svg class="fifths" id="fifths" viewBox="0 0 306 306" role="group" aria-label="Key"></svg>
+            <div class="record" id="cover-wrap">
+                <div class="disc spin"><span class="label" id="song-cover"></span><span class="spindle"></span></div>
+                <span class="sheen"></span>
+                <div class="on-disc" id="on-disc"><b id="disc-title"></b><span id="disc-artist"></span></div>
+                <svg class="groove-text" id="groove-text" viewBox="0 0 100 100" aria-hidden="true">
+                    <path id="groove-top" d="M14.5 50A35.5 35.5 0 0 1 85.5 50" fill="none"/>
+                    <path id="groove-bottom" d="M14.5 50A35.5 35.5 0 0 0 85.5 50" fill="none"/>
+                    <text class="gt"><textPath href="#groove-top" startOffset="50%" id="groove-title"></textPath></text>
+                    <text class="gb"><textPath href="#groove-bottom" startOffset="50%" id="groove-artist"></textPath></text>
+                </svg>
+                <span class="source-badge" id="source-badge" hidden></span>
+            </div>
+        </div></div>
+        <div class="names large" id="names"><div class="song-title" id="song-title"></div><div class="song-artist" id="song-artist"></div></div>
+        <div class="change-row"><span class="pill" id="change-pill" hidden></span><button class="reset" id="key-reset" aria-label="Reset key" hidden><span class="icon" style="--symbol: url(/api/symbol/arrow.counterclockwise)"></span></button></div>
+        <div id="sheet" hidden></div>
+    </div>
 
-    <section class="section">
-        <div class="card">
-            <div class="row">
-                <span class="row-label">Tempo</span>
-                <span class="grow label-side"><button class="reset" id="speed-reset" aria-label="Reset tempo" hidden><span class="icon" style="--symbol: url(/api/symbol/arrow.counterclockwise)"></span></button><span class="pill" id="bpm-pill" hidden></span></span>
-                <div class="stepper">
-                    <button class="down" id="speed-down" aria-label="Slower"><span class="icon" style="--symbol: url(/api/symbol/minus)"></span></button>
-                    <button class="value" id="speed-value" aria-label="Play at the song's tempo">100%</button>
-                    <button class="up" id="speed-up" aria-label="Faster"><span class="icon" style="--symbol: url(/api/symbol/plus)"></span></button>
-                </div>
+    <div class="scrim" id="scrim"></div>
+    <footer class="dock" id="dock">
+        <button class="handle" id="handle" aria-label="Tempo, instruments and notes" aria-expanded="false"><span></span></button>
+        <div class="more" id="more">
+            <div class="more-in" id="more-in">
+                <section class="sec">
+                    <div class="sec-head"><span class="sec-label">Tempo</span><span class="label-side"><button class="reset" id="speed-reset" aria-label="Reset tempo" hidden><span class="icon" style="--symbol: url(/api/symbol/arrow.counterclockwise)"></span></button><span class="pill" id="speed-pill" hidden></span></span></div>
+                    <div class="wide-step" id="wide-step">
+                        <button class="down" data-step="-5" aria-label="5% slower">−5</button>
+                        <button class="down" data-step="-1" aria-label="1% slower">−1</button>
+                        <div class="tempo-value" id="speed-value" role="slider" aria-label="Tempo" tabindex="0"><b id="bpm-value"></b><span id="bpm-unit">BPM</span></div>
+                        <button class="up" data-step="1" aria-label="1% faster">+1</button>
+                        <button class="up" data-step="5" aria-label="5% faster">+5</button>
+                    </div>
+                </section>
+                <section class="sec">
+                    <div class="sec-head"><span class="sec-label">Instruments</span><button class="small-button" id="play-all" hidden>Play all</button></div>
+                    <div class="stems" id="stems" role="group" aria-label="Instruments"></div>
+                </section>
+                <section class="sec" id="notes-section">
+                    <button class="transcribe" id="transcribe">
+                        <canvas class="transcribe-art" id="transcribe-art" aria-hidden="true"></canvas>
+                        <span class="transcribe-text"><span class="label-text" id="transcribe-label">Transcribe</span><span class="transcribe-sub" id="transcribe-sub"></span></span>
+                    </button>
+                    <div class="error-line" id="notes-error" hidden></div>
+                </section>
             </div>
         </div>
-    </section>
-
-    <section class="section">
-        <div class="label">Instruments <button class="small-button" id="play-all" hidden>Play all</button></div>
-        <div class="card padded"><div class="stems" id="stems" role="group" aria-label="Instruments"></div></div>
-    </section>
-
-    <section class="section" id="notes-section">
-        <div class="label">Notes</div>
-        <div class="card padded">
-            <div class="segments" id="notes-stem" role="group" aria-label="Instrument to transcribe"></div>
-            <button class="button big" id="transcribe" style="width: 100%; margin-top: 10px">Transcribe</button>
-            <div class="error-line" id="notes-error" hidden></div>
-        </div>
-        <div id="sheet" hidden></div>
-    </section>
-
-    <footer class="dock">
         <div class="error-line" id="song-error" hidden></div>
         <div class="transport" id="transport">
             <div class="wave" id="wave" aria-label="Position and region loop">
@@ -183,6 +183,13 @@
             <div class="stream-note" id="stream-note"></div>
         </div>
         <div class="stream-https" id="stream-https" hidden>Compressed plays without a delay at the HTTPS link</div>
+        <div class="settings-label">Song title</div>
+        <div class="title-tiles" id="title-choice" role="group" aria-label="Song title">
+            <button data-title="below"><svg viewBox="0 0 120 84" aria-hidden="true"><circle cx="13" cy="10" r="4.5" class="tp-btn"/><circle cx="107" cy="10" r="4.5" class="tp-btn"/><circle cx="60" cy="38" r="21" class="tp-ring"/><circle cx="60" cy="38" r="13" class="tp-disc"/><circle cx="60" cy="38" r="4.6" class="tp-label"/><rect x="37" y="64" width="46" height="5" rx="2.5" class="tp-title"/><rect x="46" y="72" width="28" height="3.5" rx="1.75" class="tp-artist"/></svg><span>Below record</span></button>
+            <button data-title="cover"><svg viewBox="0 0 120 84" aria-hidden="true"><circle cx="13" cy="10" r="4.5" class="tp-btn"/><circle cx="107" cy="10" r="4.5" class="tp-btn"/><circle cx="60" cy="44" r="27" class="tp-ring"/><circle cx="60" cy="44" r="16.7" class="tp-dim"/><rect x="48" y="38" width="24" height="5" rx="2.5" class="tp-title"/><rect x="52" y="46" width="16" height="3.5" rx="1.75" class="tp-artist"/></svg><span>On cover</span></button>
+            <button data-title="bar"><svg viewBox="0 0 120 84" aria-hidden="true"><circle cx="13" cy="10" r="4.5" class="tp-btn"/><circle cx="107" cy="10" r="4.5" class="tp-btn"/><rect x="40" y="5" width="40" height="5" rx="2.5" class="tp-title"/><rect x="48" y="13" width="24" height="3.5" rx="1.75" class="tp-artist"/><circle cx="60" cy="48" r="25" class="tp-ring"/><circle cx="60" cy="48" r="15.5" class="tp-disc"/><circle cx="60" cy="48" r="5.5" class="tp-label"/></svg><span>Top row</span></button>
+            <button data-title="grooves"><svg viewBox="0 0 120 84" aria-hidden="true"><circle cx="13" cy="10" r="4.5" class="tp-btn"/><circle cx="107" cy="10" r="4.5" class="tp-btn"/><circle cx="60" cy="44" r="27" class="tp-ring"/><circle cx="60" cy="44" r="16.7" class="tp-disc"/><circle cx="60" cy="44" r="5.9" class="tp-label"/><path d="M48.5 42 A11.5 11.5 0 0 1 71.5 42" class="tp-arc"/><path d="M49.5 47 A10.5 10.5 0 0 0 70.5 47" class="tp-arc thin"/></svg><span>Grooves</span></button>
+        </div>
     </div>
 </div>
 

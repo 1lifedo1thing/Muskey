@@ -47,6 +47,8 @@ struct WebNotes: Encodable {
     var transport: (WebTransport) -> Void = { _ in }
     /// A change of the region loop from the phone.
     var loop: (WebLoop) -> Void = { _ in }
+    /// Sets an instrument's volume, from 0 to 1.5, as a scroll over its circle does in the HUD.
+    var volume: (Stem, Double) -> Void = { _, _ in }
     /// The waveform of the song that plays, as the HUD draws it.
     var waveform: () -> SongWaveform? = { nil }
     /// The instruments that get a waveform each on the phone, from the rows of the waveform's stems.
@@ -103,6 +105,8 @@ struct WebNotes: Encodable {
         var mac: String
         /// The instruments that don't play, by their names in lowercase.
         var mutedStems: [String] = []
+        /// The volumes of the instruments that don't play at 100%, by their names in lowercase, from 0 to 1.5.
+        var stemVolumes: [String: Double] = [:]
         /// Phones that hear the Mac's output.
         var listeners = 0
         /// The region loop: its start, and its end once it is set.
@@ -122,7 +126,7 @@ struct WebNotes: Encodable {
 
         enum CodingKeys: CodingKey {
             case title, artist, app, playing, listening, key, shift, relative, bpm, speed, cover, muted, relativeKeys, song, position, duration,
-                 seekable, mac, mutedStems, listeners, loop, wave, source, sourceApp
+                 seekable, mac, mutedStems, stemVolumes, listeners, loop, wave, source, sourceApp
         }
     }
 
@@ -390,6 +394,12 @@ struct WebNotes: Encodable {
                 return .text("Unreadable request", status: 400)
             }
             await MainActor.run { shared.loop(action) }
+            return WebResponse(status: 204)
+        case "api/volume" where request.method == "POST" && parts.count == 2:
+            guard let body = try? JSONDecoder().decode(WebVolume.self, from: request.body), let stem = Stem.allCases.first(where: { $0.name.lowercased() == body.stem }),
+                  body.volume.isFinite, (0 ... 1.5).contains(body.volume)
+            else { return .text("Unreadable request", status: 400) }
+            await MainActor.run { shared.volume(stem, body.volume) }
             return WebResponse(status: 204)
         case "api/waveform" where reads && parts.count == 2:
             // The levels as the HUD keeps them, 50 a second and one byte each, 0 for a moment that wasn't heard yet.
@@ -762,6 +772,12 @@ struct WebNotes: Encodable {
         }
         return Self.json(WebJob(CLIService.shared.handle(request)))
     }
+}
+
+/// An instrument's volume from the phone: `stem` by its name in lowercase, `volume` from 0 to 1.5.
+struct WebVolume: Decodable {
+    let stem: String
+    let volume: Double
 }
 
 /// A change of the region loop: `press` as R does it (start, end, then clear), `set` from `start` to `end` after a drag

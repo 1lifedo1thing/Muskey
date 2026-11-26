@@ -249,7 +249,6 @@
     let relative = false;
     let speed = 1;
     let muted = new Set();
-    let notesStem = "auto";
     let sheet = null;
     /** A change made here a moment ago, which the next answers about the Mac's state don't undo. */
     let touched = 0;
@@ -464,21 +463,24 @@
         relative = state.relative;
         speed = state.speed;
         muted = new Set(state.mutedStems || []);
+        volumes = { ...(state.stemVolumes || {}) };
         touched = 0;
         songCover = undefined;
-        $("save-link").hidden = true;
+        shared = null;
         pickedEnd = null;
+        setDock(0, false);
         drawSong();
         drawAll();
         show("song");
         if (history.state?.song !== true) history.pushState({ song: true }, "");
-        centerKeys();
+        measureDock();
     }
 
     /** Back to the view that opened the song: the home view or the files of the Mac. */
     function closeSong() {
         open = false;
         closeSheet();
+        setDock(0, false);
         if (history.state?.files === true) return show("files");
         show("home");
         loadSongs();
@@ -553,13 +555,15 @@
             zoomAnimation = null;
             autoZoomed = false;
         }
-        $("song-title").textContent = $("bar-title").textContent = state.title || "Nothing playing";
-        $("song-artist").textContent = state.artist || "";
+        // The Song title setting picks one of these places, and the others stay hidden.
+        const title = state.title || "Nothing playing", artist = state.artist || "";
+        for (const id of ["song-title", "bar-title", "disc-title", "groove-title"]) $(id).textContent = title;
+        for (const id of ["song-artist", "bar-artist", "disc-artist", "groove-artist"]) $(id).textContent = artist;
         drawSource();
         const source = state.cover ? `/api/nowcover?song=${encodeURIComponent(state.title || "")}` : null;
         if (source !== songCover) {
             songCover = source;
-            $("song-cover").replaceChildren(cover(source, true));
+            drawCover(source);
         }
         // The notes need the song's file, which links and files have, and other players' songs don't.
         $("notes-section").hidden = !state.song;
@@ -569,13 +573,66 @@
         // The Mac's state wins, unless a change was just made here and the Mac hasn't applied it yet.
         if (Date.now() - touched > 3000) {
             const stems = new Set(state.mutedStems || []);
+            const levels = state.stemVolumes || {};
+            const sameLevels = STEMS.every((s) => Math.abs((levels[s.name] ?? 1) - volumeOf(s.name)) < 0.001);
             const changed = shift !== state.shift || relative !== state.relative || Math.abs(speed - state.speed) > 0.001
-                || stems.size !== muted.size || [...stems].some((name) => !muted.has(name)) || drawnKey !== (state.key ?? null);
+                || stems.size !== muted.size || [...stems].some((name) => !muted.has(name)) || drawnKey !== (state.key ?? null) || !sameLevels;
             shift = state.shift;
             relative = state.relative;
             speed = state.speed;
             muted = stems;
+            volumes = { ...levels };
             if (changed) drawAll();
+        }
+    }
+
+    /** The cover as the record's label, as the whole disc for the On cover title, and as the colours of the glow. */
+    function drawCover(source) {
+        $("song-cover").replaceChildren(cover(source, true));
+        const record = $("cover-wrap");
+        record.style.setProperty("--cover", source ? `url("${source}")` : "none");
+        record.classList.toggle("no-cover", !source);
+        const glow = $("glow");
+        glow.classList.remove("on");
+        if (!source) return;
+        const image = new Image();
+        image.onload = () => {
+            const colors = coverColors(image);
+            if (songCover !== source || !colors) return;
+            glow.style.setProperty("--c1", colors[0]);
+            glow.style.setProperty("--c2", colors[1]);
+            glow.classList.add("on");
+        };
+        image.src = source;
+    }
+
+    /** The cover's most colourful tone and its average tone, for the glow behind the record. */
+    function coverColors(image) {
+        try {
+            const canvas = document.createElement("canvas");
+            canvas.width = canvas.height = 16;
+            const context = canvas.getContext("2d", { willReadFrequently: true });
+            context.drawImage(image, 0, 0, 16, 16);
+            const pixels = context.getImageData(0, 0, 16, 16).data;
+            const vivid = [0, 0, 0, 0], plain = [0, 0, 0, 0];
+            for (let i = 0; i < pixels.length; i += 4) {
+                const [r, g, b] = [pixels[i], pixels[i + 1], pixels[i + 2]];
+                const max = Math.max(r, g, b), min = Math.min(r, g, b);
+                const weight = max ? ((max - min) / max) ** 2 * (max / 255) : 0;
+                vivid[0] += r * weight;
+                vivid[1] += g * weight;
+                vivid[2] += b * weight;
+                vivid[3] += weight;
+                plain[0] += r;
+                plain[1] += g;
+                plain[2] += b;
+                plain[3] += 1;
+            }
+            const css = ([r, g, b, total]) => `rgb(${Math.round(r / total)} ${Math.round(g / total)} ${Math.round(b / total)})`;
+            const average = css(plain);
+            return [vivid[3] > 2 ? css(vivid) : average, average];
+        } catch {
+            return null;
         }
     }
 
@@ -583,30 +640,96 @@
         drawKeys();
         drawSpeed();
         drawStems();
-        drawNotesPicker();
         drawSaveAndNotes();
     }
 
     // MARK: Key
 
-    /** The song's key that the key row shows, which a new song or a listen changes. */
+    /** The song's key that the ring shows, which a new song or a listen changes. */
     let drawnKey = null;
+    const SVG = "http://www.w3.org/2000/svg";
 
+    function svgElement(name, attributes = {}) {
+        const element = document.createElementNS(SVG, name);
+        for (const [attribute, value] of Object.entries(attributes)) element.setAttribute(attribute, value);
+        return element;
+    }
+
+    /** A key's name for the ring, with its sharp or flat faded and a small m for minor, as the HUD writes it. */
+    function keyText(text, key, x, y) {
+        text.setAttribute("x", x);
+        text.setAttribute("y", y);
+        for (const character of tonic(key)) {
+            const part = svgElement("tspan", "♯♭".includes(character) ? { class: "acc" } : {});
+            part.textContent = character;
+            text.append(part);
+        }
+        if (key.minor) {
+            const m = svgElement("tspan", { class: "m", dx: "0.5" });
+            m.textContent = "m";
+            text.append(m);
+        }
+    }
+
+    /**
+     * The circle of fifths, as the HUD's ring draws it: the song's mode on the outer ring and the relatives on the
+     * inner one, the song's key at the top with a dot, and a fifth up for each step clockwise. The selected key is
+     * filled, keys a fourth or a fifth from it are red, keys a whole step from it are sage, and the relative of the
+     * selected key is outlined. A song without a key shows the shifts in semitones on the outer ring only.
+     */
     function drawKeys() {
         drawnKey = state?.key ?? null;
         const key = original();
-        // Both rows always: a phone has no Option key to reach the other mode.
-        const both = Boolean(key);
-        const row = $("keys");
-        row.classList.toggle("both", both);
-        row.replaceChildren();
+        const ring = $("fifths");
+        ring.replaceChildren();
+        const c = 153, outer = [132, 19], inner = [96, 13];
+        const point = (r, angle) => [c + Math.sin(angle) * r, c - Math.cos(angle) * r];
+        const at = (r, angle) => point(r, angle).map((n) => n.toFixed(2)).join(" ");
+        const slice = (mid, from, to) => {
+            const half = Math.PI / 12;
+            return `M${at(to, mid - half)}A${to} ${to} 0 0 1 ${at(to, mid + half)}L${at(from, mid + half)}A${from} ${from} 0 0 0 ${at(from, mid - half)}Z`;
+        };
         const selected = fold(shift);
-        for (let offset = -6; offset <= 5; offset++) {
-            row.append(chip(key, offset, false, selected));
-            if (both) row.append(chip(key, offset, true, selected));
+        for (let step = 0; step < 12; step++) {
+            const angle = (step * Math.PI) / 6;
+            const offset = fold(step * 7);
+            for (const second of key ? [false, true] : [false]) {
+                const [r, band] = second ? inner : outer;
+                const inColumn = offset === selected;
+                const isSelected = key ? inColumn && relative === second : inColumn;
+                const classes = ["rk"];
+                if (second) classes.push("in");
+                if (offset === 0 && !second) classes.push("orig");
+                if (isSelected) classes.push("sel");
+                else if (inColumn) classes.push("partner");
+                else {
+                    const steps = harmony(offset - shift);
+                    if (steps === 1) classes.push("h1");
+                    else if (steps === 2) classes.push("h2");
+                }
+                const slot = svgElement("g", { class: classes.join(" "), role: "button" });
+                slot.append(svgElement("path", { d: slice(angle, r - band, r + band) }));
+                const [x, y] = point(r, angle);
+                const text = svgElement("text");
+                if (key) {
+                    const transposed = transpose(key, offset);
+                    const face = second ? relativeOf(transposed) : transposed;
+                    keyText(text, face, x.toFixed(2), y.toFixed(2));
+                    slot.setAttribute("aria-label", `${tonic(face)} ${face.minor ? "minor" : "major"}`);
+                } else {
+                    text.setAttribute("x", x.toFixed(2));
+                    text.setAttribute("y", y.toFixed(2));
+                    text.textContent = shown(offset);
+                    slot.setAttribute("aria-label", `${shown(offset)} semitones`);
+                }
+                slot.append(text);
+                if (offset === 0 && !second) slot.append(svgElement("circle", { class: "odot", cx: x.toFixed(2), cy: (y + 11).toFixed(2), r: 2 }));
+                slot.setAttribute("aria-pressed", String(isSelected));
+                // The column of the selected key keeps the shift, which can be an octave away from its offset.
+                slot.addEventListener("click", () => setKey(inColumn ? shift : offset, second));
+                ring.append(slot);
+            }
         }
-        $("key-down").disabled = shift <= -12;
-        $("key-up").disabled = shift >= 12;
         // The key of the song, and the key that plays once it changed.
         const change = $("change-pill");
         change.hidden = !key;
@@ -629,48 +752,12 @@
         }
     }
 
-    function chip(key, offset, second, selectedOffset) {
-        const button = document.createElement("button");
-        button.className = "chip";
-        const inColumn = offset === selectedOffset;
-        if (!key) {
-            button.textContent = shown(offset);
-            if (inColumn) button.classList.add("selected");
-            if (offset === 0) button.classList.add("original");
-        } else {
-            const transposed = transpose(key, offset);
-            const face = second ? relativeOf(transposed) : transposed;
-            button.append(keyName(face));
-            const isSelected = inColumn && relative === second;
-            const partner = inColumn && relative !== second;
-            if (second) button.classList.add("second");
-            if (offset === 0 && !second) button.classList.add("original");
-            if (isSelected) button.classList.add("selected");
-            else if (partner) button.classList.add("partner");
-            else {
-                const steps = harmony(offset - shift);
-                if (steps === 1) button.classList.add("strong");
-                else if (steps === 2) button.classList.add("light");
-            }
-            button.setAttribute("aria-label", `${tonic(face)} ${face.minor ? "minor" : "major"}`);
-        }
-        button.setAttribute("aria-pressed", String(key ? inColumn && relative === second : inColumn));
-        // The column of the selected key keeps the shift, which can be an octave away from its offset.
-        button.onclick = () => setKey(inColumn ? shift : offset, second);
-        return button;
-    }
-
-    function centerKeys() {
-        requestAnimationFrame(() => $("keys").querySelector(".selected")?.scrollIntoView({ inline: "center", block: "nearest" }));
-    }
-
     function setKey(newShift, newRelative) {
         const previousRelative = relative;
         shift = Math.max(-12, Math.min(12, newShift));
         relative = Boolean(newRelative);
         clearFailures();
         drawKeys();
-        centerKeys();
         if (sheet && (sheet.state.shift !== shift || sheet.state.relative !== relative)) sheet.set({ shift, relative });
         const key = original();
         // A number keeps the mode on the Mac, and a key's name moves to its mode.
@@ -681,40 +768,90 @@
 
     /** Muskey Player plays a song faster too, and another player's song can only be slowed down. */
     const fastest = () => (state?.app === "Muskey Player" ? 1.5 : 1);
+    /** A speed as a multiple of the song's tempo: 0.9x, 1x, 1.25x. */
+    const times = (value) => `${Number(value.toFixed(2))}x`;
 
+    /** The tempo in BPM inside the stepper, or the speed when the song's BPM isn't known, and the speed above it. */
     function drawSpeed() {
-        const percent = Math.round(speed * 100);
-        $("speed-value").textContent = `${percent}%`;
-        $("speed-reset").hidden = percent === 100;
-        $("speed-down").disabled = speed <= 0.5;
-        $("speed-up").disabled = speed >= fastest() - 0.001;
         const bpm = state?.bpm;
-        $("bpm-pill").hidden = !bpm;
-        if (bpm) {
-            $("bpm-pill").textContent = `${Math.round(bpm * speed)} BPM`;
-            $("bpm-pill").className = `pill ${speed < 0.999 ? "blue" : speed > 1.001 ? "honey" : ""}`;
+        const tone = speed < 0.999 ? "blue" : speed > 1.001 ? "honey" : "";
+        $("speed-reset").hidden = Math.abs(speed - 1) < 0.001;
+        const speedPill = $("speed-pill");
+        speedPill.hidden = !bpm;
+        speedPill.textContent = times(speed);
+        speedPill.className = `pill ${tone}`;
+        $("bpm-value").textContent = bpm ? String(Math.round(bpm * speed)) : times(speed);
+        $("bpm-unit").hidden = !bpm;
+        const value = $("speed-value");
+        value.dataset.tone = tone;
+        value.setAttribute("aria-valuetext", bpm ? `${Math.round(bpm * speed)} BPM, ${times(speed)}` : times(speed));
+        for (const button of $("wide-step").querySelectorAll("button[data-step]")) {
+            button.disabled = Number(button.dataset.step) < 0 ? speed <= 0.5 + 0.001 : speed >= fastest() - 0.001;
         }
     }
 
     function setSpeed(value) {
-        speed = Math.round(Math.max(0.5, Math.min(fastest(), value)) * 20) / 20;
+        const next = Math.round(Math.max(0.5, Math.min(fastest(), value)) * 100) / 100;
+        if (Math.abs(next - speed) < 0.001) return;
+        speed = next;
         clearFailures();
         drawSpeed();
         live({ speed });
     }
 
+    /** A slide left or right over the tempo changes it by 1% for every 6 points. */
+    function tempoSlider() {
+        const value = $("speed-value");
+        let slide = null;
+        value.addEventListener("pointerdown", (event) => {
+            if (event.button > 0) return;
+            value.setPointerCapture(event.pointerId);
+            slide = { x: event.clientX, speed };
+            value.classList.add("sliding");
+        });
+        value.addEventListener("pointermove", (event) => {
+            if (!slide) return;
+            setSpeed(slide.speed + (event.clientX - slide.x) / 600);
+        });
+        const end = () => {
+            slide = null;
+            value.classList.remove("sliding");
+        };
+        value.addEventListener("pointerup", end);
+        value.addEventListener("pointercancel", end);
+        value.addEventListener("keydown", (event) => {
+            const step = { ArrowLeft: -0.01, ArrowDown: -0.01, ArrowRight: 0.01, ArrowUp: 0.01 }[event.key];
+            if (!step) return;
+            event.preventDefault();
+            setSpeed(speed + step);
+        });
+    }
+
     // MARK: Instruments
 
-    /** The circles are made once and updated in place, so a hold that plays one stem keeps its button under the finger. */
+    /** Volumes of the instruments that don't play at 100%, from 0 to 150%, as a scroll over a circle sets them in the HUD. */
+    let volumes = {};
+    const volumeOf = (name) => volumes[name] ?? 1;
+    // The ring around a circle sweeps 270° from 0 to 150%, with a tick at 100%, as in the HUD.
+    const SWEEP = 0.75, RADIUS = 21, AROUND = 2 * Math.PI * RADIUS;
+
+    /** The circles are made once and updated in place, so a hold or a slide keeps its button under the finger. */
     function drawStems() {
         const row = $("stems");
         if (!row.children.length) row.append(...STEMS.map(stemButton));
         for (const button of row.children) {
-            const on = !muted.has(button.dataset.stem);
+            const stem = STEMS.find((s) => s.name === button.dataset.stem);
+            const on = !muted.has(stem.name);
+            const volume = volumeOf(stem.name);
             button.classList.toggle("muted", !on);
             button.setAttribute("aria-pressed", String(on));
+            button.setAttribute("aria-label", `${stem.label} ${Math.round(volume * 100)}%`);
+            button.querySelector(".arc").setAttribute("stroke-dasharray", `${(Math.min(1.5, volume) / 1.5) * SWEEP * AROUND} ${AROUND}`);
+            const percent = button.classList.contains("adjusting") || Math.abs(volume - 1) > 0.001;
+            button.querySelector(".name").textContent = percent ? `${Math.round(volume * 100)}%` : stem.label;
         }
         $("play-all").hidden = muted.size === 0;
+        drawTranscribeLabel();
     }
 
     function stemButton(stem) {
@@ -722,33 +859,68 @@
         button.className = "stem";
         button.dataset.stem = stem.name;
         button.style.setProperty("--hue", stem.hue);
-        button.setAttribute("aria-label", stem.label);
+        const box = document.createElement("span");
+        box.className = "vbox";
+        const ring = svgElement("svg", { class: "vring", viewBox: "0 0 48 48", "aria-hidden": "true" });
+        ring.append(svgElement("circle", { class: "track", cx: 24, cy: 24, r: RADIUS, transform: "rotate(135 24 24)", "stroke-dasharray": `${SWEEP * AROUND} ${AROUND}` }));
+        ring.append(svgElement("circle", { class: "arc", cx: 24, cy: 24, r: RADIUS, transform: "rotate(135 24 24)" }));
+        const tick = ((135 + 270 / 1.5) * Math.PI) / 180;
+        ring.append(svgElement("line", { class: "tick", x1: 24 + Math.cos(tick) * 18.5, y1: 24 + Math.sin(tick) * 18.5, x2: 24 + Math.cos(tick) * 23.5, y2: 24 + Math.sin(tick) * 23.5 }));
         const disc = document.createElement("span");
         disc.className = "disc";
         disc.append(icon(stem.symbol));
+        box.append(ring, disc);
         const name = document.createElement("span");
         name.className = "name";
         name.textContent = stem.label;
-        button.append(disc, name);
-        // A tap mutes or plays the stem, and holding it plays only that stem, as Option-click does in the HUD.
-        let held = null;
-        let solo = false;
-        button.onpointerdown = () => {
-            solo = false;
-            held = setTimeout(() => {
-                solo = true;
+        button.append(box, name);
+        // A tap mutes or plays the stem, a slide up or down changes its volume, and holding it plays only that stem,
+        // as Option-click does in the HUD.
+        let press = null;
+        let skipClick = false;
+        button.addEventListener("pointerdown", (event) => {
+            if (event.button > 0) return;
+            button.setPointerCapture(event.pointerId);
+            press = { y: event.clientY, volume: volumeOf(stem.name), sliding: false, solo: false };
+            press.timer = setTimeout(() => {
+                if (!press || press.sliding) return;
+                press.solo = true;
                 setStems(new Set(STEMS.map((s) => s.name).filter((n) => n !== stem.name)));
                 navigator.vibrate?.(10);
             }, 450);
+        });
+        button.addEventListener("pointermove", (event) => {
+            if (!press || press.solo) return;
+            if (!press.sliding) {
+                if (Math.abs(press.y - event.clientY) < 8) return;
+                press.sliding = true;
+                press.y = event.clientY;
+                clearTimeout(press.timer);
+                button.classList.add("adjusting");
+            }
+            // 150 points of travel for 100%, and a catch at 100% on the way through.
+            let volume = Math.round(Math.max(0, Math.min(1.5, press.volume + (press.y - event.clientY) / 150)) * 100) / 100;
+            if (Math.abs(volume - 1) < 0.03) volume = 1;
+            if (volume === volumeOf(stem.name)) return;
+            if (volume === 1) delete volumes[stem.name];
+            else volumes[stem.name] = volume;
+            drawStems();
+            sendVolume(stem.name);
+        });
+        const release = () => {
+            if (!press) return;
+            clearTimeout(press.timer);
+            skipClick = press.sliding || press.solo;
+            press = null;
+            button.classList.remove("adjusting");
+            drawStems();
         };
-        const release = () => clearTimeout(held);
-        button.onpointerup = release;
-        button.onpointerleave = release;
-        button.onpointercancel = release;
+        button.addEventListener("pointerup", release);
+        button.addEventListener("pointercancel", release);
         button.oncontextmenu = (event) => event.preventDefault();
         button.onclick = () => {
-            if (solo) {
-                solo = false;
+            if (skipClick) {
+                skipClick = false;
                 return;
             }
             const next = new Set(muted);
@@ -767,17 +939,36 @@
         live({ stems: STEMS.map((s) => s.name).filter((n) => !muted.has(n)) });
     }
 
+    const volumeTimers = {};
+    /** Sends an instrument's volume at most every 120 ms while a finger slides over it. */
+    function sendVolume(name) {
+        touched = Date.now();
+        drawSaveAndNotes();
+        if (volumeTimers[name]) return;
+        volumeTimers[name] = setTimeout(async () => {
+            volumeTimers[name] = null;
+            try {
+                await api("/api/volume", { stem: name, volume: volumeOf(name) });
+                touched = Date.now();
+            } catch (error) {
+                $("song-error").textContent = error.message;
+                $("song-error").hidden = false;
+            }
+        }, 120);
+    }
+
     // MARK: Changes to the song that plays on the Mac
 
     let liveTimer = null;
     let livePending = {};
-    /** Sends a change to the Mac a moment after the last tap, so a run of taps sends one request. */
+    /** Sends changes to the Mac at most every 250 ms, so a run of taps or a slide sends a few requests. */
     function live(change) {
         touched = Date.now();
         drawSaveAndNotes();
         livePending = { ...livePending, ...change };
-        clearTimeout(liveTimer);
+        if (liveTimer) return;
         liveTimer = setTimeout(async () => {
+            liveTimer = null;
             const body = livePending;
             livePending = {};
             try {
@@ -808,6 +999,7 @@
         if (!open || !state) return;
         $("mac-play-icon").style.setProperty("--symbol", symbol(state.playing ? "pause.fill" : "play.fill"));
         $("mac-play").setAttribute("aria-label", state.playing ? "Pause" : "Play");
+        $("cover-wrap").classList.toggle("playing", Boolean(state.playing));
         const position = macPosition();
         const duration = songDuration();
         const known = position != null && duration > 0;
@@ -1370,7 +1562,7 @@
             used = fingerDown(touch.identifier, touch.clientX, touch.clientY, touch.target) || used;
         }
         if (used) event.preventDefault();
-        follow(fingers.size > 0);
+        followTouches(fingers.size > 0);
     }
     function touchMove(event) {
         let ours = false;
@@ -1384,12 +1576,12 @@
     function touchEnd(event) {
         for (const touch of event.changedTouches) fingerUp(touch.identifier, touch.clientX, event.type === "touchcancel");
         forgetLifted(event.touches);
-        if (!fingers.size) follow(false);
+        if (!fingers.size) followTouches(false);
     }
     // The whole page's touches are followed only while a finger is on the waveform, so that scrolling elsewhere never
     // waits for the page.
     let following = false;
-    function follow(on) {
+    function followTouches(on) {
         if (on === following) return;
         following = on;
         const method = on ? "addEventListener" : "removeEventListener";
@@ -1849,28 +2041,28 @@
         const loop = currentLoop();
         return JSON.stringify([shift, speed, [...muted].sort(), loop?.end != null ? [loop.start, loop.end] : null]);
     }
-    let savedSettings = null;
+    /** The song that the last save wrote, which Share offers until the key, tempo, instruments or loop change. */
+    let shared = null;
 
-    /** Save shows once the song has a change: a key, a tempo, an instrument turned off or a loop. Download takes its
-     * place after a save, until the change is another one. */
+    /** Share in the top row writes the song as it plays, or its loop, and then shares the file that it wrote. */
     function drawSaveAndNotes() {
         const looped = currentLoop()?.end != null;
-        const save = $("save"), link = $("save-link");
+        const save = $("save");
         const busy = save.classList.contains("failed") || save.classList.contains("working");
-        if (!link.hidden && saveSettings() !== savedSettings) link.hidden = true;
-        const changed = shift !== 0 || Math.abs(speed - 1) > 0.001 || muted.size > 0 || looped;
-        save.hidden = !state?.song || !link.hidden || !(changed || busy);
-        if (!busy) save.querySelector(".label-text").textContent = looped ? "Save loop" : "Save";
+        if (shared && shared.settings !== saveSettings()) shared = null;
+        save.hidden = !state?.song;
+        save.classList.toggle("ready", Boolean(shared));
+        if (!busy) save.setAttribute("aria-label", shared ? "Share" : looped ? "Save loop" : "Save song");
         drawTranscribeLabel();
     }
 
     /** The song as it plays on the Mac, with its key, tempo and instruments, or only its loop, written on the Mac
-     * and offered here as a download. */
+     * and then shared from the phone, or downloaded where the browser can't share files. */
     async function save() {
         const button = $("save");
         if (!state?.song || button.classList.contains("working")) return;
+        if (shared) return share(shared);
         clearFailures();
-        $("save-link").hidden = true;
         const loop = currentLoop();
         const body = {
             song: state.song,
@@ -1883,62 +2075,215 @@
         try {
             const settings = saveSettings();
             const job = await follow(await api("/api/write", body), button);
-            const link = $("save-link");
-            link.href = job.file;
-            link.setAttribute("download", "");
-            link.hidden = false;
-            savedSettings = settings;
+            // The file is fetched now, because sharing it has to happen inside the next tap.
+            let file = null;
+            try {
+                const response = await fetch(job.file);
+                const name = /filename\*=UTF-8''([^;]+)/.exec(response.headers.get("Content-Disposition") || "")?.[1];
+                const blob = await response.blob();
+                file = new File([blob], name ? decodeURIComponent(name) : "Song.m4a", { type: blob.type || "audio/mp4" });
+            } catch (error) {
+                report(`share: ${error.message}`);
+            }
+            shared = { settings, url: job.file, file };
             drawSaveAndNotes();
         } catch (error) {
             if (error.message !== "Stopped") fail(button, $("save-error"), error);
         }
     }
 
-    // MARK: Notes
-
-    const NOTES_OPTIONS = [{ name: "auto", label: "Auto" }, ...STEMS.filter((s) => s.name !== "drums")];
-
-    /** Transcribe names the instrument picked, and the loop once it has an end. */
-    function drawTranscribeLabel() {
-        const button = $("transcribe");
-        if (button.classList.contains("failed") || button.classList.contains("working")) return;
-        const picked = NOTES_OPTIONS.find((o) => o.name === notesStem);
-        const looped = currentLoop()?.end != null;
-        const what = notesStem === "auto" ? "Transcribe" : `Transcribe ${picked.label.toLowerCase()}`;
-        const label = looped ? (notesStem === "auto" ? "Transcribe loop" : `${what} in loop`) : what;
-        if (button.textContent !== label) button.textContent = label;
+    function share({ url, file }) {
+        if (file && navigator.canShare?.({ files: [file] })) {
+            navigator.share({ files: [file] }).catch((error) => {
+                if (error.name !== "AbortError" && error.name !== "NotAllowedError") report(`share: ${error.name} ${error.message}`);
+            });
+            return;
+        }
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = file?.name || "";
+        link.click();
     }
 
-    function drawNotesPicker() {
-        const options = NOTES_OPTIONS;
-        drawTranscribeLabel();
-        $("notes-stem").replaceChildren(...options.map((option) => {
-            const button = document.createElement("button");
-            button.setAttribute("aria-pressed", String(option.name === notesStem));
-            button.setAttribute("aria-label", option.label);
-            if (option.symbol) button.append(icon(option.symbol));
-            else button.textContent = option.label;
-            button.onclick = () => {
-                notesStem = option.name;
-                clearFailures();
-                drawNotesPicker();
-            };
-            return button;
-        }));
+    // MARK: Notes
+
+    /** The instrument that Transcribe writes: the only one that plays, since its stem is already separated. While
+     * several play, Muskey picks the one with the most notes. Drums have no notes. */
+    function notesTarget() {
+        const playing = STEMS.filter((s) => !muted.has(s.name));
+        return playing.length === 1 && playing[0].name !== "drums" ? playing[0] : null;
+    }
+
+    /** Transcribe names the instrument that plays alone, and the loop once it has an end. */
+    function drawTranscribeLabel() {
+        const button = $("transcribe");
+        const target = notesTarget();
+        const art = target && (target.name === "guitar" || target.name === "bass") ? "tab" : "staff";
+        if (button.dataset.art !== art) {
+            button.dataset.art = art;
+            drawTranscribeArt();
+        }
+        if (button.classList.contains("failed") || button.classList.contains("working")) return;
+        const looped = currentLoop()?.end != null;
+        const what = target ? `Transcribe ${target.label.toLowerCase()}` : "Transcribe";
+        const label = looped ? (target ? `${what} in loop` : "Transcribe loop") : what;
+        if ($("transcribe-label").textContent !== label) $("transcribe-label").textContent = label;
+        $("transcribe-sub").textContent = "long press an instrument to transcribe";
+        $("transcribe-sub").hidden = Boolean(target);
+    }
+
+    // The made-up notes on the button: a staff for most instruments and a tab for guitar and bass. They light up
+    // with the notes window's glow as the transcription passes them.
+    const ART_NOTES = (() => {
+        let seed = 7;
+        const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+        return Array.from({ length: 30 }, (_, i) => ({ x: (i + 0.5 + (next() - 0.5) * 0.4) / 30, place: Math.floor(next() * 9), string: Math.floor(next() * 6), fret: Math.floor(next() * 13) }));
+    })();
+    const art = { shown: 0, passed: new Map(), running: false };
+
+    function drawTranscribeArt() {
+        const canvas = $("transcribe-art");
+        const button = $("transcribe");
+        const width = canvas.clientWidth, height = canvas.clientHeight;
+        if (!width || !height) return;
+        const scale = devicePixelRatio || 1;
+        if (canvas.width !== Math.round(width * scale) || canvas.height !== Math.round(height * scale)) {
+            canvas.width = Math.round(width * scale);
+            canvas.height = Math.round(height * scale);
+        }
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(scale, 0, 0, scale, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+        const working = button.classList.contains("working");
+        // Without a share of the work done, a light sweeps across the notes again and again.
+        const unknown = working && (button.classList.contains("unknown") || !(parseFloat(button.style.getPropertyValue("--done")) > 0));
+        const sweep = (performance.now() % 2600) / 2600;
+        const ink = dark ? "255 247 245" : "33 20 26";
+        const theme = dark
+            ? { accent: [0.76, 0.18, 62], hot: [0.86, 0.18, 76], glow: "oklch(0.78 0.19 60" }
+            : { accent: [0.58, 0.24, 16], hot: [0.6, 0.26, 20], glow: "oklch(0.7 0.2 16" };
+        const edge = 18;
+        const done = working ? edge + art.shown * (width - 2 * edge) : -1;
+        const tint = dark ? "oklch(0.66 0.13 74 / 0.2)" : "oklch(0.74 0.13 74 / 0.2)";
+        if (unknown) {
+            const x = edge + sweep * (width - 2 * edge);
+            const band = ctx.createLinearGradient(x - 90, 0, x, 0);
+            band.addColorStop(0, "transparent");
+            band.addColorStop(1, tint);
+            ctx.fillStyle = band;
+            ctx.fillRect(x - 90, 0, 90, height);
+        } else if (working) {
+            ctx.fillStyle = tint;
+            ctx.fillRect(0, 0, done, height);
+        }
+        const tab = button.dataset.art === "tab";
+        const lines = tab ? 6 : 5;
+        const gap = Math.min(tab ? 7 : 8, (height - 14) / (lines - 1));
+        const top = (height - gap * (lines - 1)) / 2;
+        ctx.strokeStyle = `rgb(${ink} / 0.12)`;
+        ctx.lineWidth = 1;
+        for (let line = 0; line < lines; line++) {
+            ctx.beginPath();
+            ctx.moveTo(edge, Math.round(top + line * gap) + 0.5);
+            ctx.lineTo(width - edge, Math.round(top + line * gap) + 0.5);
+            ctx.stroke();
+        }
+        const now = performance.now();
+        let flashing = false;
+        ctx.font = `700 ${Math.round(gap * 1.35)}px ui-rounded, system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ART_NOTES.forEach((note, index) => {
+            const x = edge + 6 + note.x * (width - 2 * edge - 12);
+            let color = `rgb(${ink} / 0.2)`;
+            let flash = 0;
+            const reached = unknown || (working && x <= done);
+            if (reached) {
+                if (!art.passed.has(index)) art.passed.set(index, now);
+                // A sweep lights each note when it passes it, and the note fades until the next sweep.
+                const age = unknown ? ((sweep - (x - edge) / (width - 2 * edge) + 1) % 1) * 2.6 : (now - art.passed.get(index)) / 1000;
+                flash = Math.min(1.35, Math.exp(-age / 0.7) * (1 + 0.45 * Math.exp(-age / 0.09)));
+                if (flash > 0.02) flashing = true;
+                const [l, c, h] = theme.accent.map((value, i) => value + (theme.hot[i] - value) * Math.min(1, flash) * (dark ? 0.75 : 0.5));
+                color = `oklch(${l} ${c} ${h} / ${unknown ? Math.min(1, 0.2 + flash) : 1})`;
+            }
+            const y = tab ? top + note.string * gap : top + gap * 4 - note.place * (gap / 2);
+            if (flash > 0.02) {
+                const radius = gap * 2.4;
+                const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+                const alpha = (dark ? 0.34 : 0.3) * flash;
+                gradient.addColorStop(0, `${theme.glow} / ${Math.min(1, alpha * 1.8)})`);
+                gradient.addColorStop(0.3, `${theme.glow} / ${alpha * 0.7})`);
+                gradient.addColorStop(1, `${theme.glow} / 0)`);
+                ctx.save();
+                if (dark) ctx.globalCompositeOperation = "lighter";
+                ctx.fillStyle = gradient;
+                ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+                ctx.restore();
+            }
+            if (tab) {
+                const text = String(note.fret);
+                const half = ctx.measureText(text).width / 2 + 1.5;
+                ctx.save();
+                ctx.globalCompositeOperation = "destination-out";
+                ctx.fillRect(x - half, y - gap * 0.45, half * 2, gap * 0.9);
+                ctx.restore();
+                ctx.fillStyle = color;
+                ctx.fillText(text, x, y + 0.5);
+            } else {
+                ctx.fillStyle = color;
+                ctx.strokeStyle = color;
+                ctx.beginPath();
+                ctx.ellipse(x, y, gap * 0.62, gap * 0.44, -0.35, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                ctx.moveTo(x + gap * 0.56, y - 0.5);
+                ctx.lineTo(x + gap * 0.56, y - gap * 2.6);
+                ctx.stroke();
+            }
+        });
+        return working || flashing;
+    }
+
+    /** Moves the light across the button towards the job's progress, and lets the last notes fade after it ends. */
+    function animateArt() {
+        if (art.running) return;
+        art.running = true;
+        const step = () => {
+            const button = $("transcribe");
+            const target = parseFloat(button.style.getPropertyValue("--done")) / 100 || 0;
+            art.shown += (target - art.shown) * 0.08;
+            if (button.classList.contains("working")) {
+                $("transcribe-label").textContent = target > 0 ? `${Math.round(art.shown * 100)}%` : "Transcribing";
+            }
+            if (drawTranscribeArt()) return requestAnimationFrame(step);
+            art.running = false;
+        };
+        requestAnimationFrame(step);
     }
 
     async function transcribe() {
         const button = $("transcribe");
         if (button.classList.contains("failed")) clearFailures();
-        if (!state?.song) return;
+        if (!state?.song || button.classList.contains("working")) return;
         button.disabled = true;
+        button.dataset.label = $("transcribe-label").textContent;
+        art.shown = 0;
+        art.passed.clear();
+        button.classList.add("working");
+        animateArt();
         try {
             const loop = currentLoop();
             const part = loop?.end != null ? { from: loop.start, to: loop.end } : {};
-            const job = await follow(await api("/api/write", { song: state.song, notes: notesStem, format: "json", ...part }), button);
+            const notes = notesTarget()?.name ?? "auto";
+            const job = await follow(await api("/api/write", { song: state.song, notes, format: "json", ...part }), button);
             const data = await (await fetch(job.file)).json();
             closeSheet();
             $("sheet").hidden = false;
+            showSheet(true);
+            setDock(0);
             sheet = MuskeySheet.mount($("sheet"), data, {
                 shift,
                 relative,
@@ -1950,12 +2295,20 @@
                 },
             });
             drawTransport();
-            $("sheet").scrollIntoView({ block: "start", behavior: "smooth" });
         } catch (error) {
             if (error.message !== "Stopped") fail(button, $("notes-error"), error);
         } finally {
             button.disabled = false;
+            if (!button.classList.contains("failed")) delete button.dataset.label;
+            drawTranscribeLabel();
+            drawTranscribeArt();
         }
+    }
+
+    /** The notes take the record's place, and Back closes them. */
+    function showSheet(on) {
+        $("stage").classList.toggle("notes", on);
+        $("close").setAttribute("aria-label", on ? "Close notes" : "Close song");
     }
 
     function closeSheet() {
@@ -1963,6 +2316,75 @@
         sheet = null;
         $("sheet").replaceChildren();
         $("sheet").hidden = true;
+        showSheet(false);
+    }
+
+    // MARK: Dock
+
+    /** How far the dock is open, from 0 for the floating transport to 1 for the sheet of tempo, instruments and notes. */
+    let dockOpen = 0;
+
+    function setDock(value, animate = true) {
+        dockOpen = Math.max(0, Math.min(1, value));
+        const song = $("song");
+        song.classList.toggle("dragging", !animate);
+        song.style.setProperty("--more-h", `${moreRoom()}px`);
+        song.style.setProperty("--open", dockOpen.toFixed(3));
+        song.classList.toggle("dock-open", dockOpen > 0.5);
+        $("handle").setAttribute("aria-expanded", String(dockOpen > 0.5));
+        $("more").inert = dockOpen < 0.5;
+        if (dockOpen > 0) requestAnimationFrame(drawTranscribeArt);
+    }
+
+    /** The sheet's height: all of it, or the room between the top row and the transport, where it then scrolls. */
+    function moreRoom() {
+        const natural = $("more-in").scrollHeight;
+        const top = $("top").getBoundingClientRect().bottom;
+        const closed = $("dock").offsetHeight - $("more").offsetHeight;
+        return Math.max(160, Math.min(natural, innerHeight - top - closed - 12));
+    }
+
+    /** The room that the closed dock takes at the bottom of the screen, which the record stays above. */
+    function measureDock() {
+        if (!open || dockOpen > 0) return;
+        $("song").style.setProperty("--dock-room", `${Math.ceil($("dock").offsetHeight)}px`);
+    }
+
+    /** The handle opens the dock with a tap, or follows a finger and settles open or closed. */
+    function dockHandle() {
+        const handle = $("handle");
+        let drag = null;
+        handle.addEventListener("pointerdown", (event) => {
+            if (event.button > 0) return;
+            handle.setPointerCapture(event.pointerId);
+            drag = { y: event.clientY, open: dockOpen, moved: false, height: moreRoom(), last: event.clientY, at: event.timeStamp, velocity: 0 };
+        });
+        handle.addEventListener("pointermove", (event) => {
+            if (!drag) return;
+            const travel = drag.y - event.clientY;
+            if (!drag.moved && Math.abs(travel) < 4) return;
+            drag.moved = true;
+            const elapsed = event.timeStamp - drag.at;
+            if (elapsed > 0) drag.velocity = (drag.last - event.clientY) / elapsed;
+            drag.last = event.clientY;
+            drag.at = event.timeStamp;
+            setDock(drag.open + travel / drag.height, false);
+        });
+        const end = () => {
+            if (!drag) return;
+            const { moved, velocity } = drag;
+            drag = null;
+            if (!moved) return setDock(dockOpen > 0.5 ? 0 : 1);
+            const target = Math.abs(velocity) > 0.4 ? (velocity > 0 ? 1 : 0) : dockOpen > 0.5 ? 1 : 0;
+            requestAnimationFrame(() => setDock(target));
+        };
+        handle.addEventListener("pointerup", end);
+        handle.addEventListener("pointercancel", end);
+        // A click from the keyboard has no pointer before it.
+        handle.addEventListener("click", (event) => {
+            if (event.detail === 0) setDock(dockOpen > 0.5 ? 0 : 1);
+        });
+        $("scrim").addEventListener("click", () => setDock(0));
     }
 
     // MARK: Open
@@ -2043,7 +2465,34 @@
 
     // MARK: Settings
 
+    // MARK: Song title
+
+    /** Where the song view shows the title and artist: below the record, on the dimmed cover, in the top row, or
+     * along the grooves. Kept on this phone. */
+    const TITLE_KEY = "muskey.songTitle";
+    const TITLE_PLACES = ["below", "cover", "bar", "grooves"];
+    function titlePlace() {
+        try {
+            const place = localStorage.getItem(TITLE_KEY);
+            return TITLE_PLACES.includes(place) ? place : "below";
+        } catch {
+            return "below";
+        }
+    }
+    document.documentElement.dataset.songTitle = titlePlace();
+    $("title-choice").addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-title]");
+        if (!button) return;
+        try {
+            localStorage.setItem(TITLE_KEY, button.dataset.title);
+        } catch {}
+        document.documentElement.dataset.songTitle = button.dataset.title;
+        drawSettings();
+    });
+
     function drawSettings() {
+        const place = document.documentElement.dataset.songTitle;
+        for (const button of $("title-choice").querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.title === place));
         const choice = streamChoice();
         for (const button of $("stream-choice").querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.stream === choice));
         $("stream-note").textContent = choice === "uncompressed" ? "~700MB/h (can stutter on slower connections)" : webCodecs ? "~70MB/h" : "~70MB/h with a 5 second buffering delay";
@@ -2349,7 +2798,7 @@
         if (state?.playing) preferPhone();
         openSong();
     };
-    $("close").onclick = $("top-close").onclick = () => history.back();
+    $("close").onclick = () => (sheet ? closeSheet() : history.back());
     addEventListener("popstate", () => {
         if (open && history.state?.song !== true) closeSong();
         else if (!open && history.state?.files !== true && !$("files").hidden) {
@@ -2363,11 +2812,12 @@
         }
     });
     $("files-close").onclick = () => history.back();
-    $("key-down").onclick = () => setKey(shift - 1, relative);
-    $("key-up").onclick = () => setKey(shift + 1, relative);
-    $("speed-down").onclick = () => setSpeed(speed - 0.05);
-    $("speed-up").onclick = () => setSpeed(speed + 0.05);
-    $("speed-value").onclick = () => setSpeed(1);
+    $("wide-step").addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-step]");
+        if (button) setSpeed(speed + Number(button.dataset.step) / 100);
+    });
+    tempoSlider();
+    dockHandle();
     $("speed-reset").onclick = () => setSpeed(1);
     $("key-reset").onclick = () => setKey(0, false);
     $("play-all").onclick = () => setStems(new Set());
@@ -2455,12 +2905,14 @@
     };
     requestAnimationFrame(frame);
     setInterval(() => { if (open && document.visibilityState === "visible") drawTransport(); }, 500);
-    // A compact bar with the song's name and a back button shows once the song's head scrolls away.
-    new IntersectionObserver(([entry]) => $("top").classList.toggle("scrolled", !entry.isIntersecting), { rootMargin: "-20px 0px 0px 0px" })
-        .observe($("head"));
+    // The record stays above the closed dock, whose height changes with the waveforms of the instruments.
+    new ResizeObserver(() => {
+        measureDock();
+        drawTranscribeArt();
+    }).observe($("dock"));
 
     // The song view's symbols are fetched while the home view shows, so that its icons are there when a song opens.
-    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "iphone", "music.note", "minus", "plus", "gobackward.5", "goforward.5", "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.down"]) {
+    for (const name of [...STEMS.map((s) => s.symbol), "chevron.left", "chevron.right", "play.fill", "pause.fill", "macbook", "iphone", "music.note", "minus", "plus", "gobackward.5", "goforward.5", "repeat", "checkmark", "exclamationmark.triangle.fill", "square.and.arrow.up", "arrow.counterclockwise"]) {
         new Image().src = `/api/symbol/${name}`;
     }
 

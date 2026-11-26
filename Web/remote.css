@@ -27,6 +27,12 @@
     --failed-text: oklch(0.5 0.2 25);
     --font: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     --gutter: 16px;
+    --vinyl: #17110f;
+    --groove: #2a2220;
+    --glass: rgb(255 252 248 / 0.55);
+    --rim: rgb(255 255 255 / 0.55);
+    --rim-soft: rgb(255 255 255 / 0.14);
+    --shadow: rgb(0 0 0 / 0.14);
     accent-color: var(--honey);
 }
 
@@ -51,6 +57,12 @@
         --blue-text: oklch(0.85 0.055 245);
         --failed: oklch(0.64 0.2 25);
         --failed-text: oklch(0.78 0.14 25);
+        --vinyl: #0b0909;
+        --groove: #231d1c;
+        --glass: rgb(40 34 34 / 0.5);
+        --rim: rgb(255 255 255 / 0.24);
+        --rim-soft: rgb(255 255 255 / 0.07);
+        --shadow: rgb(0 0 0 / 0.4);
     }
 }
 
@@ -99,9 +111,8 @@ button:disabled { cursor: default; }
 :focus-visible { outline: 2px solid var(--honey); outline-offset: 2px; }
 
 .view { max-width: 560px; margin: 0 auto; padding: 0 var(--gutter) 24px; }
-/* The bar of actions stays at the bottom of the screen when the song's controls are shorter than it. */
-#song:not([hidden]) { display: flex; flex-direction: column; min-height: 100dvh; padding-bottom: 0; }
-#song .dock { margin-top: auto; }
+/* The song view fills the screen and never scrolls: the top row, the record, and the dock floating over the bottom. */
+#song:not([hidden]) { position: relative; display: flex; flex-direction: column; height: 100dvh; overflow: hidden; padding-bottom: 0; }
 
 /* Symbols of the HUD, drawn by the app and coloured here. */
 .icon {
@@ -114,33 +125,6 @@ button:disabled { cursor: default; }
     mask: var(--symbol) center / contain no-repeat;
 }
 
-/* Bars */
-/* A compact bar with the back button and the song's name, which slides in once the song's head scrolls away, and
-   takes no room before that. */
-.top {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 5;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: calc(52px + var(--top));
-    padding: var(--top) var(--gutter) 0;
-    background: var(--bar);
-    -webkit-backdrop-filter: saturate(1.6) blur(20px);
-    backdrop-filter: saturate(1.6) blur(20px);
-    border-bottom: 0.5px solid var(--sep);
-    transform: translateY(-100%);
-    visibility: hidden;
-}
-.top.scrolled { transform: none; visibility: visible; }
-@media (prefers-reduced-motion: no-preference) {
-    .top { transition: transform 180ms ease-out, visibility 180ms; }
-}
-.top .title { flex: 1; text-align: center; font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.top .spacer { width: 44px; flex: none; }
 /* Back: closes the song view. */
 .back {
     flex: none;
@@ -202,19 +186,6 @@ button:disabled { cursor: default; }
 .stream-note { padding: 10px 4px 0; font-size: 13px; color: var(--muted); }
 .stream-https { padding: 8px 14px 0; font-size: 13px; color: color-mix(in srgb, var(--muted) 80%, transparent); }
 
-.dock {
-    position: sticky;
-    bottom: 0;
-    z-index: 5;
-    margin: 16px calc(-1 * var(--gutter)) 0;
-    padding: 10px var(--gutter) calc(10px + var(--safe-bottom));
-    background: var(--bar);
-    -webkit-backdrop-filter: saturate(1.6) blur(20px);
-    backdrop-filter: saturate(1.6) blur(20px);
-    border-top: 0.5px solid var(--sep);
-    display: grid;
-    gap: 10px;
-}
 
 /* A reset button, shown beside a value that was changed */
 .label-side { display: inline-flex; align-items: center; gap: 8px; }
@@ -313,18 +284,6 @@ button:disabled { cursor: default; }
 .song-row .pills { margin: 0; flex-wrap: nowrap; }
 .chevron { --symbol: url(/api/symbol/chevron.right); width: 12px; height: 12px; color: color-mix(in srgb, var(--muted) 45%, transparent); }
 .empty { padding: 18px 14px; text-align: center; color: color-mix(in srgb, var(--muted) 70%, transparent); font-size: 15px; }
-.head { display: flex; gap: 10px; align-items: center; padding: calc(10px + var(--top)) 0 0; }
-.head #song-cover { display: block; line-height: 0; }
-.head .grow { flex: 1; min-width: 0; }
-/* The cover and the title with the artist are one unit, centred on each other; the title takes two lines at most. */
-.head .song-title { font-size: 20px; line-height: 1.2; white-space: normal; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
-/* Where the song comes from, as a badge on the cover: Spotify, YouTube, or the app that plays it on the Mac; a file in
-   Muskey Player has none. While the Mac listens for the key, a ring in the source's colour pulses around the cover. */
-.cover-wrap { position: relative; flex: none; display: grid; --ring: rgb(228 88 96); }
-.cover-wrap .cover { transition: outline-color 300ms; outline: 3px solid transparent; outline-offset: 3px; }
-.cover-wrap.listening .cover { outline-color: var(--ring); animation: ring-pulse 1.6s ease-in-out infinite; }
-@keyframes ring-pulse { 50% { outline-color: color-mix(in srgb, var(--ring) 25%, transparent); } }
-@media (prefers-reduced-motion: reduce) { .cover-wrap.listening .cover { animation: none; } }
 .source-badge { position: absolute; right: -7px; bottom: -7px; width: 26px; height: 26px; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 2px var(--bg); background: var(--bg); }
 .source-badge > * { display: block; width: 100%; height: 100%; }
 
@@ -513,113 +472,6 @@ html.has-install-pill #home { padding-bottom: calc(24px + 66px + var(--safe-bott
 .button:disabled { opacity: 0.5; }
 .button:not(:disabled):active { filter: brightness(0.94); }
 
-/* The HUD's key row: arrows on the sides, and the keys between them, which scroll on a phone */
-.keyrow { display: flex; align-items: stretch; gap: 4px; padding: 4px; border-radius: 18px; background: var(--fill); }
-.keyrow .step {
-    flex: none;
-    width: 36px;
-    border-radius: 12px;
-    display: grid;
-    place-items: center;
-}
-.keyrow .step.down { background: var(--blue-tint); color: var(--blue-text); }
-.keyrow .step.up { background: var(--honey-tint); color: var(--honey-text); }
-.keyrow .step .icon { width: 13px; height: 13px; }
-.keyrow .step:disabled { opacity: 0.35; }
-.keys {
-    flex: 1;
-    min-width: 0;
-    display: grid;
-    grid-auto-flow: column;
-    /* Five whole keys fit between the arrows, so no key is cut by the edges while the selected one is centred. */
-    grid-auto-columns: calc((100% - 4 * 3px) / 5);
-    grid-template-rows: 46px;
-    gap: 6px 3px;
-    overflow-x: auto;
-    scroll-snap-type: x proximity;
-    scrollbar-width: none;
-    padding: 6px 4px;
-    margin: -6px 0;
-    /* The gaps in the padding would show a pixel of the keys beyond the five. */
-    mask-image: linear-gradient(to right, transparent 3px, #000 4px, #000 calc(100% - 4px), transparent calc(100% - 3px));
-}
-.keys.both { grid-template-rows: 46px 38px; }
-.keys::-webkit-scrollbar { display: none; }
-.chip {
-    position: relative;
-    border-radius: 11px;
-    display: grid;
-    place-items: center;
-    font-size: 17px;
-    font-weight: 650;
-    color: var(--muted);
-    scroll-snap-align: center;
-}
-.chip.second { border-radius: 8px; font-size: 13px; opacity: 0.85; background: var(--fill-2); }
-.chip.original { color: var(--ink); }
-.chip.original::after {
-    content: "";
-    position: absolute;
-    bottom: 5px;
-    left: 50%;
-    width: 4px;
-    height: 4px;
-    margin-left: -2px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: 0.85;
-}
-.chip.second.original::after { display: none; }
-.chip.strong { background: var(--red-tint); color: var(--red-text); }
-.chip.light { background: var(--sage-tint); color: var(--sage-text); }
-.chip.second.strong, .chip.second.light { opacity: 1; }
-.chip.second.strong { background: color-mix(in oklch, var(--red-tint) 60%, transparent); }
-.chip.second.light { background: color-mix(in oklch, var(--sage-tint) 60%, transparent); }
-.chip.partner { box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--honey) 75%, transparent); color: var(--honey-text); opacity: 1; }
-.chip.selected { background: var(--honey); color: var(--honey-ink); font-weight: 800; opacity: 1; }
-.chip.selected:not(.second) {
-    box-shadow: 0 0 10px color-mix(in oklch, var(--honey) 70%, transparent);
-    outline: 2px solid color-mix(in srgb, var(--ink) 90%, transparent);
-    outline-offset: 2px;
-    z-index: 1;
-}
-
-/* Tempo */
-.stepper { display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 16px; background: var(--fill); }
-.stepper button { width: 44px; height: 40px; border-radius: 12px; display: grid; place-items: center; }
-.stepper .down { background: var(--blue-tint); color: var(--blue-text); }
-.stepper .up { background: var(--honey-tint); color: var(--honey-text); }
-.stepper .icon { width: 13px; height: 13px; }
-.stepper .value { width: 64px; font-weight: 750; font-size: 16px; }
-.stepper button:disabled { opacity: 0.35; }
-
-/* Instruments, as the HUD's circles */
-.stems { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; padding: 4px 0 2px; }
-.stem { display: grid; justify-items: center; gap: 5px; padding: 4px 0; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
-.stem .disc {
-    position: relative;
-    width: 42px;
-    height: 42px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    background: oklch(0.88 0.08 var(--hue));
-    color: oklch(0.45 0.11 var(--hue));
-}
-.stem .disc .icon { width: 19px; height: 19px; }
-.stem .name { font-size: 11px; font-weight: 650; }
-.stem.muted .disc {
-    background:
-        repeating-linear-gradient(-45deg, transparent 0 4px, color-mix(in srgb, var(--muted) 22%, transparent) 4px 5.5px),
-        color-mix(in oklch, oklch(0.6 0.2 25) 5%, var(--fill));
-    box-shadow: inset 0 0 0 2px oklch(0.6 0.2 25 / 0.2);
-    color: color-mix(in srgb, var(--muted) 45%, transparent);
-}
-.stem.muted .name { color: color-mix(in srgb, var(--muted) 50%, transparent); }
-@media (prefers-color-scheme: dark) {
-    .stem .disc { background: oklch(0.47 0.085 var(--hue)); color: oklch(0.9 0.07 var(--hue)); }
-    .stem.muted .disc { box-shadow: inset 0 0 0 2px oklch(0.68 0.2 25 / 0.2); }
-}
 .small-button { position: relative; height: 32px; padding: 0 14px; border-radius: 16px; background: var(--fill); font-size: 14px; font-weight: 700; color: var(--ink); }
 /* A finger reaches it from 44 points around, though it looks as small as the label beside it. */
 .small-button::before { content: ""; position: absolute; inset: -6px -8px; }
@@ -637,19 +489,6 @@ html.has-install-pill #home { padding-bottom: calc(24px + 66px + var(--safe-bott
 }
 .time::placeholder { color: color-mix(in srgb, var(--muted) 72%, transparent); font-weight: 600; }
 .dash { color: color-mix(in srgb, var(--muted) 60%, transparent); }
-
-/* Notes */
-.segments { display: grid; grid-template-columns: 1.4fr repeat(6, 1fr); gap: 3px; padding: 3px; border-radius: 14px; background: var(--fill); }
-.segments button { height: 40px; border-radius: 11px; display: grid; place-items: center; font-size: 14px; font-weight: 700; color: var(--muted); }
-.segments button .icon { width: 18px; height: 18px; }
-.segments button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); }
-/* Output: where the Mac's sound is heard. */
-.segments button.failed { background: var(--failed); color: white; }
-@media (prefers-color-scheme: dark) {
-    .segments button[aria-pressed="true"] { background: rgb(255 247 245 / 0.16); }
-}
-/* The sheet fills the screen between the bar at the top and the transport at the bottom. */
-#sheet { height: calc(100dvh - 240px - var(--safe-bottom)); min-height: 380px; margin-top: 12px; border-radius: 16px; overflow: hidden; scroll-margin-top: 64px; }
 
 /* The play button of the transport */
 .play {
@@ -781,3 +620,268 @@ html.has-install-pill #home { padding-bottom: calc(24px + 66px + var(--safe-bott
 @media (prefers-reduced-motion: no-preference) {
     .button, .chip, .stem .disc, .segments button { transition: background-color 140ms ease-out, color 140ms ease-out, opacity 140ms ease-out; }
 }
+
+/* ===== Song view: a reserved top row, the record inside the circle of fifths, and a floating glass dock ===== */
+
+@property --open { syntax: "<number>"; inherits: true; initial-value: 0; }
+#song { --open: 0; --dock-room: 230px; }
+@media (prefers-reduced-motion: no-preference) {
+    #song:not(.dragging) { transition: --open 0.34s cubic-bezier(0.3, 0.7, 0.2, 1); }
+}
+
+/* Glass after the static parts of samasante's liquid-glass: frost, saturation, a bright top edge and a thin rim. */
+.glass-round {
+    flex: none;
+    position: relative;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: var(--ink);
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: inset 0 1px 0 var(--rim), inset 0 0 0 1px var(--rim-soft), 0 4px 14px var(--shadow);
+}
+.glass-round .icon { width: 19px; height: 19px; }
+.glass-round:active { filter: brightness(0.94); }
+#close .icon { width: 18px; height: 18px; margin-left: -2px; }
+#save .icon { margin-top: -3px; }
+/* Saving fills a ring around Share; a saved song turns it honey until the song changes again. */
+#save.working { background: var(--glass); }
+#save.working::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(var(--honey) var(--done, 0%), transparent 0);
+    -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+    mask: radial-gradient(closest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+}
+#save.working.unknown::before { background: conic-gradient(var(--honey) 0 25%, transparent 0); animation: spin 1s linear infinite; }
+#save.ready { background: var(--honey); color: var(--honey-ink); box-shadow: 0 4px 14px var(--shadow); }
+#save.failed { background: var(--failed); color: white; }
+
+.song-top { position: relative; z-index: 2; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: calc(6px + var(--top)) 0 0; }
+.song-top .names { flex: 1; visibility: hidden; }
+#save-error { margin-top: 8px; }
+
+/* The title and the artist, in one of four places that the Song title setting picks */
+.names { display: grid; justify-items: center; text-align: center; gap: 2px; min-width: 0; max-width: 100%; }
+.names .song-title { max-width: 100%; }
+.names.large .song-title { font-size: 26px; font-weight: 850; letter-spacing: -0.01em; }
+.names.large .song-artist { font-size: 16px; font-weight: 600; }
+.names.in-bar .song-title { font-size: 16px; font-weight: 750; }
+.names.in-bar .song-artist { font-size: 13px; }
+html[data-song-title="bar"] .song-top .names { visibility: visible; }
+html:not([data-song-title="below"]) #names { display: none; }
+.on-disc, .groove-text { display: none; }
+html[data-song-title="cover"] .on-disc { display: grid; }
+html[data-song-title="grooves"] .groove-text { display: block; }
+
+.stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0 calc(var(--dock-room) + 22px); }
+.wheel-box { flex: 1; min-height: 0; width: calc(100% + 2 * var(--gutter) - 12px); container-type: size; display: grid; place-items: center; }
+.wheel { position: relative; width: min(100cqw, 100cqh, 400px); aspect-ratio: 1; }
+.change-row { display: flex; gap: 8px; align-items: center; justify-content: center; min-height: 28px; }
+.change-row:not(:has(:not([hidden]))) { display: none; }
+.stage.notes > :not(#sheet) { display: none; }
+#sheet { flex: 1; min-height: 0; width: 100%; border-radius: 16px; overflow: hidden; }
+
+/* The glow behind the record, in the cover's colours */
+.wheel { isolation: isolate; }
+.song-glow {
+    position: absolute;
+    z-index: -1;
+    left: 50%;
+    top: 50%;
+    width: 150%;
+    height: 150%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    pointer-events: none;
+    opacity: 0;
+    background: radial-gradient(closest-side, color-mix(in srgb, var(--c2, transparent) 55%, transparent), color-mix(in srgb, var(--c1, transparent) 36%, transparent) 52%, transparent);
+    filter: blur(14px);
+    transition: opacity 0.6s;
+}
+.song-glow.on { opacity: 1; }
+@media (prefers-color-scheme: dark) {
+    .song-glow { background: radial-gradient(closest-side, color-mix(in srgb, var(--c2, transparent) 42%, transparent), color-mix(in srgb, var(--c1, transparent) 44%, transparent) 50%, transparent); }
+}
+
+/* The circle of fifths, as the HUD's ring draws it */
+.fifths { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.rk { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.rk path { fill: color-mix(in srgb, var(--ink) 6%, transparent); stroke: color-mix(in srgb, var(--ink) 10%, transparent); stroke-width: 0.75; transition: fill 0.15s; }
+.rk.in path { fill: color-mix(in srgb, var(--ink) 4%, transparent); }
+.rk text { font-family: var(--font); font-weight: 650; font-size: 14px; fill: var(--muted); text-anchor: middle; dominant-baseline: central; }
+.rk.in text { font-size: 11px; opacity: 0.78; }
+.rk .m { font-size: 0.74em; opacity: 0.72; }
+.rk .acc { opacity: 0.55; }
+.rk.orig text { fill: var(--ink); }
+.rk .odot { fill: var(--ink); }
+.rk.sel path { fill: var(--honey); }
+.rk.sel text { fill: var(--honey-ink); font-weight: 850; opacity: 1; }
+.rk.sel .odot { fill: var(--honey-ink); }
+.rk.h1 path { fill: var(--red-tint); }
+.rk.h1 text { fill: var(--red-text); opacity: 1; }
+.rk.h2 path { fill: var(--sage-tint); }
+.rk.h2 text { fill: var(--sage-text); opacity: 1; }
+.rk.in.h1 path, .rk.in.h2 path { fill-opacity: 0.6; }
+.rk.partner path { stroke: color-mix(in srgb, var(--honey) 75%, transparent); stroke-width: 1.5; }
+.rk.partner text { fill: var(--honey-text); opacity: 1; }
+.rk:active path { filter: brightness(0.92); }
+
+/* The record inside the ring, with the cover as its label */
+.record { position: absolute; left: 50%; top: 50%; width: 51%; aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; --ring: rgb(228 88 96); }
+.record .disc {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle, transparent 0 30%, rgb(255 255 255 / 0.03) 30.5% 31%, transparent 31.5%), repeating-radial-gradient(circle, var(--vinyl) 0 1.6px, var(--groove) 1.6px 2.4px);
+    box-shadow: 0 10px 28px var(--shadow), inset 0 0 0 2px rgb(255 255 255 / 0.04);
+}
+.record .label { width: 44%; aspect-ratio: 1; border-radius: 50%; overflow: hidden; box-shadow: 0 0 0 3px rgb(0 0 0 / 0.35); transition: box-shadow 0.3s; }
+.record .label .cover { display: grid; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.record .spindle { position: absolute; left: 50%; top: 50%; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--bg); box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.5); }
+.record .sheen { position: absolute; inset: 0; border-radius: 50%; pointer-events: none; background: conic-gradient(from 40deg, transparent 0 6%, rgb(255 255 255 / 0.13) 12%, transparent 20% 50%, rgb(255 255 255 / 0.1) 62%, transparent 70%); }
+@media (prefers-reduced-motion: no-preference) {
+    .record.playing .disc { animation: spin 7s linear infinite; }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* While the Mac listens for the key, a ring in the source's colour pulses around the label. */
+.record.listening .label { box-shadow: 0 0 0 3px var(--ring); animation: ring-pulse 1.6s ease-in-out infinite; }
+@keyframes ring-pulse { 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .record.listening .label { animation: none; } }
+.record .source-badge { right: 4%; bottom: 4%; border-radius: 8px; }
+/* On cover: the cover over the whole disc, dimmed, with the title on it. */
+html[data-song-title="cover"] .record:not(.no-cover) .disc { background: var(--cover) center / cover; }
+html[data-song-title="cover"] .record:not(.no-cover) .disc::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: repeating-radial-gradient(circle, rgb(0 0 0 / 0.2) 0 1.2px, transparent 1.2px 2.6px), rgb(12 9 9 / 0.58); }
+html[data-song-title="cover"] .record .label { visibility: hidden; }
+html[data-song-title="cover"] .record .spindle { display: none; }
+.on-disc { position: absolute; inset: 0; align-content: center; justify-items: center; text-align: center; gap: 3px; padding: 0 14%; color: #fff; text-shadow: 0 1px 8px rgb(0 0 0 / 0.45); pointer-events: none; }
+.on-disc b { font-size: 18px; font-weight: 850; line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.on-disc span { font-size: 13.5px; font-weight: 600; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* Grooves: the title along the top of the grooves and the artist along the bottom. */
+.groove-text { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.groove-text text { font-family: var(--font); font-size: 7.4px; font-weight: 750; letter-spacing: 0.07em; fill: rgb(255 255 255 / 0.92); text-anchor: middle; dominant-baseline: central; }
+.groove-text .gb { fill: rgb(255 255 255 / 0.62); font-weight: 650; }
+
+/* The dock: the floating glass transport, which the handle opens into the sheet of tempo, instruments and notes */
+.scrim { position: absolute; inset: 0; z-index: 3; background: rgb(0 0 0 / 0.22); opacity: var(--open); pointer-events: none; }
+#song.dock-open .scrim { pointer-events: auto; }
+.dock {
+    position: absolute;
+    z-index: 4;
+    left: max(calc(10px * (1 - var(--open))), calc(50% - 280px));
+    right: max(calc(10px * (1 - var(--open))), calc(50% - 280px));
+    bottom: calc((14px + var(--safe-bottom) * 0.6) * (1 - var(--open)));
+    display: grid;
+    gap: 4px;
+    padding: 24px calc(12px + 16px * var(--open)) calc(12px + (18px + var(--safe-bottom)) * var(--open));
+    border-radius: 34px 34px calc(34px * (1 - var(--open))) calc(34px * (1 - var(--open)));
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(22px) saturate(180%);
+    backdrop-filter: blur(22px) saturate(180%);
+    box-shadow: inset 0 1px 0 var(--rim), inset 0 0 0 1px var(--rim-soft), inset 0 -12px 22px -18px var(--rim), 0 10px 30px var(--shadow);
+}
+/* A backing under the open sheet, so that the glow and the record don't show through its controls. */
+.dock::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--bg); opacity: calc(var(--open) * 0.6); pointer-events: none; }
+.dock .error-line { margin-top: 0; }
+.handle { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 120px; height: 26px; display: grid; place-items: center; touch-action: none; cursor: grab; z-index: 2; }
+.handle span { width: 40px; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--ink) 30%, transparent); }
+#song.dragging .handle { cursor: grabbing; }
+/* The sheet reaches the dock's edges, so that Transcribe can spread to them while it works. */
+.more { --pad: calc(12px + 16px * var(--open)); height: calc(var(--open) * var(--more-h, 340px)); margin: 0 calc(-1 * var(--pad)); overflow: hidden; opacity: var(--open); }
+.more-in { display: grid; gap: 14px; max-height: var(--more-h, 340px); overflow-y: auto; overscroll-behavior: contain; padding: 4px var(--pad) 22px; scrollbar-width: none; }
+.more-in::-webkit-scrollbar { display: none; }
+.sec { display: grid; gap: 8px; }
+.sec-head { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 2px; }
+.sec-label { font-size: 13px; font-weight: 650; color: color-mix(in srgb, var(--muted) 80%, transparent); }
+
+/* Tempo: one capsule with steps of 1% and 5% on each side of the tempo, which a slide changes smoothly */
+.wide-step { display: flex; align-items: center; height: 52px; padding: 4px; gap: 3px; border-radius: 18px; background: var(--fill); }
+.wide-step button { flex: 1; height: 44px; border-radius: 14px; font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.wide-step .down { background: var(--blue-tint); color: var(--blue-text); }
+.wide-step .up { background: var(--honey-tint); color: var(--honey-text); }
+.wide-step button:disabled { opacity: 0.35; }
+.wide-step button:not(:disabled):active { filter: brightness(0.94); }
+.tempo-value { flex: 1.7; height: 44px; display: flex; align-items: baseline; justify-content: center; gap: 4px; padding-top: 9px; border-radius: 14px; touch-action: none; cursor: ew-resize; }
+.tempo-value b { font-size: 24px; font-weight: 850; line-height: 1; font-variant-numeric: tabular-nums; }
+.tempo-value span { font-size: 12px; font-weight: 750; color: color-mix(in srgb, var(--muted) 80%, transparent); }
+.tempo-value[data-tone="blue"] b { color: var(--blue-text); }
+.tempo-value[data-tone="honey"] b { color: var(--honey-text); }
+.tempo-value.sliding { background: var(--fill); }
+
+/* Instruments, as the HUD's circles with a volume ring like its halo: a tap mutes, a slide up or down sets the volume */
+.stems { display: flex; justify-content: space-between; }
+.stem { display: grid; justify-items: center; gap: 3px; width: 48px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.stem .vbox { position: relative; width: 48px; height: 48px; display: grid; place-items: center; }
+.stem .vring { position: absolute; inset: 0; overflow: visible; }
+.stem .track { fill: none; stroke: color-mix(in srgb, var(--ink) 10%, transparent); stroke-width: 3; stroke-linecap: round; }
+.stem .arc { fill: none; stroke: oklch(0.72 0.14 var(--hue)); stroke-width: 3; stroke-linecap: round; transition: stroke-width 0.15s; }
+.stem .tick { stroke: color-mix(in srgb, var(--ink) 35%, transparent); stroke-width: 1.5; stroke-linecap: round; }
+.stem .disc { width: 35px; height: 35px; border-radius: 50%; display: grid; place-items: center; background: oklch(0.88 0.08 var(--hue)); color: oklch(0.45 0.11 var(--hue)); transition: transform 0.15s; }
+.stem .disc .icon { width: 16px; height: 16px; }
+.stem .name { font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stem.adjusting .name { color: var(--honey-text); font-weight: 800; }
+.stem.adjusting .disc { transform: translateY(-2px) scale(1.06); }
+.stem.adjusting .arc { stroke-width: 4.5; }
+.stem.muted .disc {
+    background: repeating-linear-gradient(-45deg, transparent 0 4px, color-mix(in srgb, var(--failed) 30%, transparent) 4px 5.5px), color-mix(in oklch, var(--failed) 6%, var(--fill));
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--failed) 28%, transparent);
+    color: color-mix(in srgb, var(--muted) 50%, transparent);
+}
+.stem.muted .arc { stroke: color-mix(in srgb, var(--failed) 40%, transparent); }
+.stem.muted .name { color: color-mix(in srgb, var(--muted) 55%, transparent); }
+@media (prefers-color-scheme: dark) {
+    .stem .disc { background: oklch(0.47 0.085 var(--hue)); color: oklch(0.9 0.07 var(--hue)); }
+}
+
+/* Transcribe: a staff or a tab behind the label, whose notes light up as the transcription passes them. Working, the
+   button spreads to the edges of the sheet. */
+.transcribe {
+    position: relative;
+    width: 100%;
+    min-height: 60px;
+    margin: 0;
+    padding: 8px 16px;
+    border-radius: 18px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    background: var(--fill);
+    color: var(--ink);
+    transition: margin 0.35s cubic-bezier(0.3, 0.7, 0.2, 1), border-radius 0.35s;
+}
+.transcribe-art { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.transcribe-text { position: relative; display: grid; justify-items: center; gap: 1px; padding: 8px 30px; background: radial-gradient(closest-side, color-mix(in srgb, var(--bg) 92%, transparent) 55%, transparent); }
+.transcribe .label-text { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.transcribe-sub { font-size: 12.5px; font-weight: 600; color: color-mix(in srgb, var(--muted) 85%, transparent); }
+.transcribe:not(:disabled):active { filter: brightness(0.95); }
+.transcribe.working { margin: 0 calc(-1 * var(--pad)); width: calc(100% + 2 * var(--pad)); border-radius: 0; background: var(--fill); }
+.transcribe.working .transcribe-sub { display: none; }
+.transcribe.failed { background: var(--failed); color: white; }
+.transcribe.failed .transcribe-art { opacity: 0.25; }
+.transcribe.failed .transcribe-sub { color: rgb(255 255 255 / 0.8); }
+.transcribe.failed .transcribe-text { background: none; }
+
+/* The Song title setting: a picture of each place */
+.title-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.title-tiles button { display: grid; justify-items: center; gap: 4px; padding: 6px 4px 8px; border-radius: 14px; background: var(--card); border: 0.5px solid var(--card-line); font-size: 12px; font-weight: 650; color: var(--muted); }
+.title-tiles svg { width: 100%; height: auto; max-width: 96px; }
+.title-tiles button[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--honey); color: var(--ink); }
+.tp-btn { fill: color-mix(in srgb, var(--ink) 22%, transparent); }
+.tp-ring { fill: color-mix(in srgb, var(--ink) 8%, transparent); stroke: color-mix(in srgb, var(--ink) 14%, transparent); stroke-width: 0.8; }
+.tp-disc { fill: var(--vinyl); }
+.tp-label { fill: var(--honey); }
+.tp-dim { fill: oklch(0.45 0.08 30); }
+.tp-title { fill: var(--ink); }
+.tp-artist { fill: color-mix(in srgb, var(--muted) 60%, transparent); }
+.tp-arc { fill: none; stroke: rgb(255 255 255 / 0.9); stroke-width: 2.2; stroke-linecap: round; }
+.tp-arc.thin { stroke: rgb(255 255 255 / 0.55); stroke-width: 1.6; }
+.title-tiles button[data-title="cover"] .tp-title { fill: #fff; }
+.title-tiles button[data-title="cover"] .tp-artist { fill: rgb(255 255 255 / 0.7); }

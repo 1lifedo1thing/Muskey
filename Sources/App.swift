@@ -3134,6 +3134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.transport = { [weak self] in self?.remoteTransport($0) }
         WebRemote.shared.songShown = { [weak self] in self?.remoteSongShown() }
         WebRemote.shared.loop = { [weak self] in self?.remoteLoop($0) }
+        WebRemote.shared.volume = { [weak self] stem, volume in self?.setStemVolume(stem, (volume * 100).rounded() / 100) }
         WebRemote.shared.waveform = { [weak self] in self?.model.wave.waveform }
         WebRemote.shared.waveLanes = { [weak self] in self?.remoteLanes($0) ?? [] }
         WebStream.shared.onListening = { [weak self] on in self?.phoneListens(on) }
@@ -3323,6 +3324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             position: seeked ?? track?.position(at: Date()).map { max(0, $0 - pitch.stemsDelay) }, duration: track?.duration,
             seekable: model.seekable, mac: Self.macName,
             mutedStems: model.stemsMuted.map { $0.name.lowercased() }.sorted(),
+            stemVolumes: Dictionary(uniqueKeysWithValues: model.stemVolumes.map { ($0.key.name.lowercased(), $0.value) }),
             loop: model.loop.map { WebRemote.State.Loop(start: $0.start, end: $0.end) },
             // Changes when more of the song is heard, and when the phone's waveforms per instrument change or fill in.
             wave: model.wave.waveform.map { wave in
