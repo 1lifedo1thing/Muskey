@@ -682,7 +682,8 @@ html[data-song-title="grooves"] .groove-text { display: block; }
 
 .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0 calc(var(--dock-room) + 22px); }
 .wheel-box { flex: 1; min-height: 0; width: calc(100% + 2 * var(--gutter) - 12px); container-type: size; display: grid; place-items: center; }
-.wheel { position: relative; width: min(100cqw, 100cqh, 400px); aspect-ratio: 1; }
+/* The disc: the circle of fifths with the record inside it, a little above the middle of its space. */
+.wheel { --disc: min(86cqw, 86cqh, 340px); position: relative; width: var(--disc); aspect-ratio: 1; align-self: start; margin-top: calc((100cqh - var(--disc)) * 0.15); }
 .change-row { display: flex; gap: 8px; align-items: center; justify-content: center; min-height: 28px; }
 .change-row:not(:has(:not([hidden]))) { display: none; }
 .stage.notes > :not(#sheet) { display: none; }
@@ -713,27 +714,35 @@ html[data-song-title="grooves"] .groove-text { display: block; }
 /* The circle of fifths, as the HUD's ring draws it */
 .fifths { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; touch-action: none; }
 .rk { cursor: pointer; -webkit-tap-highlight-color: transparent; }
-.rk path { fill: color-mix(in srgb, var(--ink) 6%, transparent); stroke: color-mix(in srgb, var(--ink) 10%, transparent); stroke-width: 0.75; transition: fill 0.15s, stroke 0.15s; }
-.rk.sel path { fill: var(--honey); }
-.rk.h1 path { fill: var(--red-tint); }
-.rk.h2 path { fill: var(--sage-tint); }
-.rk.partner path { stroke: color-mix(in srgb, var(--honey) 75%, transparent); stroke-width: 1.5; }
-.rk:active path { filter: brightness(0.92); }
-/* The names, which turn over to the other mode on a flick. One unit is a unit of the ring's 306 wide drawing. */
-.ring-labels { position: absolute; inset: 0; pointer-events: none; --u: calc(min(100cqw, 100cqh, 400px) / 306); }
-.rl { position: absolute; width: calc(40 * var(--u)); height: calc(30 * var(--u)); translate: -50% -50%; transform-style: preserve-3d; }
-.rl .face { position: absolute; inset: 0; display: grid; place-items: center; backface-visibility: hidden; -webkit-backface-visibility: hidden; font-family: var(--font); font-weight: 650; font-size: calc(14 * var(--u)); line-height: 1; color: var(--muted); }
-.rl .back { transform: rotate3d(var(--axis), 180deg); }
-.rl .m { font-size: 0.74em; opacity: 0.72; margin-left: 0.04em; }
-.rl .acc { opacity: 0.55; }
-.rl .orig { color: var(--ink); }
-.rl .odot { position: absolute; left: 50%; top: calc(50% + 9 * var(--u)); width: calc(4 * var(--u)); height: calc(4 * var(--u)); translate: -50% 0; border-radius: 50%; background: currentColor; }
-.rl .sel { color: var(--honey-ink); font-weight: 850; }
-.rl .h1 { color: var(--red-text); }
-.rl .h2 { color: var(--sage-text); }
-.rl .partner { color: var(--honey-text); }
+/* The slices of the SVG only catch taps and flicks; the cards over them draw the keys. */
+.rk path { fill: transparent; stroke: none; }
+/* Each key is a card holding its slice of the ring, which turns over to the other mode on a flick. One unit is a unit
+   of the ring's 306 wide drawing. */
+.ring-labels { position: absolute; inset: 0; pointer-events: none; --u: calc(var(--disc) / 306); }
+.rs { position: absolute; width: calc(82 * var(--u)); height: calc(48 * var(--u)); transform: translate(-50%, -50%) rotate(var(--turn)); transform-style: preserve-3d; }
+.rs .face { position: absolute; inset: 0; display: grid; place-items: center; backface-visibility: hidden; -webkit-backface-visibility: hidden; font-family: var(--font); font-weight: 650; font-size: calc(14 * var(--u)); line-height: 1; color: var(--muted); }
+.rs .face-back { transform: rotateX(180deg); }
+.rs .slice { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.rs .slice path { fill: color-mix(in srgb, var(--ink) 6%, transparent); stroke: color-mix(in srgb, var(--ink) 10%, transparent); stroke-width: 0.75; transition: fill 0.15s; }
+.rs .text { position: relative; rotate: calc(-1 * var(--turn)); }
+.rs .m { font-size: 0.74em; opacity: 0.72; margin-left: 0.04em; }
+.rs .acc { opacity: 0.55; }
+.rs .odot { position: absolute; left: 50%; top: calc(100% + 3 * var(--u)); width: calc(4 * var(--u)); height: calc(4 * var(--u)); translate: -50% 0; border-radius: 50%; background: currentColor; }
+.rs .orig { color: var(--ink); }
+.rs .sel { color: var(--honey-ink); font-weight: 850; }
+.rs .sel .slice path { fill: var(--honey); }
+.rs .h1 { color: var(--red-text); }
+.rs .h1 .slice path { fill: var(--red-tint); }
+.rs .h2 { color: var(--sage-text); }
+.rs .h2 .slice path { fill: var(--sage-tint); }
+.rs .partner { color: var(--honey-text); }
+.rs .partner .slice path { stroke: color-mix(in srgb, var(--honey) 75%, transparent); stroke-width: 1.5; }
+.rs.down .slice path { filter: brightness(0.92); }
 
 /* The record inside the ring, with the cover as its label */
+/* The cover is larger, except while the Grooves title needs the grooves around it. */
+.record { --label: 0.54; }
+html[data-song-title="grooves"] .record { --label: 0.44; }
 .record { position: absolute; left: 50%; top: 50%; width: 68%; aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; --ring: rgb(228 88 96); }
 .record .disc {
     position: absolute;
@@ -744,7 +753,7 @@ html[data-song-title="grooves"] .groove-text { display: block; }
     background: radial-gradient(circle, transparent 0 30%, rgb(255 255 255 / 0.03) 30.5% 31%, transparent 31.5%), repeating-radial-gradient(circle, var(--vinyl) 0 1.6px, var(--groove) 1.6px 2.4px);
     box-shadow: 0 10px 28px var(--shadow), inset 0 0 0 2px rgb(255 255 255 / 0.04);
 }
-.record .label { width: 44%; aspect-ratio: 1; border-radius: 50%; overflow: hidden; box-shadow: 0 0 0 3px rgb(0 0 0 / 0.35); transition: box-shadow 0.3s; }
+.record .label { width: calc(var(--label) * 100%); aspect-ratio: 1; border-radius: 50%; overflow: hidden; box-shadow: 0 0 0 3px rgb(0 0 0 / 0.35); transition: box-shadow 0.3s; }
 .record .label .cover { display: grid; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .record .spindle { position: absolute; left: 50%; top: 50%; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--bg); box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.5); }
 .record .sheen { position: absolute; inset: 0; border-radius: 50%; pointer-events: none; background: conic-gradient(from 40deg, transparent 0 6%, rgb(255 255 255 / 0.13) 12%, transparent 20% 50%, rgb(255 255 255 / 0.1) 62%, transparent 70%); }
@@ -858,7 +867,9 @@ html[data-song-title="cover"] .record .spindle { display: none; }
     transition: margin 0.35s cubic-bezier(0.3, 0.7, 0.2, 1), border-radius 0.35s;
 }
 .transcribe-art { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.transcribe-text { position: relative; display: grid; justify-items: center; gap: 1px; padding: 8px 30px; background: radial-gradient(closest-side, color-mix(in srgb, var(--bg) 92%, transparent) 55%, transparent); }
+.transcribe-text { position: relative; isolation: isolate; display: grid; justify-items: center; gap: 1px; padding: 8px 30px; }
+/* A soft, blurred patch of the background behind the words, which fades the staff under them. */
+.transcribe-text::before { content: ""; position: absolute; z-index: -1; inset: -4px 0; border-radius: 50%; background: radial-gradient(closest-side, color-mix(in srgb, var(--bg) 62%, transparent), color-mix(in srgb, var(--bg) 34%, transparent) 60%, transparent); filter: blur(10px); }
 .transcribe .label-text { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .transcribe-sub { font-size: 12.5px; font-weight: 600; color: color-mix(in srgb, var(--muted) 85%, transparent); }
 .transcribe:not(:disabled):active { filter: brightness(0.95); }
@@ -867,7 +878,7 @@ html[data-song-title="cover"] .record .spindle { display: none; }
 .transcribe.failed { background: var(--failed); color: white; }
 .transcribe.failed .transcribe-art { opacity: 0.25; }
 .transcribe.failed .transcribe-sub { color: rgb(255 255 255 / 0.8); }
-.transcribe.failed .transcribe-text { background: none; }
+.transcribe.failed .transcribe-text::before { display: none; }
 
 /* The Song title setting: a picture of each place */
 .title-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
@@ -885,3 +896,16 @@ html[data-song-title="cover"] .record .spindle { display: none; }
 .tp-arc.thin { stroke: rgb(255 255 255 / 0.55); stroke-width: 1.6; }
 .title-tiles button[data-title="cover"] .tp-title { fill: #fff; }
 .title-tiles button[data-title="cover"] .tp-artist { fill: rgb(255 255 255 / 0.7); }
+
+/* A tap on the record plays or pauses. While paused, the cover is dimmed and a little blurred under a white play glyph,
+   and a finger on the record dims and blurs it more, like the pointer over the HUD's cover. */
+.record { cursor: pointer; -webkit-tap-highlight-color: transparent; outline-offset: 4px; }
+.record .label .cover { transition: filter 0.2s, transform 0.2s; }
+.record:not(.playing) .label .cover { filter: brightness(0.7) blur(0.6px); transform: scale(1.04); }
+.record.hot .label .cover { filter: brightness(0.5) blur(3px); transform: scale(1.08); }
+.record-glyph { position: absolute; left: 50%; top: 50%; translate: -50% -50%; display: grid; place-items: center; color: #fff; pointer-events: none; opacity: 0; transition: opacity 0.2s; filter: drop-shadow(0 1px 4px rgb(0 0 0 / 0.6)); }
+.record-glyph .icon { width: calc(var(--disc) * 0.68 * var(--label) * 0.36); height: calc(var(--disc) * 0.68 * var(--label) * 0.36); }
+.record:not(.playing) .record-glyph, .record.hot .record-glyph { opacity: 1; }
+/* On cover, the title sits where the glyph would, so the glyph shows only under a finger. */
+html[data-song-title="cover"] .record:not(.playing):not(.hot) .record-glyph { opacity: 0; }
+.record:not(.playing) .record-glyph .icon { translate: 7% 0; }

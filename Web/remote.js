@@ -681,6 +681,16 @@
     let ringRelatives = false;
     let ringRelative = false;
 
+    /**
+     * A key's slice of the ring as its card draws it, around the middle of the band at 132 with up pointing outwards:
+     * a twelfth of the ring between the radii 113 and 151.
+     */
+    const CARD_SLICE = (() => {
+        const half = Math.PI / 12, middle = 132;
+        const at = (radius, angle) => `${(radius * Math.sin(angle)).toFixed(2)} ${(middle - radius * Math.cos(angle)).toFixed(2)}`;
+        return `M${at(151, -half)}A151 151 0 0 1 ${at(151, half)}L${at(113, half)}A113 113 0 0 0 ${at(113, -half)}Z`;
+    })();
+
     /** SwiftUI's spring(duration: 0.42, bounce: 0.28), which the HUD's keys flip with, as a CSS easing. */
     const FLIP_SPRING = (() => {
         const damping = 0.72, omega = (2 * Math.PI) / 0.42, damped = omega * Math.sqrt(1 - damping * damping), length = 0.75;
@@ -701,10 +711,9 @@
      * step clockwise. The selected key is filled, keys a fourth or a fifth from it are red, keys a whole step from it
      * are sage, and the relative of the selected key is outlined. A song without a key shows the shifts in semitones.
      *
-     * `flip` is 1 or −1 after a flick up or down: each name turns over on the line that touches the ring at its place,
-     * so the names flip outwards, or inwards, in the direction of their side of the ring.
+     * `flip` is true after a flick: every key turns over to the other mode, one after another clockwise from the top.
      */
-    function drawKeys(flip = 0) {
+    function drawKeys(flip = false) {
         drawnKey = state?.key ?? null;
         const key = original();
         if (relative !== ringRelative) ringRelatives = ringRelative = relative;
@@ -738,20 +747,29 @@
         const face = (offset, second, side) => {
             const element = document.createElement("span");
             element.className = ["face", side, ...look(offset, second)].join(" ");
+            const shape = svgElement("svg", { class: "slice", viewBox: "-41 -24 82 48", "aria-hidden": "true" });
+            shape.append(svgElement("path", { d: CARD_SLICE }));
+            element.append(shape);
+            const text = document.createElement("span");
+            text.className = "text";
+            element.append(text);
             if (key) {
                 const transposed = transpose(key, offset);
-                ringName(element, second ? relativeOf(transposed) : transposed);
-            } else element.textContent = shown(offset);
-            if (key && offset === 0 && !second) element.append(Object.assign(document.createElement("i"), { className: "odot" }));
+                ringName(text, second ? relativeOf(transposed) : transposed);
+            } else text.textContent = shown(offset);
+            if (key && offset === 0 && !second) text.append(Object.assign(document.createElement("i"), { className: "odot" }));
             return element;
         };
         const shownSide = ringRelatives;
-        const slots = [];
+        const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+        // One unit of the ring's 306 wide drawing, in pixels, for the push outwards while a key flips.
+        const unit = (labels.offsetWidth || 306) / 306;
         for (let step = 0; step < 12; step++) {
             const angle = (step * Math.PI) / 6;
             const offset = fold(step * 7);
             const inColumn = offset === selected;
-            const slot = svgElement("g", { class: ["rk", ...look(offset, flip ? !shownSide : shownSide)].join(" "), role: "button" });
+            // The slices of the SVG only catch the taps and the flicks; the keys that show are drawn over them.
+            const slot = svgElement("g", { class: "rk", role: "button" });
             slot.append(svgElement("path", { d: slice(angle, r - band, r + band) }));
             if (key) {
                 const transposed = transpose(key, offset);
@@ -760,44 +778,40 @@
             } else slot.setAttribute("aria-label", `${shown(offset)} semitones`);
             slot.setAttribute("aria-pressed", String(look(offset, shownSide).includes("sel")));
             slot.dataset.offset = String(inColumn ? shift : offset);
+            slot.dataset.step = String(step);
             ring.append(slot);
-            slots.push([slot, look(offset, shownSide), step]);
 
-            // The names are HTML over the ring, since Safari draws SVG text flat when it turns in 3D.
+            // Each key is a card in HTML, turned to face outwards, since Safari draws SVG flat when it turns in 3D.
             const [x, y] = point(r, angle);
-            const label = document.createElement("span");
-            label.className = "rl";
-            label.style.left = `${((x / 306) * 100).toFixed(3)}%`;
-            label.style.top = `${((y / 306) * 100).toFixed(3)}%`;
-            // The line that touches the ring at the name's place.
-            const axis = `${Math.cos(angle).toFixed(4)}, ${Math.sin(angle).toFixed(4)}, 0`;
-            label.style.setProperty("--axis", axis);
-            label.append(face(offset, shownSide, "front"));
-            if (key) label.append(face(offset, !shownSide, "back"));
-            labels.append(label);
-            if (flip) {
-                const delay = step * FLIP_STAGGER;
-                if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
-                    label.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, delay, easing: "ease-out", fill: "backwards" });
-                } else {
-                    const depth = `${((labels.offsetWidth || 300) * 0.25).toFixed(0)}px`;
-                    label.animate(
-                        [
-                            { transform: `perspective(${depth}) rotate3d(${axis}, ${-180 * flip}deg)` },
-                            { transform: `perspective(${depth}) rotate3d(${axis}, 0deg)` },
-                        ],
-                        { duration: FLIP_SPRING.duration, easing: FLIP_SPRING.easing, delay, fill: "backwards" },
-                    );
-                }
+            const card = document.createElement("span");
+            card.className = "rs";
+            card.style.left = `${((x / 306) * 100).toFixed(3)}%`;
+            card.style.top = `${((y / 306) * 100).toFixed(3)}%`;
+            const turn = `${step * 30}deg`;
+            card.style.setProperty("--turn", turn);
+            card.append(face(offset, shownSide, "face-front"));
+            if (key) card.append(face(offset, !shownSide, "face-back"));
+            labels.append(card);
+            if (!flip) continue;
+            const delay = step * FLIP_STAGGER;
+            if (reduceMotion) {
+                card.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, delay, easing: "ease-out", fill: "backwards" });
+                continue;
             }
-        }
-        // The slices take the colours of the side that shows once each name is halfway over.
-        if (flip) {
-            ring.getBoundingClientRect();
-            for (const [slot, classes, step] of slots) {
-                slot.querySelector("path").style.transitionDelay = `${step * FLIP_STAGGER + 110}ms`;
-                slot.setAttribute("class", ["rk", ...classes].join(" "));
-            }
+            // The card turns over on the line that touches the ring at its place, with its side nearest to the eye
+            // swinging outwards, as if pushed from the middle of the disc, and lifts out a little on the way.
+            const depth = `${(unit * 150).toFixed(0)}px`;
+            const lift = `${(-7 * unit).toFixed(1)}px`;
+            const place = `translate(-50%, -50%) rotate(${turn})`;
+            card.style.zIndex = "1";
+            card.animate(
+                [
+                    { transform: `${place} translateY(0px) perspective(${depth}) rotateX(-180deg)` },
+                    { transform: `${place} translateY(${lift}) perspective(${depth}) rotateX(-90deg)`, offset: 0.5 },
+                    { transform: `${place} translateY(0px) perspective(${depth}) rotateX(0deg)` },
+                ],
+                { duration: FLIP_SPRING.duration, easing: FLIP_SPRING.easing, delay, fill: "backwards" },
+            ).finished.then(() => card.style.removeProperty("z-index"), () => {});
         }
         // The key of the song, and the key that plays once it changed.
         const change = $("change-pill");
@@ -829,9 +843,17 @@
         const ring = $("fifths");
         let start = null;
         let flicked = 0;
+        let pressed = null;
+        const release = () => {
+            pressed?.classList.remove("down");
+            pressed = null;
+        };
         ring.addEventListener("pointerdown", (event) => {
-            if (!event.isPrimary || !event.target.closest(".rk")) return;
+            const slot = event.target.closest(".rk");
+            if (!event.isPrimary || !slot) return;
             start = { x: event.clientX, y: event.clientY, id: event.pointerId };
+            pressed = $("ring-labels").children[Number(slot.dataset.step)];
+            pressed?.classList.add("down");
         });
         ring.addEventListener("pointermove", (event) => {
             if (!start || event.pointerId !== start.id) return;
@@ -839,12 +861,14 @@
             if (Math.abs(dy) < 18 || Math.abs(dy) < Math.abs(dx) * 1.4) return;
             start = null;
             flicked = Date.now();
+            release();
             if (!original()) return;
             ringRelatives = !ringRelatives;
-            drawKeys(dy < 0 ? 1 : -1);
+            drawKeys(true);
         });
         const end = (event) => {
             if (start && event.pointerId === start.id) start = null;
+            release();
         };
         ring.addEventListener("pointerup", end);
         ring.addEventListener("pointercancel", end);
@@ -903,24 +927,57 @@
     }
 
     /** A slide left or right over the tempo changes it by 1% for every 6 points. */
+    /**
+     * A tap on the record plays or pauses, like a click on the HUD's record. While paused, the cover is dimmed and a
+     * little blurred under a white play glyph, and a finger on the record dims and blurs it more, as the pointer over
+     * the HUD's cover does.
+     */
+    function recordButton() {
+        const record = $("cover-wrap");
+        const up = () => record.classList.remove("hot");
+        record.addEventListener("pointerdown", (event) => {
+            if (event.isPrimary) record.classList.add("hot");
+        });
+        record.addEventListener("pointerup", up);
+        record.addEventListener("pointercancel", up);
+        record.addEventListener("pointerleave", up);
+        record.addEventListener("click", () => $("mac-play").click());
+        record.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            $("mac-play").click();
+        });
+    }
+
+    /** A slide left or right on the BPM changes the tempo by 1% every 6 points, and a double tap sets it back to 100%. */
     function tempoSlider() {
         const value = $("speed-value");
         let slide = null;
+        let lastTap = 0;
         value.addEventListener("pointerdown", (event) => {
             if (event.button > 0) return;
             value.setPointerCapture(event.pointerId);
-            slide = { x: event.clientX, speed };
+            slide = { x: event.clientX, speed, moved: false };
             value.classList.add("sliding");
         });
         value.addEventListener("pointermove", (event) => {
             if (!slide) return;
-            setSpeed(slide.speed + (event.clientX - slide.x) / 600);
+            if (Math.abs(event.clientX - slide.x) > 6) slide.moved = true;
+            if (slide.moved) setSpeed(slide.speed + (event.clientX - slide.x) / 600);
         });
         const end = () => {
             slide = null;
             value.classList.remove("sliding");
         };
-        value.addEventListener("pointerup", end);
+        value.addEventListener("pointerup", (event) => {
+            const tapped = slide && !slide.moved;
+            end();
+            if (!tapped) return;
+            if (event.timeStamp - lastTap < 350) {
+                lastTap = 0;
+                setSpeed(1);
+            } else lastTap = event.timeStamp;
+        });
         value.addEventListener("pointercancel", end);
         value.addEventListener("keydown", (event) => {
             const step = { ArrowLeft: -0.01, ArrowDown: -0.01, ArrowRight: 0.01, ArrowUp: 0.01 }[event.key];
@@ -1103,6 +1160,8 @@
         $("mac-play-icon").style.setProperty("--symbol", symbol(state.playing ? "pause.fill" : "play.fill"));
         $("mac-play").setAttribute("aria-label", state.playing ? "Pause" : "Play");
         $("cover-wrap").classList.toggle("playing", Boolean(state.playing));
+        $("cover-wrap").setAttribute("aria-label", state.playing ? "Pause" : "Play");
+        $("record-glyph").style.setProperty("--symbol", symbol(state.playing ? "pause.fill" : "play.fill"));
         const position = macPosition();
         const duration = songDuration();
         const known = position != null && duration > 0;
@@ -2297,6 +2356,15 @@
         ctx.font = `700 ${Math.round(gap * 1.35)}px ui-rounded, system-ui, sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
+        /** A glow around a note or number that the transcription passed: strong as it lights, then fading to a faint
+         * ember that stays while the button works. */
+        const ember = (reached, flash) => {
+            if (!reached) return;
+            const strength = Math.min(1, (unknown ? 0 : 0.2) + flash * 0.8);
+            if (strength < 0.02) return;
+            ctx.shadowColor = `${theme.glow} / ${((dark ? 0.75 : 0.55) * strength).toFixed(3)})`;
+            ctx.shadowBlur = gap * (0.6 + 1.6 * strength);
+        };
         ART_NOTES.forEach((note, index) => {
             const x = edge + 6 + note.x * (width - 2 * edge - 12);
             let color = `rgb(${ink} / 0.2)`;
@@ -2332,9 +2400,14 @@
                 ctx.globalCompositeOperation = "destination-out";
                 ctx.fillRect(x - half, y - gap * 0.45, half * 2, gap * 0.9);
                 ctx.restore();
+                ctx.save();
+                ember(reached, flash);
                 ctx.fillStyle = color;
                 ctx.fillText(text, x, y + 0.5);
+                ctx.restore();
             } else {
+                ctx.save();
+                ember(reached, flash);
                 ctx.fillStyle = color;
                 ctx.strokeStyle = color;
                 ctx.beginPath();
@@ -2345,6 +2418,7 @@
                 ctx.moveTo(x + gap * 0.56, y - 0.5);
                 ctx.lineTo(x + gap * 0.56, y - gap * 2.6);
                 ctx.stroke();
+                ctx.restore();
             }
         });
         return working || flashing;
@@ -2991,6 +3065,7 @@
     stepButton("mac-back", -1);
     stepButton("mac-forward", 1);
     $("save").onclick = save;
+    recordButton();
     $("mac-play").onclick = () => {
         if (!state) return;
         // The glyph changes at once, and the next state from the Mac confirms it.

@@ -89,9 +89,10 @@
             <div class="song-glow" id="glow" aria-hidden="true"></div>
             <svg class="fifths" id="fifths" viewBox="0 0 306 306" role="group" aria-label="Key"></svg>
             <div class="ring-labels" id="ring-labels" aria-hidden="true"></div>
-            <div class="record" id="cover-wrap">
+            <div class="record" id="cover-wrap" role="button" tabindex="0" aria-label="Play">
                 <div class="disc spin"><span class="label" id="song-cover"></span><span class="spindle"></span></div>
                 <span class="sheen"></span>
+                <span class="record-glyph" aria-hidden="true"><span class="icon" id="record-glyph" style="--symbol: url(/api/symbol/play.fill)"></span></span>
                 <div class="on-disc" id="on-disc"><b id="disc-title"></b><span id="disc-artist"></span></div>
                 <svg class="groove-text" id="groove-text" viewBox="0 0 100 100" aria-hidden="true">
                     <path id="groove-top" d="M14.5 50A35.5 35.5 0 0 1 85.5 50" fill="none"/>
