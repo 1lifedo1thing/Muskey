@@ -1863,7 +1863,7 @@
     function drawSettings() {
         const choice = streamChoice();
         for (const button of $("stream-choice").querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.stream === choice));
-        $("stream-note").textContent = choice === "uncompressed" ? "About 700 MB an hour" : webCodecs ? "About 70 MB an hour" : "About 70 MB an hour, 5 seconds behind the Mac";
+        $("stream-note").textContent = choice === "uncompressed" ? "~700MB/h (can stutter on slower connections)" : webCodecs ? "~70MB/h" : "~70MB/h with a 5 second buffering delay";
         $("stream-https").hidden = webCodecs || location.protocol === "https:";
     }
 
