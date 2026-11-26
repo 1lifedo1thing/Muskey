@@ -118,6 +118,12 @@ struct WebNotes: Encodable {
         /// Mac, named by `sourceApp`, its bundle ID.
         var source: String?
         var sourceApp: String?
+        /// The times that the Mac's output stepped back in the song with a backspin, and the seconds since the last one,
+        /// for the phone's record to spin back when the phone plays it.
+        var rewinds = 0
+        var rewindAgo: Double?
+        /// The song steps back soon: stems or lyrics are prepared while it plays, and the phone asks more often.
+        var rewindSoon = false
 
         struct Loop: Encodable {
             let start: Double
@@ -126,7 +132,7 @@ struct WebNotes: Encodable {
 
         enum CodingKeys: CodingKey {
             case title, artist, app, playing, listening, key, shift, relative, bpm, speed, cover, muted, relativeKeys, song, position, duration,
-                 seekable, mac, mutedStems, stemVolumes, listeners, loop, wave, source, sourceApp
+                 seekable, mac, mutedStems, stemVolumes, listeners, loop, wave, source, sourceApp, rewinds, rewindAgo, rewindSoon
         }
     }
 

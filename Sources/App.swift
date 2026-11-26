@@ -2081,7 +2081,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The player's timestamp can be a little early, and the start is better 50 ms late than in the moment
         // before the move.
         pitch.restartStems(back: max(0, (position - target) / max(track.rate ?? 1, 0.1) - 0.05))
-        if model.shown { model.rewinds += 1 }
+        recordRewound()
     }
 
     private func endKaraokeRestart() {
@@ -3332,8 +3332,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     hash &* 31 &+ (stem.rawValue &+ 1) &* 1_000_003 &+ (wave.stems?[stem.rawValue]?.reduce(0) { $0 + ($1 > 0 ? 1 : 0) } ?? 0)
                 }
             },
-            source: remoteSource(track).kind, sourceApp: remoteSource(track).app
+            source: remoteSource(track).kind, sourceApp: remoteSource(track).app,
+            rewinds: remoteRewinds, rewindAgo: remoteRewinds > 0 ? Date().timeIntervalSince(remoteRewoundAt) : nil,
+            rewindSoon: playing && (model.stemsProgress != nil || model.lyricsWaiting != nil || karaokeRestart == .waitingForModel || {
+                if case .seeking = karaokeRestart { return true }
+                return false
+            }())
         )
+    }
+
+    /// The backspins that the Mac's output played, for the phone's record, which spins back whether the HUD shows or not.
+    private var remoteRewinds = 0
+    private var remoteRewoundAt = Date.distantPast
+
+    /// The output stepped back in the song: the records on the HUD and on the phone turn back.
+    private func recordRewound() {
+        if model.shown { model.rewinds += 1 }
+        remoteRewinds += 1
+        remoteRewoundAt = Date()
     }
 
     /// The key of the song that plays: the HUD's while it is up, and the menu bar's while it is closed, since the HUD
@@ -7459,7 +7475,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if spins > spinsSeen {
             log("the output stepped back in the song" + (fadeToStart ? ", with a fade to the start" : ""))
             model.seekWait = nil
-            if model.shown { model.rewinds += 1 }
+            recordRewound()
             if fadeToStart { fadeToStart = false }
         }
         spinsSeen = spins

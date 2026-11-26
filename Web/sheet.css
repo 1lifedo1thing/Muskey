@@ -114,6 +114,17 @@
     overflow-wrap: anywhere;
 }
 
+.ms-stem {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--ms-accent);
+    background: color-mix(in srgb, var(--ms-accent) 16%, transparent);
+}
+
 .ms-subtitle {
     margin: 1px 0 0;
     font-size: 11.5px;

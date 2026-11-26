@@ -916,3 +916,10 @@ html[data-song-title="cover"] .record .spindle { display: none; }
 /* On cover, the title sits where the glyph would, so the glyph shows only under a finger. */
 html[data-song-title="cover"] .record:not(.playing):not(.hot) .record-glyph { opacity: 0; }
 .record:not(.playing) .record-glyph .icon { translate: 7% 0; }
+
+/* The Mac's output stepped back in the song with a backspin: the disc spins back, and the dimmed cover says so. */
+.record-note { position: absolute; left: 50%; top: 50%; translate: -50% -50%; color: #fff; font-size: calc(var(--disc) * 0.68 * var(--label) * 0.13); font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; pointer-events: none; opacity: 0; scale: 0.92; transition: opacity 0.2s, scale 0.2s; text-shadow: 0 1px 4px rgb(0 0 0 / 0.6); }
+.record.rewinding .record-note { opacity: 1; scale: 1; }
+.record.rewinding .label .cover { filter: brightness(0.5) blur(3px); transform: scale(1.08); }
+.record.rewinding .record-glyph, .record.rewinding .on-disc, .record.rewinding .spindle { opacity: 0; }
+.on-disc { transition: opacity 0.2s; }

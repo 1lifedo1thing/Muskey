@@ -1415,7 +1415,11 @@
             const top = element("header", "ms-top");
             const titles = element("div", "ms-titles");
             titles.append(element("h1", "ms-title", { text: this.data.title || "" }));
-            titles.append(element("p", "ms-subtitle", { text: [STEM_NAMES[this.stem], this.data.artist].filter(Boolean).join(" · ") }));
+            // The instrument stands out in a pill, so a sheet says which part it holds at a glance.
+            const subtitle = element("p", "ms-subtitle");
+            if (STEM_NAMES[this.stem]) subtitle.append(element("span", "ms-stem", { text: STEM_NAMES[this.stem] }));
+            if (this.data.artist) subtitle.append(document.createTextNode(this.data.artist));
+            titles.append(subtitle);
             top.append(titles);
             this.viewSwitch = element("div", "ms-views", { role: "group", "aria-label": "View" });
             this.viewButtons = {};

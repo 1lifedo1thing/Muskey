@@ -344,6 +344,7 @@
             // A pause that the Mac never made, or a play from the Mac, brings the phone's sound back.
             if (state.playing) player.release();
             stateAt = performance.now();
+            watchRewinds();
         } catch {
             $("mac").classList.add("offline");
             return;
@@ -354,6 +355,42 @@
         drawNow();
         drawNowPlaying();
         if (open) drawSong();
+    }
+
+    // MARK: Rewinds
+
+    /** The Mac's output steps back in the song with a backspin once stems or lyrics are ready. The phone asks every
+     * 200 ms while that is coming, since the usual 1.5 s would spin the record long after the scratch is heard. */
+    let rewindsSeen = null;
+    let askSoonUntil = 0;
+    let askSoon = null;
+    function watchRewinds() {
+        if (state.rewindSoon) askSoonUntil = performance.now() + 2000;
+        if (open && performance.now() < askSoonUntil && !askSoon) askSoon = setTimeout(() => { askSoon = null; refreshState(); }, 200);
+        const rewinds = state.rewinds || 0;
+        if (rewindsSeen != null && rewinds > rewindsSeen && open) {
+            // The phone plays the Mac's sound a little later, so the record spins back when the scratch is heard here.
+            const wait = (output === "phone" ? player.lag() : 0) - (state.rewindAgo || 0);
+            if (wait > -1) setTimeout(spinBack, Math.max(0, wait * 1000));
+        }
+        rewindsSeen = rewinds;
+    }
+
+    /** Turns the disc back fast, slowing to a stop like the HUD's record, with "Rewinding" over the dimmed cover. */
+    let discBack = 0;
+    let rewindingTimer = null;
+    function spinBack() {
+        const record = $("cover-wrap");
+        const disc = record.querySelector(".disc");
+        record.classList.add("rewinding");
+        clearTimeout(rewindingTimer);
+        rewindingTimer = setTimeout(() => record.classList.remove("rewinding"), 1500);
+        if (matchMedia("(prefers-reduced-motion: reduce)").matches || !disc.animate) return;
+        // The turn back adds to the spin, so the disc carries on from the angle where the backspin left it.
+        const from = discBack % 360;
+        discBack = from - 468;
+        disc.animate([{ rotate: `${from}deg` }, { rotate: `${discBack}deg` }], { duration: 900, easing: "cubic-bezier(0.12, 0.8, 0.3, 1)" });
+        disc.style.rotate = `${discBack}deg`;
     }
 
     // MARK: Now Playing on the phone
@@ -1063,9 +1100,11 @@
         name.textContent = stem.label;
         button.append(box, name);
         // A tap mutes or plays the stem, a slide up or down changes its volume, and holding it plays only that stem,
-        // as Option-click does in the HUD.
+        // as Option-click does in the HUD. A second tap within 350 ms sets it back to 100% and playing, and the first
+        // tap still mutes at once, since waiting to tell the two apart would delay every tap.
         let press = null;
         let skipClick = false;
+        let tappedAt = -Infinity;
         button.addEventListener("pointerdown", (event) => {
             if (event.button > 0) return;
             button.setPointerCapture(event.pointerId);
@@ -1112,6 +1151,17 @@
                 return;
             }
             const next = new Set(muted);
+            if (performance.now() - tappedAt < 350) {
+                tappedAt = -Infinity;
+                next.delete(stem.name);
+                if (volumeOf(stem.name) !== 1) {
+                    delete volumes[stem.name];
+                    sendVolume(stem.name);
+                }
+                navigator.vibrate?.(10);
+                return setStems(next);
+            }
+            tappedAt = performance.now();
             next.has(stem.name) ? next.delete(stem.name) : next.add(stem.name);
             // Every stem muted plays nothing, so the last one stays on.
             if (next.size === STEMS.length) return;
@@ -1987,6 +2037,8 @@
         }, 10000);
 
         let aacFailed = false;
+        /** When the last bytes of the stream arrived, to notice a stream that stopped without an error. */
+        let lastBytesAt = 0;
 
         function ensureContext() {
             if (!context) {
@@ -1995,9 +2047,46 @@
                 gain = context.createGain();
                 gain.gain.value = testMute ? 0 : 1;
                 gain.connect(context.destination);
+                context.onstatechange = () => {
+                    if (abort === null) return;
+                    report(`stream: the audio is ${context.state}`, "info");
+                    wake("the audio stopped");
+                };
             }
             return context.resume();
         }
+
+        /** iOS stops the page's audio when another app plays sound or the phone switches apps ("interrupted", or
+         * "suspended"), and doesn't start it again, so the phone went quiet while the Mac played on. The page starts it
+         * again as soon as iOS allows: when the audio changes state, when the page shows again, on any tap, and every
+         * second until it runs. */
+        function wake(reason) {
+            if (abort === null && !element) return;
+            if (element) {
+                if (element.paused && !held) element.play().catch(() => {});
+                return;
+            }
+            if (!context || context.state === "running" || context.state === "closed") return;
+            context.resume().then(() => {
+                // The clock stopped while the audio did, so the next frames are scheduled from now.
+                playAt = 0;
+                report(`stream: the audio runs again (${reason})`, "info");
+            }).catch(() => {});
+        }
+        document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") wake("the page shows again"); });
+        addEventListener("pageshow", () => wake("the page shows again"));
+        addEventListener("focus", () => wake("the page has focus again"));
+        addEventListener("pointerdown", () => wake("a tap"), true);
+        setInterval(() => {
+            wake("a second passed");
+            // A stream that sent nothing for 4 seconds is connected again; iOS can end the request in the background
+            // without an error, and the reader then waits forever.
+            if (abort !== null && !element && lastBytesAt && performance.now() - lastBytesAt > 4000) {
+                report("stream: nothing arrived for 4 s, connecting again", "info");
+                lastBytesAt = 0;
+                abort.abort();
+            }
+        }, 1000);
 
         async function run(mine) {
             while (mine === generation) {
@@ -2013,6 +2102,7 @@
                     report(`stream connected at ${rate} Hz as ${format}, the context runs at ${context.sampleRate} Hz (${context.state})`, "info");
                     const reader = response.body.getReader();
                     playAt = 0;
+                    lastBytesAt = performance.now();
                     if (aac) {
                         await readAAC(reader, rate, mine);
                     } else {
@@ -2021,6 +2111,7 @@
                             const { value, done } = await reader.read();
                             if (done || mine !== generation) break;
                             receivedBytes += value.length;
+                            lastBytesAt = performance.now();
                             const bytes = new Uint8Array(carry.length + value.length);
                             bytes.set(carry);
                             bytes.set(value, carry.length);
@@ -2063,6 +2154,7 @@
                         throw new Error(`the AAC decoder failed (${failed.message}), switching to PCM`);
                     }
                     receivedBytes += value.length;
+                    lastBytesAt = performance.now();
                     const bytes = new Uint8Array(carry.length + value.length);
                     bytes.set(carry);
                     bytes.set(value, carry.length);
@@ -2185,6 +2277,7 @@
                 generation++;
                 abort?.abort();
                 abort = null;
+                lastBytesAt = 0;
                 context?.suspend();
                 if (element) {
                     element.pause();
@@ -2501,7 +2594,7 @@
             const target = parseFloat(button.style.getPropertyValue("--done")) / 100 || 0;
             art.shown += (target - art.shown) * 0.08;
             if (button.classList.contains("working")) {
-                $("transcribe-label").textContent = target > 0 ? `${Math.round(art.shown * 100)}%` : "Transcribing";
+                $("transcribe-label").textContent = target > 0 ? `${Math.round(art.shown * 100)}%` : button.dataset.transcribing;
             }
             if (drawTranscribeArt()) return requestAnimationFrame(step);
             art.running = false;
@@ -2515,6 +2608,9 @@
         if (!state?.song || button.classList.contains("working")) return;
         button.disabled = true;
         button.dataset.label = $("transcribe-label").textContent;
+        // The instrument stays named while it works. Without one, Muskey picks the instrument with the most notes.
+        const target = notesTarget();
+        button.dataset.transcribing = target ? `Transcribing ${target.label.toLowerCase()}` : "Transcribing";
         art.shown = 0;
         art.passed.clear();
         button.classList.add("working");
