@@ -192,11 +192,14 @@
         const token = {};
         if (button) button.token = token;
         while (!job.done) {
+            // A job stopped from the page draws no more progress on its button.
+            if (button && button.token !== token) throw new Error("Stopped");
             if (button) progress(button, job.progress);
             await new Promise((resolve) => setTimeout(resolve, 400));
             if (button && button.token !== token) throw new Error("Stopped");
             job = await api(`/api/job/${job.job}`);
         }
+        if (button && button.token !== token) throw new Error("Stopped");
         if (button) progress(button, null);
         if (job.error) {
             report(`job failed: ${job.error}`);
@@ -2446,7 +2449,16 @@
             button.dataset.art = art;
             drawTranscribeArt();
         }
-        if (button.classList.contains("failed") || button.classList.contains("working")) return;
+        // Transcribe needs one instrument playing alone. While several play, the button waits for a long press on one,
+        // since Muskey would otherwise pick the instrument with the most notes by itself.
+        const working = button.classList.contains("working");
+        button.disabled = !target && !working;
+        if (working) {
+            $("transcribe-sub").textContent = "tap to stop";
+            $("transcribe-sub").hidden = false;
+            return;
+        }
+        if (button.classList.contains("failed")) return;
         const looped = currentLoop()?.end != null;
         const what = target ? `Transcribe ${target.label.toLowerCase()}` : "Transcribe";
         const label = looped ? (target ? `${what} in loop` : "Transcribe loop") : what;
@@ -2602,24 +2614,50 @@
         requestAnimationFrame(step);
     }
 
+    /** The transcription that runs on the Mac, which a tap on the working button stops. */
+    let notesJob = null;
+    /** Counts the transcriptions started and stopped, so a run that was stopped leaves the button to the next one. */
+    let notesRun = 0;
+
+    function stopTranscribing() {
+        const button = $("transcribe");
+        notesRun++;
+        if (notesJob) api(`/api/cancel/${notesJob}`, {}).catch(() => {});
+        notesJob = null;
+        // The job's follower stops at its next check, and the button is back at once.
+        button.token = null;
+        progress(button, null);
+        if (button.dataset.label) $("transcribe-label").textContent = button.dataset.label;
+        delete button.dataset.label;
+        drawTranscribeLabel();
+        drawTranscribeArt();
+    }
+
     async function transcribe() {
         const button = $("transcribe");
+        if (button.classList.contains("working")) return stopTranscribing();
         if (button.classList.contains("failed")) clearFailures();
-        if (!state?.song || button.classList.contains("working")) return;
-        button.disabled = true;
-        button.dataset.label = $("transcribe-label").textContent;
-        // The instrument stays named while it works. Without one, Muskey picks the instrument with the most notes.
         const target = notesTarget();
-        button.dataset.transcribing = target ? `Transcribing ${target.label.toLowerCase()}` : "Transcribing";
+        if (!state?.song || !target) return;
+        button.dataset.label = $("transcribe-label").textContent;
+        button.dataset.transcribing = `Transcribing ${target.label.toLowerCase()}`;
         art.shown = 0;
         art.passed.clear();
+        const run = ++notesRun;
         button.classList.add("working");
+        drawTranscribeLabel();
         animateArt();
         try {
             const loop = currentLoop();
             const part = loop?.end != null ? { from: loop.start, to: loop.end } : {};
-            const notes = notesTarget()?.name ?? "auto";
-            const job = await follow(await api("/api/write", { song: state.song, notes, format: "json", ...part }), button);
+            const started = await api("/api/write", { song: state.song, notes: target.name, format: "json", ...part });
+            // Stopped before the Mac answered: the job that it started is stopped too.
+            if (run !== notesRun) {
+                api(`/api/cancel/${started.job}`, {}).catch(() => {});
+                throw new Error("Stopped");
+            }
+            notesJob = started.job;
+            const job = await follow(started, button);
             const data = await (await fetch(job.file)).json();
             closeSheet();
             $("sheet").hidden = false;
@@ -2639,10 +2677,13 @@
         } catch (error) {
             if (error.message !== "Stopped") fail(button, $("notes-error"), error);
         } finally {
-            button.disabled = false;
-            if (!button.classList.contains("failed")) delete button.dataset.label;
-            drawTranscribeLabel();
-            drawTranscribeArt();
+            // A stop already put the button back, and a transcription started after it keeps the button.
+            if (run === notesRun) {
+                notesJob = null;
+                if (!button.classList.contains("failed")) delete button.dataset.label;
+                drawTranscribeLabel();
+                drawTranscribeArt();
+            }
         }
     }
 
