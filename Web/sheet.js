@@ -1414,12 +1414,12 @@
 
             const top = element("header", "ms-top");
             const titles = element("div", "ms-titles");
-            titles.append(element("h1", "ms-title", { text: this.data.title || "" }));
-            // The instrument stands out in a pill, so a sheet says which part it holds at a glance.
-            const subtitle = element("p", "ms-subtitle");
-            if (STEM_NAMES[this.stem]) subtitle.append(element("span", "ms-stem", { text: STEM_NAMES[this.stem] }));
-            if (this.data.artist) subtitle.append(document.createTextNode(this.data.artist));
-            titles.append(subtitle);
+            // The instrument stands out in a pill after the title, so a sheet says which part it holds at a glance, and
+            // the title and the artist keep one left edge.
+            const title = element("h1", "ms-title", { text: this.data.title || "" });
+            if (STEM_NAMES[this.stem]) title.append(element("span", "ms-stem", { text: STEM_NAMES[this.stem] }));
+            titles.append(title);
+            titles.append(element("p", "ms-subtitle", { text: this.data.artist || "" }));
             top.append(titles);
             this.viewSwitch = element("div", "ms-views", { role: "group", "aria-label": "View" });
             this.viewButtons = {};
