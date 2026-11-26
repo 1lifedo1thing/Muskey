@@ -1228,9 +1228,9 @@
         selection.style.width = `${Math.max(2, b - a)}px`;
     }
     // Fingers on the waveform and on the strip of the whole song under a close-up, by touch identifier, or the mouse.
-    // A phone's fingers come from touch events, whose list of touches is always whole: Safari on iOS sends no pointer
-    // events for a finger that leaves the element that it touched (WebKit bug 220196). A finger that lifted out there
-    // stayed counted, and every later touch read as the second finger of a pinch.
+    // A phone's fingers come from touch events, whose list of touches is always whole. With pointer events, the waveform
+    // on an iPhone missed the lift of a finger that left it during a pinch (WebKit bug 220196 is about the same capture),
+    // and that finger stayed counted, so every later touch read as the second finger of a pinch.
     // Two fingers zoom the waveform in or out, and stop whatever the first finger was doing. The second finger counts
     // wherever it lands while the first is on the waveform, since a pinch rarely fits in the waveform's height.
     const fingers = new Map();
@@ -1362,19 +1362,6 @@
         const down = new Set([...touches].map((touch) => touch.identifier));
         for (const [id, finger] of [...fingers]) if (id !== "mouse" && !down.has(id)) fingerUp(id, finger.x, true);
     }
-    // Pointer events that never reported a lift, which settles whether WebKit bug 220196 is what stopped the
-    // waveform on a real iPhone. Remove once that is known.
-    const touchPointers = new Set();
-    $("wave").addEventListener("pointerdown", (event) => { if (event.pointerType === "touch") touchPointers.add(event.pointerId); });
-    for (const type of ["pointerup", "pointercancel"]) document.addEventListener(type, (event) => touchPointers.delete(event.pointerId), true);
-    function checkPointers() {
-        setTimeout(() => {
-            if (!touchPointers.size || fingers.size) return;
-            report(`waveform: pointer events lost the lift of ${touchPointers.size} finger${touchPointers.size === 1 ? "" : "s"}`);
-            touchPointers.clear();
-        }, 500);
-    }
-
     function touchStart(event) {
         forgetLifted(event.touches);
         let used = false;
@@ -1397,10 +1384,7 @@
     function touchEnd(event) {
         for (const touch of event.changedTouches) fingerUp(touch.identifier, touch.clientX, event.type === "touchcancel");
         forgetLifted(event.touches);
-        if (!fingers.size) {
-            follow(false);
-            if (!event.touches.length) checkPointers();
-        }
+        if (!fingers.size) follow(false);
     }
     // The whole page's touches are followed only while a finger is on the waveform, so that scrolling elsewhere never
     // waits for the page.
