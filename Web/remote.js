@@ -461,6 +461,7 @@
         clearFailures();
         shift = state.shift;
         relative = state.relative;
+        ringRelatives = ringRelative = relative;
         speed = state.speed;
         muted = new Set(state.mutedStems || []);
         volumes = { ...(state.stemVolumes || {}) };
@@ -656,78 +657,146 @@
     }
 
     /** A key's name for the ring, with its sharp or flat faded and a small m for minor, as the HUD writes it. */
-    function keyText(text, key, x, y) {
-        text.setAttribute("x", x);
-        text.setAttribute("y", y);
+    function ringName(face, key) {
+        const name = document.createElement("span");
+        face.append(name);
         for (const character of tonic(key)) {
-            const part = svgElement("tspan", "♯♭".includes(character) ? { class: "acc" } : {});
+            const part = document.createElement("span");
+            if ("♯♭".includes(character)) part.className = "acc";
             part.textContent = character;
-            text.append(part);
+            name.append(part);
         }
         if (key.minor) {
-            const m = svgElement("tspan", { class: "m", dx: "0.5" });
+            const m = document.createElement("span");
+            m.className = "m";
             m.textContent = "m";
-            text.append(m);
+            name.append(m);
         }
     }
 
     /**
-     * The circle of fifths, as the HUD's ring draws it: the song's mode on the outer ring and the relatives on the
-     * inner one, the song's key at the top with a dot, and a fifth up for each step clockwise. The selected key is
-     * filled, keys a fourth or a fifth from it are red, keys a whole step from it are sage, and the relative of the
-     * selected key is outlined. A song without a key shows the shifts in semitones on the outer ring only.
+     * The ring shows the relatives instead of the song's mode, after a flick on it or once a relative key is picked.
+     * A tap picks a key in the mode that the ring shows.
      */
-    function drawKeys() {
+    let ringRelatives = false;
+    let ringRelative = false;
+
+    /** SwiftUI's spring(duration: 0.42, bounce: 0.28), which the HUD's keys flip with, as a CSS easing. */
+    const FLIP_SPRING = (() => {
+        const damping = 0.72, omega = (2 * Math.PI) / 0.42, damped = omega * Math.sqrt(1 - damping * damping), length = 0.75;
+        const points = [];
+        for (let i = 0; i <= 60; i++) {
+            const t = (length * i) / 60;
+            const x = 1 - Math.exp(-damping * omega * t) * (Math.cos(damped * t) + ((damping * omega) / damped) * Math.sin(damped * t));
+            points.push(x.toFixed(4));
+        }
+        const easing = CSS.supports?.("transition-timing-function", "linear(0, 1)") ? `linear(${points.join(", ")})` : "cubic-bezier(0.3, 1.35, 0.6, 1)";
+        return { duration: length * 1000, easing };
+    })();
+    /** The keys flip one after another, clockwise from the top, like on the HUD. */
+    const FLIP_STAGGER = 22;
+
+    /**
+     * The circle of fifths, as the HUD's ring draws it: the song's key at the top with a dot, and a fifth up for each
+     * step clockwise. The selected key is filled, keys a fourth or a fifth from it are red, keys a whole step from it
+     * are sage, and the relative of the selected key is outlined. A song without a key shows the shifts in semitones.
+     *
+     * `flip` is 1 or −1 after a flick up or down: each name turns over on the line that touches the ring at its place,
+     * so the names flip outwards, or inwards, in the direction of their side of the ring.
+     */
+    function drawKeys(flip = 0) {
         drawnKey = state?.key ?? null;
         const key = original();
+        if (relative !== ringRelative) ringRelatives = ringRelative = relative;
+        if (!key) ringRelatives = false;
         const ring = $("fifths");
+        const labels = $("ring-labels");
         ring.replaceChildren();
-        const c = 153, outer = [132, 19], inner = [96, 13];
-        const point = (r, angle) => [c + Math.sin(angle) * r, c - Math.cos(angle) * r];
-        const at = (r, angle) => point(r, angle).map((n) => n.toFixed(2)).join(" ");
+        labels.replaceChildren();
+        const c = 153, r = 132, band = 19;
+        const point = (radius, angle) => [c + Math.sin(angle) * radius, c - Math.cos(angle) * radius];
+        const at = (radius, angle) => point(radius, angle).map((n) => n.toFixed(2)).join(" ");
         const slice = (mid, from, to) => {
             const half = Math.PI / 12;
             return `M${at(to, mid - half)}A${to} ${to} 0 0 1 ${at(to, mid + half)}L${at(from, mid + half)}A${from} ${from} 0 0 0 ${at(from, mid - half)}Z`;
         };
         const selected = fold(shift);
+        /** The classes of a key at an offset, in the mode that the ring shows or in the other one. */
+        const look = (offset, second) => {
+            const inColumn = offset === selected;
+            const classes = [];
+            if (offset === 0 && !second) classes.push("orig");
+            if (key ? inColumn && relative === second : inColumn) classes.push("sel");
+            else if (inColumn) classes.push("partner");
+            else {
+                const steps = harmony(offset - shift);
+                if (steps === 1) classes.push("h1");
+                else if (steps === 2) classes.push("h2");
+            }
+            return classes;
+        };
+        const face = (offset, second, side) => {
+            const element = document.createElement("span");
+            element.className = ["face", side, ...look(offset, second)].join(" ");
+            if (key) {
+                const transposed = transpose(key, offset);
+                ringName(element, second ? relativeOf(transposed) : transposed);
+            } else element.textContent = shown(offset);
+            if (key && offset === 0 && !second) element.append(Object.assign(document.createElement("i"), { className: "odot" }));
+            return element;
+        };
+        const shownSide = ringRelatives;
+        const slots = [];
         for (let step = 0; step < 12; step++) {
             const angle = (step * Math.PI) / 6;
             const offset = fold(step * 7);
-            for (const second of key ? [false, true] : [false]) {
-                const [r, band] = second ? inner : outer;
-                const inColumn = offset === selected;
-                const isSelected = key ? inColumn && relative === second : inColumn;
-                const classes = ["rk"];
-                if (second) classes.push("in");
-                if (offset === 0 && !second) classes.push("orig");
-                if (isSelected) classes.push("sel");
-                else if (inColumn) classes.push("partner");
-                else {
-                    const steps = harmony(offset - shift);
-                    if (steps === 1) classes.push("h1");
-                    else if (steps === 2) classes.push("h2");
-                }
-                const slot = svgElement("g", { class: classes.join(" "), role: "button" });
-                slot.append(svgElement("path", { d: slice(angle, r - band, r + band) }));
-                const [x, y] = point(r, angle);
-                const text = svgElement("text");
-                if (key) {
-                    const transposed = transpose(key, offset);
-                    const face = second ? relativeOf(transposed) : transposed;
-                    keyText(text, face, x.toFixed(2), y.toFixed(2));
-                    slot.setAttribute("aria-label", `${tonic(face)} ${face.minor ? "minor" : "major"}`);
+            const inColumn = offset === selected;
+            const slot = svgElement("g", { class: ["rk", ...look(offset, flip ? !shownSide : shownSide)].join(" "), role: "button" });
+            slot.append(svgElement("path", { d: slice(angle, r - band, r + band) }));
+            if (key) {
+                const transposed = transpose(key, offset);
+                const name = shownSide ? relativeOf(transposed) : transposed;
+                slot.setAttribute("aria-label", `${tonic(name)} ${name.minor ? "minor" : "major"}`);
+            } else slot.setAttribute("aria-label", `${shown(offset)} semitones`);
+            slot.setAttribute("aria-pressed", String(look(offset, shownSide).includes("sel")));
+            slot.dataset.offset = String(inColumn ? shift : offset);
+            ring.append(slot);
+            slots.push([slot, look(offset, shownSide), step]);
+
+            // The names are HTML over the ring, since Safari draws SVG text flat when it turns in 3D.
+            const [x, y] = point(r, angle);
+            const label = document.createElement("span");
+            label.className = "rl";
+            label.style.left = `${((x / 306) * 100).toFixed(3)}%`;
+            label.style.top = `${((y / 306) * 100).toFixed(3)}%`;
+            // The line that touches the ring at the name's place.
+            const axis = `${Math.cos(angle).toFixed(4)}, ${Math.sin(angle).toFixed(4)}, 0`;
+            label.style.setProperty("--axis", axis);
+            label.append(face(offset, shownSide, "front"));
+            if (key) label.append(face(offset, !shownSide, "back"));
+            labels.append(label);
+            if (flip) {
+                const delay = step * FLIP_STAGGER;
+                if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+                    label.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, delay, easing: "ease-out", fill: "backwards" });
                 } else {
-                    text.setAttribute("x", x.toFixed(2));
-                    text.setAttribute("y", y.toFixed(2));
-                    text.textContent = shown(offset);
-                    slot.setAttribute("aria-label", `${shown(offset)} semitones`);
+                    const depth = `${((labels.offsetWidth || 300) * 0.25).toFixed(0)}px`;
+                    label.animate(
+                        [
+                            { transform: `perspective(${depth}) rotate3d(${axis}, ${-180 * flip}deg)` },
+                            { transform: `perspective(${depth}) rotate3d(${axis}, 0deg)` },
+                        ],
+                        { duration: FLIP_SPRING.duration, easing: FLIP_SPRING.easing, delay, fill: "backwards" },
+                    );
                 }
-                slot.append(text);
-                if (offset === 0 && !second) slot.append(svgElement("circle", { class: "odot", cx: x.toFixed(2), cy: (y + 11).toFixed(2), r: 2 }));
-                slot.setAttribute("aria-pressed", String(isSelected));
-                // The column of the selected key keeps the shift, which can be an octave away from its offset.
-                slot.addEventListener("click", () => setKey(inColumn ? shift : offset, second));
-                ring.append(slot);
+            }
+        }
+        // The slices take the colours of the side that shows once each name is halfway over.
+        if (flip) {
+            ring.getBoundingClientRect();
+            for (const [slot, classes, step] of slots) {
+                slot.querySelector("path").style.transitionDelay = `${step * FLIP_STAGGER + 110}ms`;
+                slot.setAttribute("class", ["rk", ...classes].join(" "));
             }
         }
         // The key of the song, and the key that plays once it changed.
@@ -750,6 +819,40 @@
             }
             change.replaceChildren(content);
         }
+    }
+
+    /**
+     * A tap on a key picks it. A flick up or down on any key turns every name over to the other mode, which the next
+     * tap then picks from. On a song without a key, the ring has no other mode and a flick does nothing.
+     */
+    function ringGestures() {
+        const ring = $("fifths");
+        let start = null;
+        let flicked = 0;
+        ring.addEventListener("pointerdown", (event) => {
+            if (!event.isPrimary || !event.target.closest(".rk")) return;
+            start = { x: event.clientX, y: event.clientY, id: event.pointerId };
+        });
+        ring.addEventListener("pointermove", (event) => {
+            if (!start || event.pointerId !== start.id) return;
+            const dx = event.clientX - start.x, dy = event.clientY - start.y;
+            if (Math.abs(dy) < 18 || Math.abs(dy) < Math.abs(dx) * 1.4) return;
+            start = null;
+            flicked = Date.now();
+            if (!original()) return;
+            ringRelatives = !ringRelatives;
+            drawKeys(dy < 0 ? 1 : -1);
+        });
+        const end = (event) => {
+            if (start && event.pointerId === start.id) start = null;
+        };
+        ring.addEventListener("pointerup", end);
+        ring.addEventListener("pointercancel", end);
+        ring.addEventListener("click", (event) => {
+            const slot = event.target.closest(".rk");
+            if (!slot || Date.now() - flicked < 500) return;
+            setKey(Number(slot.dataset.offset), ringRelatives);
+        });
     }
 
     function setKey(newShift, newRelative) {
@@ -2818,6 +2921,7 @@
     });
     tempoSlider();
     dockHandle();
+    ringGestures();
     $("speed-reset").onclick = () => setSpeed(1);
     $("key-reset").onclick = () => setKey(0, false);
     $("play-all").onclick = () => setStems(new Set());

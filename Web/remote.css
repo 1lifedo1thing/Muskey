@@ -711,30 +711,30 @@ html[data-song-title="grooves"] .groove-text { display: block; }
 }
 
 /* The circle of fifths, as the HUD's ring draws it */
-.fifths { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.fifths { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; touch-action: none; }
 .rk { cursor: pointer; -webkit-tap-highlight-color: transparent; }
-.rk path { fill: color-mix(in srgb, var(--ink) 6%, transparent); stroke: color-mix(in srgb, var(--ink) 10%, transparent); stroke-width: 0.75; transition: fill 0.15s; }
-.rk.in path { fill: color-mix(in srgb, var(--ink) 4%, transparent); }
-.rk text { font-family: var(--font); font-weight: 650; font-size: 14px; fill: var(--muted); text-anchor: middle; dominant-baseline: central; }
-.rk.in text { font-size: 11px; opacity: 0.78; }
-.rk .m { font-size: 0.74em; opacity: 0.72; }
-.rk .acc { opacity: 0.55; }
-.rk.orig text { fill: var(--ink); }
-.rk .odot { fill: var(--ink); }
+.rk path { fill: color-mix(in srgb, var(--ink) 6%, transparent); stroke: color-mix(in srgb, var(--ink) 10%, transparent); stroke-width: 0.75; transition: fill 0.15s, stroke 0.15s; }
 .rk.sel path { fill: var(--honey); }
-.rk.sel text { fill: var(--honey-ink); font-weight: 850; opacity: 1; }
-.rk.sel .odot { fill: var(--honey-ink); }
 .rk.h1 path { fill: var(--red-tint); }
-.rk.h1 text { fill: var(--red-text); opacity: 1; }
 .rk.h2 path { fill: var(--sage-tint); }
-.rk.h2 text { fill: var(--sage-text); opacity: 1; }
-.rk.in.h1 path, .rk.in.h2 path { fill-opacity: 0.6; }
 .rk.partner path { stroke: color-mix(in srgb, var(--honey) 75%, transparent); stroke-width: 1.5; }
-.rk.partner text { fill: var(--honey-text); opacity: 1; }
 .rk:active path { filter: brightness(0.92); }
+/* The names, which turn over to the other mode on a flick. One unit is a unit of the ring's 306 wide drawing. */
+.ring-labels { position: absolute; inset: 0; pointer-events: none; --u: calc(min(100cqw, 100cqh, 400px) / 306); }
+.rl { position: absolute; width: calc(40 * var(--u)); height: calc(30 * var(--u)); translate: -50% -50%; transform-style: preserve-3d; }
+.rl .face { position: absolute; inset: 0; display: grid; place-items: center; backface-visibility: hidden; -webkit-backface-visibility: hidden; font-family: var(--font); font-weight: 650; font-size: calc(14 * var(--u)); line-height: 1; color: var(--muted); }
+.rl .back { transform: rotate3d(var(--axis), 180deg); }
+.rl .m { font-size: 0.74em; opacity: 0.72; margin-left: 0.04em; }
+.rl .acc { opacity: 0.55; }
+.rl .orig { color: var(--ink); }
+.rl .odot { position: absolute; left: 50%; top: calc(50% + 9 * var(--u)); width: calc(4 * var(--u)); height: calc(4 * var(--u)); translate: -50% 0; border-radius: 50%; background: currentColor; }
+.rl .sel { color: var(--honey-ink); font-weight: 850; }
+.rl .h1 { color: var(--red-text); }
+.rl .h2 { color: var(--sage-text); }
+.rl .partner { color: var(--honey-text); }
 
 /* The record inside the ring, with the cover as its label */
-.record { position: absolute; left: 50%; top: 50%; width: 51%; aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; --ring: rgb(228 88 96); }
+.record { position: absolute; left: 50%; top: 50%; width: 68%; aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; --ring: rgb(228 88 96); }
 .record .disc {
     position: absolute;
     inset: 0;
