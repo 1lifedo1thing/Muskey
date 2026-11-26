@@ -3,6 +3,25 @@
     <channel>
         <title>Muskey</title>
         <item>
+            <title>1.3.0</title>
+            <pubDate>Fri, 27 Nov 2026 01:05:17 +0200</pubDate>
+            <link>https://lowtechguys.com/muskey</link>
+            <sparkle:fullReleaseNotesLink>https://files.lowtechguys.com/muskey/changelog.html</sparkle:fullReleaseNotesLink>
+            <sparkle:version>1.3.0</sparkle:version>
+            <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <sparkle:releaseNotesLink>https://files.lowtechguys.com/ReleaseNotes/Muskey-1.3.0.html</sparkle:releaseNotesLink>
+            <enclosure url="https://files.lowtechguys.com/releases/Muskey-1.3.0.dmg" length="17617326" type="application/octet-stream" sparkle:edSignature="Y0QLukJimNyfLTp1mxuv5hMFTQM/7Psz1+TDAtm+cwoy6NPWuBmGN3K6reJhoaqVPU3a6AI6EM85PdCfkVbyCQ=="/>
+            <sparkle:deltas>
+                <enclosure url="https://files.lowtechguys.com/releases/Muskey1.3.0-1.2.1.delta" sparkle:deltaFrom="1.2.1" length="4269054" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="M2x6Dva/u2Mque3Q7GFEIiQ5TFh1Ia78u3J5wAmJi+7+KYAtnBjFTNdtuGQKnpcP3Tl2bq7cFLad13d3Lk4rCQ=="/>
+                <enclosure url="https://files.lowtechguys.com/releases/Muskey1.3.0-1.2.0.delta" sparkle:deltaFrom="1.2.0" length="4646294" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="102GgmiUXk0Xd7ESmLBq95K1aatYysgf2CQQWyTSvdpWpkG26XXgKtM3+vUDjtQ+TvxMGF1Y59GUOGFzNETDAQ=="/>
+                <enclosure url="https://files.lowtechguys.com/releases/Muskey1.3.0-1.1.1.delta" sparkle:deltaFrom="1.1.1" length="5693802" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="fMu7ng3IdHempkxNdNIRsAGWhwsyKz5bhbe/6CwFEB5pvi5Z6zhArVW5XZmAosKSqDRIR49PryyXRjH6UErUDQ=="/>
+                <enclosure url="https://files.lowtechguys.com/releases/Muskey1.3.0-1.1.0.delta" sparkle:deltaFrom="1.1.0" length="5692082" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="MjmU+ScCK4SNguUOlSVZnZ72SVAZBQSdEysi6/ORN33zz7DbduTBdIXB8vs5B3YvJmnhN2DKwlKftmuKB+NFAw=="/>
+                <enclosure url="https://files.lowtechguys.com/releases/Muskey1.3.0-1.0.1.delta" sparkle:deltaFrom="1.0.1" length="8335566" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="Lr/ipKh6qKD14Ywzauz1NhSDtlyjcs8Gw4koF5J7ve1IUla6hPJMAGZ8btEPWOPrij3E5+BiGZRZc5pkbb2tAQ=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>1.2.1</title>
             <pubDate>Mon, 23 Nov 2026 23:41:19 +0200</pubDate>
             <link>https://lowtechguys.com/muskey</link>
@@ -11,7 +30,6 @@
             <sparkle:shortVersionString>1.2.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink>https://files.lowtechguys.com/ReleaseNotes/Muskey-1.2.1.html</sparkle:releaseNotesLink>
             <enclosure url="https://files.lowtechguys.com/releases/Muskey-1.2.1.dmg" length="13801604" type="application/octet-stream" sparkle:edSignature="JjahRiYt+ZRiGxfB52qP02eEwEBD5VMvGEFXGcPRwCoY/OHBsN/7gZxIWowpVg3V5l/83+G/k4gXufwnu1x2Cw=="/>
             <sparkle:deltas>
                 <enclosure url="https://files.lowtechguys.com/releases/Muskey1.2.1-1.2.0.delta" sparkle:deltaFrom="1.2.0" length="1282674" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="bUC2hayWeeosR6MUGXiZ7M3CxfkywP+A7xLBi7SpMqn0UgypB66ckuzit4YFZz5cReXQwSyBcairdnN7xGGFAQ=="/>
@@ -30,7 +48,6 @@
             <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink>https://files.lowtechguys.com/ReleaseNotes/Muskey-1.2.0.html</sparkle:releaseNotesLink>
             <enclosure url="https://files.lowtechguys.com/releases/Muskey-1.2.0.dmg" length="13617130" type="application/octet-stream" sparkle:edSignature="fICOpLgoyURXY/zYssqXYS+aiFNIp+UoeHByRNAfPHk/j4Rf1Xhp4QfJuHJLhtc7EJX5B0rhT0TI4BIj3VgYCQ=="/>
             <sparkle:deltas>
                 <enclosure url="https://files.lowtechguys.com/releases/Muskey1.2.0-1.1.1.delta" sparkle:deltaFrom="1.1.1" length="2255334" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="8zR7rnVZTLaJAb9aS4XM/oGkLEelQSal7xRconEsP9/AMCKOHNcd+wtx7jJMjAznNM4HewtLC+QQvrEjSQb1AA=="/>
@@ -48,7 +65,6 @@
             <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink>https://files.lowtechguys.com/ReleaseNotes/Muskey-1.1.1.html</sparkle:releaseNotesLink>
             <enclosure url="https://files.lowtechguys.com/releases/Muskey-1.1.1.dmg" length="12195129" type="application/octet-stream" sparkle:edSignature="FwJLvX4lJRgVjLV7xrvdinxwYLwv4QUe87X/Wc+gBGJ16omk5y2wksoXFoKzuccTfi+osd/cfdUt/vEORCUzBw=="/>
             <sparkle:deltas>
                 <enclosure url="https://files.lowtechguys.com/releases/Muskey1.1.1-1.1.0.delta" sparkle:deltaFrom="1.1.0" length="540738" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="6t359kxTdJCwGO3SmHi5e7FUDKsJ52+Mi8gUsb126I0vqlXjRD/DLaOQ4u2V6TT2Zz+BAk52OEVvcuGxP3OuAg=="/>
@@ -65,7 +81,6 @@
             <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink>https://files.lowtechguys.com/ReleaseNotes/Muskey-1.1.0.html</sparkle:releaseNotesLink>
             <enclosure url="https://files.lowtechguys.com/releases/Muskey-1.1.0.dmg" length="12188470" type="application/octet-stream" sparkle:edSignature="tJ8h3x7s/INzZ9GRa5qd9OIi4WK4leFSGpVJY8tstq7kQVMFR70KtoBRUCF11WwMQKWzC1jJQPR4KNQLORw9DQ=="/>
             <sparkle:deltas>
                 <enclosure url="https://files.lowtechguys.com/releases/Muskey1.1.0-1.0.1.delta" sparkle:deltaFrom="1.0.1" length="3809834" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="wxN+j2fInRVMUg5qDCTrmzzg5+IBYpJ2GT5ogPXYqIMxO/wrzy36f6xfZrQirQkaoWTPi/DBAq5t6eqYC3kmCA=="/>
@@ -81,7 +96,6 @@
             <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink>https://files.lowtechguys.com/ReleaseNotes/Muskey-1.0.1.html</sparkle:releaseNotesLink>
             <enclosure url="https://files.lowtechguys.com/releases/Muskey-1.0.1.dmg" length="8309243" type="application/octet-stream" sparkle:edSignature="C8/cuNlkFAwn+uCsFIdf/Wr8UedfV1nupiutJcsAt1Bs8CRlFJHvJnTbwwafTFIDthjQo3uk0nYoy/y/QVkABA=="/>
             <sparkle:deltas>
                 <enclosure url="https://files.lowtechguys.com/releases/Muskey1.0.1-1.0.0.delta" sparkle:deltaFrom="1.0.0" length="14186" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="oGIo99M9XTIwiHD7GBjtUnZN3F62hf4k6/v0cNb+zDqkPeGI1JOYbtQw+kcN2ycZRmLPIpPpNtbRpwQXNFkaDg=="/>

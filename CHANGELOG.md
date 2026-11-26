@@ -1,3 +1,40 @@
+# 1.3.0
+
+**[Download Muskey 1.3.0 →](https://files.lowtechguys.com/releases/Muskey-1.3.0.dmg)**
+## Features
+
+- **Web remote**: change the key, tempo and instruments of the song that plays on the Mac from your phone
+    > Pair the phone in Settings > Remote with a QR code
+    >
+    > Pick **Phone** as the output to hear the song on the phone, with every change applied live
+
+![web remote](https://files.lowtechguys.com/changelog/muskey/1.3.0-web-remote.png)
+
+- **Command line tool** to play songs, links or the song that plays with another key, speed or instruments, and save the result or its notes
+    > Install it from Settings > General
+
+```bash
+muskey song.mp3 --key Am
+muskey "https://youtu.be/…" --stems vocals,piano --key +2
+muskey song.mp3 --key Em --mute vocals -o karaoke.m4a
+muskey song.mp3 --notes bass --from 1:12 --to 1:40 -o bass.pdf
+```
+
+- **Note names** under the pointer in the notes window
+- **Relative key names**: Option-click the key in the HUD or the notes window
+
+## Fixes
+
+- Fix sheet music putting a flat on every black key in keys like B♭ minor
+- Fix the instruments and the lyrics delay playing several semitones off after a tempo change
+- Fix the HUD showing the previous song's key for a moment after a song change
+- Don't open Settings when an app switcher brings Muskey to the front
+
+## Improvements
+
+- The HUD shows up when Muskey is opened again with nothing on screen
+- **Send error reports** switch in Settings > General
+
 # 1.2.1
 
 **[Download Muskey 1.2.1 →](https://files.lowtechguys.com/releases/Muskey-1.2.1.dmg)**
