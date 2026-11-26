@@ -843,22 +843,57 @@
     let waveLoading = false;
     const songDuration = () => state?.duration || wave?.duration || 0;
 
+    function bytes(base64) {
+        const text = atob(base64);
+        const levels = new Uint8Array(text.length);
+        for (let i = 0; i < text.length; i++) levels[i] = text.charCodeAt(i);
+        return levels;
+    }
+
+    /** The waveform grows to fit the instruments' waveforms, and names each one. */
+    function drawLaneNames() {
+        const lanes = wave?.lanes ?? [];
+        const element = $("wave");
+        element.classList.toggle("lanes-2", lanes.length === 2);
+        element.classList.toggle("lanes-3", lanes.length === 3);
+        const names = $("wave-lanes");
+        const key = lanes.map((lane) => lane.name).join(",");
+        if (names.dataset.lanes === key) return;
+        names.dataset.lanes = key;
+        names.replaceChildren(...lanes.map((lane, index) => {
+            const stem = STEMS.find((s) => s.name === lane.name);
+            const pill = document.createElement("span");
+            pill.className = "lane-name";
+            pill.textContent = stem.label;
+            pill.style.setProperty("--hue", stem.hue);
+            // Each pill sits at the top of its waveform: the waveforms share the height, with 4 points between them.
+            pill.style.top = `calc((100% - ${(lanes.length - 1) * 4}px) / ${lanes.length} * ${index} + ${index * 4 + 2}px)`;
+            return pill;
+        }));
+    }
+
     async function loadWave() {
         if (waveLoading || !state || (state.wave ?? null) === waveVersion) return;
         const version = state.wave ?? null;
         if (version === null) {
             wave = null;
             waveVersion = null;
+            drawLaneNames();
             return;
         }
         waveLoading = true;
         try {
             const answer = await api("/api/waveform");
-            const text = atob(answer.levels);
-            const levels = new Uint8Array(text.length);
-            for (let i = 0; i < text.length; i++) levels[i] = text.charCodeAt(i);
-            wave = { duration: answer.duration, rate: answer.rate, levels };
+            const levels = bytes(answer.levels);
+            // One waveform per instrument while some are muted, in the order of the instruments' circles.
+            const order = STEMS.map((stem) => stem.name);
+            const lanes = (answer.lanes ?? [])
+                .filter((lane) => order.includes(lane.name))
+                .sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name))
+                .map((lane) => ({ ...lane, levels: bytes(lane.levels) }));
+            wave = { duration: answer.duration, rate: answer.rate, levels, lanes };
             waveVersion = version;
+            drawLaneNames();
             drawWave(true);
         } catch {
             // The waveform stays as it was, and the next state asks again.
@@ -1099,24 +1134,47 @@
             context.fillStyle = honey;
             if (b > a) context.fillRect(a, 0, b - a, height);
         }
-        const levels = wave?.levels;
+        // The whole song in one waveform, or one waveform per instrument sharing the height, 4 points apart.
+        const rows = wave?.lanes?.length ? wave.lanes : [null];
+        const gap = rows.length > 1 ? 4 * ratio : 0;
+        const rowHeight = (height - gap * (rows.length - 1)) / rows.length;
         const first = Math.floor(from / slot), last = Math.ceil((from + span) / slot);
-        for (let k = first; k < last; k++) {
-            const start = k * slot;
-            if (start >= duration) break;
-            let level = 0;
-            if (levels?.length) {
-                const a = Math.floor((start / duration) * levels.length), b = Math.max(a + 1, Math.floor(((start + slot) / duration) * levels.length));
-                for (let j = a; j < b && j < levels.length; j++) level = Math.max(level, levels[j]);
+        rows.forEach((lane, index) => {
+            const levels = lane ? lane.levels : wave?.levels;
+            const top = index * (rowHeight + gap);
+            for (let k = first; k < last; k++) {
+                const start = k * slot;
+                if (start >= duration) break;
+                const bar = levels?.length ? barHeight(levels, lane, start / duration, (start + slot) / duration, rowHeight, ratio) : 0;
+                const middle = start + slot / 2;
+                const inLoop = looped && middle >= looped[0] && middle <= looped[1];
+                const shown = bar || 1.5 * ratio;
+                context.fillStyle = inLoop ? honey : k < played ? ink : muted;
+                context.globalAlpha = !bar ? 0.18 : inLoop ? (k < played ? 1 : 0.6) : k < played ? 0.85 : looped ? 0.18 : 0.3;
+                context.fillRect(Math.round(((start - from) / span) * width), top + (rowHeight - shown) / 2, barWidth, shown);
             }
-            const middle = start + slot / 2;
-            const inLoop = looped && middle >= looped[0] && middle <= looped[1];
-            const bar = level ? Math.max(2 * ratio, ((level - 1) / 254) * height) : 1.5 * ratio;
-            context.fillStyle = inLoop ? honey : k < played ? ink : muted;
-            context.globalAlpha = !level ? 0.18 : inLoop ? (k < played ? 1 : 0.6) : k < played ? 0.85 : looped ? 0.18 : 0.3;
-            context.fillRect(Math.round(((start - from) / span) * width), (height - bar) / 2, barWidth, bar);
-        }
+        });
         context.globalAlpha = 1;
+    }
+
+    /** The height of the bar for the part of the song between `a` and `b` (shares of its length), or 0 for a moment
+     * that wasn't heard yet or an instrument that is silent there. The whole song shows its loudest moment. An instrument
+     * shows mostly its average, stretched between the quiet and the loud parts of all the instruments, as the HUD's
+     * lanes do, so the bleed of the others under it draws as silence. */
+    function barHeight(levels, lane, a, b, height, ratio) {
+        const from = Math.floor(a * levels.length), to = Math.min(levels.length, Math.max(from + 1, Math.floor(b * levels.length)));
+        let loudest = 0, sum = 0, heard = 0;
+        for (let j = from; j < to; j++) {
+            if (!levels[j]) continue;
+            loudest = Math.max(loudest, levels[j]);
+            sum += levels[j];
+            heard++;
+        }
+        if (!heard) return 0;
+        if (!lane) return Math.max(2 * ratio, ((loudest - 1) / 254) * height);
+        const level = (0.8 * sum) / heard + 0.2 * loudest;
+        const stretched = Math.min(1, Math.max(0, (level - lane.low) / Math.max(1, lane.high - lane.low)));
+        return stretched > 0 ? Math.max(2 * ratio, stretched ** 1.25 * height) : 0;
     }
 
     function drawEnds(width, xOf) {

@@ -3135,6 +3135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.songShown = { [weak self] in self?.remoteSongShown() }
         WebRemote.shared.loop = { [weak self] in self?.remoteLoop($0) }
         WebRemote.shared.waveform = { [weak self] in self?.model.wave.waveform }
+        WebRemote.shared.waveLanes = { [weak self] in self?.remoteLanes($0) ?? [] }
         WebStream.shared.onListening = { [weak self] on in self?.phoneListens(on) }
         pitch.stream = WebStream.shared.ring
         WebRemote.shared.update()
@@ -3323,7 +3324,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seekable: model.seekable, mac: Self.macName,
             mutedStems: model.stemsMuted.map { $0.name.lowercased() }.sorted(),
             loop: model.loop.map { WebRemote.State.Loop(start: $0.start, end: $0.end) },
-            wave: model.wave.waveform.map { wave in wave.levels.count &* 7919 &+ wave.levels.reduce(0) { $0 + ($1 > 0 ? 1 : 0) } },
+            // Changes when more of the song is heard, and when the phone's waveforms per instrument change or fill in.
+            wave: model.wave.waveform.map { wave in
+                remoteLanes(wave).reduce(wave.levels.count &* 7919 &+ wave.levels.reduce(0) { $0 + ($1 > 0 ? 1 : 0) }) { hash, stem in
+                    hash &* 31 &+ (stem.rawValue &+ 1) &* 1_000_003 &+ (wave.stems?[stem.rawValue]?.reduce(0) { $0 + ($1 > 0 ? 1 : 0) } ?? 0)
+                }
+            },
             source: remoteSource(track).kind, sourceApp: remoteSource(track).app
         )
     }
@@ -3417,7 +3423,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A phone shows the song, so the stems model is loaded as it is for a pointer over the HUD, and a tap on an
     /// instrument starts the stems in a second instead of waiting for the model. It is freed 15 minutes after the
     /// phone stops asking, as after the HUD closes.
+    /// The instruments that get a waveform each on the phone while some are muted: up to three of those that play,
+    /// the ones with the most sound in the song.
+    @MainActor private func remoteLanes(_ wave: SongWaveform) -> [Stem] {
+        guard !model.stemsMuted.isEmpty, wave.stems != nil else { return [] }
+        let sounds = Stem.shown.filter { !model.stemsMuted.contains($0) }.compactMap { stem in
+            wave.sound(of: stem).flatMap { $0 > 0 ? (stem, $0) : nil }
+        }
+        return sounds.sorted { $0.1 > $1.1 }.prefix(3).map(\.0)
+    }
+
+    /// The phone showed the song that plays a moment ago: its state is asked for every 1.5 seconds while it does.
+    private var remoteSongSeenAt = Date.distantPast
+    private var phoneShowsSong: Bool { Date().timeIntervalSince(remoteSongSeenAt) < 5 }
+
     @MainActor private func remoteSongShown() {
+        remoteSongSeenAt = Date()
+        // A song from another app gets its waveforms per instrument from what its stems play, which the stem meters
+        // read, also while the HUD is hidden.
+        if !model.shown, stemMeterClock == nil, model.stemsEngaged { updateStemMeters(shown: false) }
         guard Date().timeIntervalSince(remoteWarmedAt) > 60 else { return }
         remoteWarmedAt = Date()
         guard StemModel.installed, pitch.stemsFeed == nil else { return }
@@ -7439,9 +7463,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spinsSeen = spins
     }
 
-    /// Reads the level of each stem 20 times a second, and what the stems wait for, while the HUD shows them.
+    /// Reads the level of each stem 20 times a second, and what the stems wait for, while the HUD or the phone's song
+    /// view shows them.
     private func updateStemMeters(shown: Bool) {
-        let wanted = shown && model.stemsEngaged
+        let wanted = (shown || phoneShowsSong) && model.stemsEngaged
         if !wanted {
             stemMeterClock?.invalidate()
             stemMeterClock = nil
@@ -7453,6 +7478,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard stemMeterClock == nil else { return }
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self else { return }
+            // The phone's song view closed while the HUD is hidden.
+            if !model.shown, !phoneShowsSong { return updateStemMeters(shown: false) }
             // Stems from the cache take over in a moment, with nothing to wait for.
             var progress = cachedStems ? nil : pitch.stemsWaited.map { waited -> StemsProgress in
                 StemModel.prepared ? .separating(min(0.97, waited / Self.stemsWait)) : .loading

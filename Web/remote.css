@@ -670,8 +670,30 @@ html.has-install-pill #home { padding-bottom: calc(24px + 66px + var(--safe-bott
 /* The waveform takes the place of a seek bar: a tap or a slide moves the song there, a hold and then a slide makes a
    region loop, and the A and B tabs of the loop move its ends. It takes every touch, so a drag never scrolls the
    page. */
-.wave { position: relative; height: 64px; margin-top: 18px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.wave { position: relative; height: 64px; margin-top: 18px; touch-action: none; user-select: none; -webkit-user-select: none; transition: height 0.25s ease; }
 .wave canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* While some instruments are muted, up to three of those that play get a waveform each, taller together, each named
+   in a translucent pill tinted like its instrument's circle. */
+.wave.lanes-2 { height: 96px; }
+.wave.lanes-3 { height: 124px; }
+.wave-lanes { position: absolute; inset: 0; pointer-events: none; }
+.lane-name {
+    position: absolute;
+    left: 4px;
+    padding: 0 6px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 15px;
+    color: oklch(0.42 0.11 var(--hue));
+    background: oklch(0.9 0.07 var(--hue) / 0.62);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 0 0 0.5px oklch(0.45 0.11 var(--hue) / 0.25);
+}
+@media (prefers-color-scheme: dark) {
+    .lane-name { color: oklch(0.92 0.07 var(--hue)); background: oklch(0.42 0.085 var(--hue) / 0.62); }
+}
 .transport.unknown .wave, .transport.unknown .clocks { display: none; }
 .playhead { position: absolute; top: -3px; bottom: -3px; left: 0; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--ink); pointer-events: none; will-change: transform; }
 .wave-selection { position: absolute; top: 0; bottom: 0; border-radius: 6px; background: var(--honey-tint); outline: 1.5px solid var(--honey); pointer-events: none; }

@@ -49,6 +49,8 @@ struct WebNotes: Encodable {
     var loop: (WebLoop) -> Void = { _ in }
     /// The waveform of the song that plays, as the HUD draws it.
     var waveform: () -> SongWaveform? = { nil }
+    /// The instruments that get a waveform each on the phone, from the rows of the waveform's stems.
+    var waveLanes: (SongWaveform) -> [Stem] = { _ in [] }
     /// The phone shows the song that plays, where a tap on an instrument can come at any moment.
     var songShown: () -> Void = {}
     private var pageLines: [Date] = []
@@ -391,8 +393,15 @@ struct WebNotes: Encodable {
             return WebResponse(status: 204)
         case "api/waveform" where reads && parts.count == 2:
             // The levels as the HUD keeps them, 50 a second and one byte each, 0 for a moment that wasn't heard yet.
-            guard let wave = await MainActor.run(body: { shared.waveform() }) else { return .notFound }
-            return json(WebWave(duration: wave.duration, rate: SongWaveform.rate, levels: wave.levels.base64EncodedString()))
+            // While some instruments are muted, up to three of those that play get their own row, with the levels
+            // that their bars stretch between, so the bleed of the others under a stem draws as silence.
+            guard let (wave, lanes) = await MainActor.run(body: { shared.waveform().map { ($0, shared.waveLanes($0)) } }) else { return .notFound }
+            let ranges = lanes.isEmpty ? [:] : wave.stemRanges()
+            let rows = lanes.compactMap { stem -> WebWave.Lane? in
+                guard let data = wave.stems?[stem.rawValue], let range = ranges[stem] else { return nil }
+                return WebWave.Lane(name: stem.name.lowercased(), levels: data.base64EncodedString(), low: range.low, high: range.high)
+            }
+            return json(WebWave(duration: wave.duration, rate: SongWaveform.rate, levels: wave.levels.base64EncodedString(), lanes: rows.isEmpty ? nil : rows))
         case "api/mute" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode([String: Bool].self, from: request.body), let muted = body["muted"] else {
                 return .text("Unreadable request", status: 400)
@@ -780,6 +789,18 @@ struct WebWave: Encodable {
     let rate: Double
     /// Base64 of one byte per level.
     let levels: String
+    /// One waveform per instrument, while some instruments are muted.
+    let lanes: [Lane]?
+
+    struct Lane: Encodable {
+        /// The instrument, as the phone names it in lowercase.
+        let name: String
+        /// Base64 of one byte per level, 0 for a moment that wasn't heard yet.
+        let levels: String
+        /// The levels that the bars stretch between: anything at `low` or under it is silence.
+        let low: Float
+        let high: Float
+    }
 }
 
 /// A play, pause or move of the song that plays on the Mac: `play`, `pause`, `back`, `forward`, or `seek` to `seconds`.
