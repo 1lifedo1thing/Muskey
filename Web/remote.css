@@ -298,8 +298,9 @@ button:disabled { cursor: default; }
     background: var(--fill);
     font-size: 16px;
 }
-/* The link field wraps, so the whole placeholder shows, and so does a long link once it is pasted. */
-.link-field { height: auto; min-height: 56px; padding: 8px 14px; resize: none; line-height: 1.3; font-size: 16px; overflow: hidden; word-break: break-all; }
+/* The link field wraps, so the whole placeholder shows, and so does a long link once it is pasted. A textarea takes
+   a monospaced font unless it is given one, and it grows to fit its text or its placeholder. */
+.link-field { height: auto; min-height: 56px; padding: 8px 14px; resize: none; font-family: inherit; line-height: 1.3; font-size: 16px; overflow: hidden; word-break: break-all; field-sizing: content; }
 .link-field::placeholder { word-break: normal; }
 .field::placeholder { color: color-mix(in srgb, var(--muted) 55%, transparent); }
 
