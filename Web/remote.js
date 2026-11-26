@@ -950,13 +950,59 @@
         setZoom(1, true);
     }
 
-    function drawZoomMap(from, span, duration) {
+    let drawnStrip = null;
+    /** The strip of the whole song under a close-up, like the HUD's: the bars of the whole song, the part played in
+     * honey, the loop, and a box around the part that the close-up shows. Its bars are drawn again only when one of
+     * them changes colour or the loop moves. */
+    function drawZoomMap(from, span, duration, position, loop) {
         const map = $("zoom-map");
         const zoomed = span < duration - 0.01;
         map.classList.toggle("on", zoomed);
         if (!zoomed) return;
-        $("zoom-window").style.left = `${(from / duration) * 100}%`;
-        $("zoom-window").style.width = `${Math.max(1, (span / duration) * 100)}%`;
+        const box = map.getBoundingClientRect();
+        if (!box.width) return;
+        // The box covers only the part of the song in the close-up, and stays wide enough to see.
+        const boxWidth = Math.min(box.width, Math.max(6, (span / duration) * box.width));
+        const left = Math.min(Math.max(0, (from / duration) * box.width), box.width - boxWidth);
+        $("zoom-window").style.left = `${left}px`;
+        $("zoom-window").style.width = `${boxWidth}px`;
+        const canvas = $("zoom-canvas");
+        const ratio = window.devicePixelRatio || 1;
+        const width = Math.round(box.width * ratio), height = Math.round(box.height * ratio);
+        const step = 3 * ratio, barWidth = 1.6 * ratio;
+        const count = Math.max(1, Math.floor(width / step));
+        const played = Math.floor((position / duration) * count);
+        const key = `${width}x${height} ${played} ${waveVersion} ${loop?.start} ${loop?.end}`;
+        if (key === drawnStrip) return;
+        drawnStrip = key;
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+        }
+        const context = canvas.getContext("2d");
+        context.clearRect(0, 0, width, height);
+        const css = getComputedStyle(document.documentElement);
+        const ink = css.getPropertyValue("--ink").trim(), honey = css.getPropertyValue("--honey").trim();
+        if (loop?.end != null) {
+            const a = (loop.start / duration) * width, b = (loop.end / duration) * width;
+            context.globalAlpha = 0.22;
+            context.fillStyle = honey;
+            context.fillRect(a, 0, Math.max(1, b - a), height);
+        }
+        const levels = wave?.levels;
+        for (let k = 0; k < count; k++) {
+            let level = 0;
+            if (levels?.length) {
+                const a = Math.floor((k / count) * levels.length), b = Math.max(a + 1, Math.floor(((k + 1) / count) * levels.length));
+                for (let j = a; j < b && j < levels.length; j++) level = Math.max(level, levels[j]);
+            }
+            if (!level) continue;
+            const bar = Math.max(ratio, ((level - 1) / 254) * height);
+            context.fillStyle = k <= played ? honey : ink;
+            context.globalAlpha = k <= played ? 0.8 : 0.2;
+            context.fillRect(Math.round(k * step + (step - barWidth) / 2), (height - bar) / 2, barWidth, bar);
+        }
+        context.globalAlpha = 1;
     }
 
     /** The end of the loop whose tab was tapped: the buttons beside play move it while it is picked. */
@@ -1026,7 +1072,8 @@
         $("playhead").style.transform = `translateX(${head}px)`;
         $("playhead").style.visibility = head < -1 || head > box.width + 1 ? "hidden" : "";
         drawEnds(box.width, xOf);
-        drawZoomMap(from, span, duration);
+        if (force) drawnStrip = null;
+        drawZoomMap(from, span, duration, position, currentLoop());
         const ratio = window.devicePixelRatio || 1;
         const width = Math.round(box.width * ratio), height = Math.round(box.height * ratio);
         const step = 3 * ratio, barWidth = 2 * ratio;
@@ -1122,18 +1169,30 @@
         selection.style.left = `${a - box.left}px`;
         selection.style.width = `${Math.max(2, b - a)}px`;
     }
-    // Two fingers zoom the waveform in or out, and stop whatever the first finger was doing.
+    // Fingers on the waveform and on the strip of the whole song under a close-up, by touch identifier, or the mouse.
+    // A phone's fingers come from touch events, whose list of touches is always whole: Safari on iOS sends no pointer
+    // events for a finger that leaves the element that it touched (WebKit bug 220196). A finger that lifted out there
+    // stayed counted, and every later touch read as the second finger of a pinch.
+    // Two fingers zoom the waveform in or out, and stop whatever the first finger was doing. The second finger counts
+    // wherever it lands while the first is on the waveform, since a pinch rarely fits in the waveform's height.
     const fingers = new Map();
     let pinch = null;
     const fingerDistance = () => {
         const [a, b] = [...fingers.values()];
         return Math.max(24, Math.hypot(a.x - b.x, a.y - b.y));
     };
-    $("wave").addEventListener("pointerdown", (event) => {
-        if (!songDuration() || event.button > 0) return;
-        fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-        $("wave").setPointerCapture(event.pointerId);
-        event.preventDefault();
+    const onStrip = (target) => Boolean(target?.closest?.("#zoom-map"));
+    const onWave = (target) => Boolean(target?.closest?.("#wave, #zoom-map"));
+
+    /** The moment of the song under `clientX` on the strip of the whole song. */
+    function stripTimeAt(clientX) {
+        const box = $("zoom-map").getBoundingClientRect();
+        return songDuration() * Math.min(1, Math.max(0, (clientX - box.left) / Math.max(1, box.width)));
+    }
+
+    function fingerDown(id, x, y, target) {
+        if (!songDuration()) return false;
+        fingers.set(id, { x, y });
         if (fingers.size === 2) {
             if (gesture) {
                 clearTimeout(gesture.hold);
@@ -1145,12 +1204,20 @@
             released = null;
             zoomAnimation = null;
             pinch = { distance: fingerDistance(), zoom };
-            return drawWave(true);
+            drawWave(true);
+            return true;
         }
-        if (fingers.size > 2 || pinch || !state?.seekable) return;
-        const end = event.target.closest(".loop-end")?.dataset.end ?? null;
+        if (fingers.size > 2 || pinch || !state?.seekable) return true;
+        // The strip moves the song over its whole length, as the HUD's does, and the close-up follows.
+        if (onStrip(target)) {
+            gesture = { id, x, end: null, moved: false, mode: "strip", hold: 0 };
+            scrubTime = stripTimeAt(x);
+            tick();
+            return true;
+        }
+        const end = target?.closest?.(".loop-end")?.dataset.end ?? null;
         if (currentZoom() > 1.001) frozenFrom = viewRange().from;
-        gesture = { id: event.pointerId, x: event.clientX, end, moved: false, mode: end ? "end" : "tap", hold: 0 };
+        gesture = { id, x, end, moved: false, mode: end ? "end" : "tap", hold: 0 };
         if (!end) {
             const mine = gesture;
             mine.hold = setTimeout(() => {
@@ -1159,32 +1226,38 @@
                 showSelection(mine.x, mine.x);
             }, HOLD_TO_LOOP);
         }
-    });
-    $("wave").addEventListener("pointermove", (event) => {
-        const finger = fingers.get(event.pointerId);
-        if (finger) {
-            finger.x = event.clientX;
-            finger.y = event.clientY;
-        }
+        return true;
+    }
+
+    function fingerMove(id, x, y) {
+        const finger = fingers.get(id);
+        if (!finger) return;
+        finger.x = x;
+        finger.y = y;
         if (pinch) {
             if (fingers.size < 2) return;
             autoZoomed = false;
             return setZoom((pinch.zoom * fingerDistance()) / pinch.distance, false);
         }
-        if (!gesture || event.pointerId !== gesture.id) return;
-        if (!gesture.moved && Math.abs(event.clientX - gesture.x) < 6) return;
+        if (!gesture || id !== gesture.id) return;
+        if (gesture.mode === "strip") {
+            scrubTime = stripTimeAt(x);
+            return tick();
+        }
+        if (!gesture.moved && Math.abs(x - gesture.x) < 6) return;
         gesture.moved = true;
-        if (gesture.mode === "end") return moveEnd(gesture.end, timeAt(event.clientX), false);
+        if (gesture.mode === "end") return moveEnd(gesture.end, timeAt(x), false);
         if (gesture.mode === "tap") {
             clearTimeout(gesture.hold);
             gesture.mode = "scrub";
         }
-        if (gesture.mode === "select") return showSelection(gesture.x, event.clientX);
-        scrubTime = timeAt(event.clientX);
+        if (gesture.mode === "select") return showSelection(gesture.x, x);
+        scrubTime = timeAt(x);
         tick();
-    });
-    const endGesture = (event, cancelled) => {
-        fingers.delete(event.pointerId);
+    }
+
+    function fingerUp(id, x, cancelled) {
+        if (!fingers.delete(id)) return;
         if (pinch) {
             if (fingers.size < 2) {
                 pinch = null;
@@ -1193,8 +1266,8 @@
             }
             return;
         }
-        if (!gesture || event.pointerId !== gesture.id) return;
-        const { x, end, moved, mode, hold } = gesture;
+        if (!gesture || id !== gesture.id) return;
+        const { x: startX, end, moved, mode, hold } = gesture;
         gesture = null;
         clearTimeout(hold);
         if (frozenFrom != null) {
@@ -1205,12 +1278,12 @@
         $("wave-selection").hidden = true;
         if (cancelled) return drawWave(true);
         if (mode === "end") {
-            if (moved) return moveEnd(end, timeAt(event.clientX), true);
+            if (moved) return moveEnd(end, timeAt(x), true);
             pickedEnd = pickedEnd === end ? null : end;
             return drawTransport();
         }
         if (mode === "select") {
-            const a = timeAt(Math.min(x, event.clientX)), b = timeAt(Math.max(x, event.clientX));
+            const a = timeAt(Math.min(startX, x)), b = timeAt(Math.max(startX, x));
             if (b - a < 0.25) return;
             pickedEnd = null;
             changeLoop({ start: a, end: b });
@@ -1219,15 +1292,83 @@
             return;
         }
         pickedEnd = null;
-        const seconds = timeAt(event.clientX);
+        const seconds = mode === "strip" ? stripTimeAt(x) : timeAt(x);
         state.position = seconds;
         stateAt = performance.now();
         drawTransport();
         transport({ action: "seek", seconds });
-    };
-    $("wave").addEventListener("pointerup", (event) => endGesture(event, false));
-    $("zoom-map").onclick = zoomOut;
-    $("wave").addEventListener("pointercancel", (event) => endGesture(event, true));
+    }
+
+    // A finger that the screen no longer has lifted where the page heard nothing of it.
+    function forgetLifted(touches) {
+        const down = new Set([...touches].map((touch) => touch.identifier));
+        for (const [id, finger] of [...fingers]) if (id !== "mouse" && !down.has(id)) fingerUp(id, finger.x, true);
+    }
+    // Pointer events that never reported a lift, which settles whether WebKit bug 220196 is what stopped the
+    // waveform on a real iPhone. Remove once that is known.
+    const touchPointers = new Set();
+    $("wave").addEventListener("pointerdown", (event) => { if (event.pointerType === "touch") touchPointers.add(event.pointerId); });
+    for (const type of ["pointerup", "pointercancel"]) document.addEventListener(type, (event) => touchPointers.delete(event.pointerId), true);
+    function checkPointers() {
+        setTimeout(() => {
+            if (!touchPointers.size || fingers.size) return;
+            report(`waveform: pointer events lost the lift of ${touchPointers.size} finger${touchPointers.size === 1 ? "" : "s"}`);
+            touchPointers.clear();
+        }, 500);
+    }
+
+    function touchStart(event) {
+        forgetLifted(event.touches);
+        let used = false;
+        for (const touch of event.changedTouches) {
+            if (fingers.has(touch.identifier) || (!onWave(touch.target) && fingers.size !== 1)) continue;
+            used = fingerDown(touch.identifier, touch.clientX, touch.clientY, touch.target) || used;
+        }
+        if (used) event.preventDefault();
+        follow(fingers.size > 0);
+    }
+    function touchMove(event) {
+        let ours = false;
+        for (const touch of event.changedTouches) {
+            if (!fingers.has(touch.identifier)) continue;
+            ours = true;
+            fingerMove(touch.identifier, touch.clientX, touch.clientY);
+        }
+        if (ours) event.preventDefault();
+    }
+    function touchEnd(event) {
+        for (const touch of event.changedTouches) fingerUp(touch.identifier, touch.clientX, event.type === "touchcancel");
+        forgetLifted(event.touches);
+        if (!fingers.size) {
+            follow(false);
+            if (!event.touches.length) checkPointers();
+        }
+    }
+    // The whole page's touches are followed only while a finger is on the waveform, so that scrolling elsewhere never
+    // waits for the page.
+    let following = false;
+    function follow(on) {
+        if (on === following) return;
+        following = on;
+        const method = on ? "addEventListener" : "removeEventListener";
+        document[method]("touchstart", touchStart, { capture: true, passive: false });
+        document[method]("touchmove", touchMove, { capture: true, passive: false });
+        document[method]("touchend", touchEnd, { capture: true });
+        document[method]("touchcancel", touchEnd, { capture: true });
+    }
+    for (const element of [$("wave"), $("zoom-map")]) {
+        element.addEventListener("touchstart", touchStart, { passive: false });
+        // A mouse or a pen: one pointer, held by the element that it pressed.
+        element.addEventListener("pointerdown", (event) => {
+            if (event.pointerType === "touch" || event.button > 0) return;
+            if (!fingerDown("mouse", event.clientX, event.clientY, event.target)) return;
+            element.setPointerCapture(event.pointerId);
+            event.preventDefault();
+        });
+        element.addEventListener("pointermove", (event) => { if (event.pointerType !== "touch") fingerMove("mouse", event.clientX, event.clientY); });
+        element.addEventListener("pointerup", (event) => { if (event.pointerType !== "touch") fingerUp("mouse", event.clientX, false); });
+        element.addEventListener("pointercancel", (event) => { if (event.pointerType !== "touch") fingerUp("mouse", event.clientX, true); });
+    }
     addEventListener("resize", () => drawWave(true));
 
     /** A long press on the loop button loops the whole song, which repeats it. */
