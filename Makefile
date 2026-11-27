@@ -103,9 +103,9 @@ $(SPARKLE):
 # Sentry receives the crash, hang and error reports. The release archive holds the framework for every Apple platform:
 # only the macOS one is kept, with the dSYM that names the frames inside it, and its code for Intel Macs is removed
 # because Muskey runs only on Apple silicon. It is unpacked into a temporary folder first, so a download that stops
-# halfway never leaves a folder that make takes as finished.
-SENTRY_VERSION := 9.32.0
-SENTRY_SHA256 := 4048a28ad13ee6dce70bc601c7b983280c8eb8f078b3d367f8b9f9bd25757326
+# halfway never leaves a folder that make takes as finished. The folder is dated when it is unpacked, so a new version rebuilds the app.
+SENTRY_VERSION := 9.36.0
+SENTRY_SHA256 := 24a8b351af25292a6c4cedb47eb13969409124d610d346b0f17b26102b2e0279
 SENTRY := $(VENDOR)/Sentry-$(SENTRY_VERSION)
 SENTRY_FRAMEWORK := $(BUNDLE)/Contents/Frameworks/Sentry.framework
 SENTRY_SLICE := Sentry-Dynamic.xcframework/macos-arm64_x86_64
@@ -118,7 +118,7 @@ $(SENTRY):
 	cd $@.tmp && unzip -q sentry.zip '$(SENTRY_SLICE)/*'
 	lipo $@.tmp/$(SENTRY_SLICE)/Sentry.framework/Versions/A/Sentry -thin arm64 -output $@.tmp/Sentry
 	mv $@.tmp/Sentry $@.tmp/$(SENTRY_SLICE)/Sentry.framework/Versions/A/Sentry
-	mv $@.tmp/$(SENTRY_SLICE) $@ && rm -rf $@.tmp
+	mv $@.tmp/$(SENTRY_SLICE) $@ && rm -rf $@.tmp && touch $@
 
 # Reads the song that is playing through the private MediaRemote framework. mediaremoted answers only code signed
 # with a com.apple. identifier, so the helper is signed as one.
@@ -155,7 +155,7 @@ $(BUILD)/obj/Assets.car: muskey.icon/icon.json muskey.icon/Assets/*
 		--minimum-deployment-target $(MACOS) --output-partial-info-plist $(@D)/icon.plist >/dev/null
 
 $(BUNDLE): Sources/*.swift Shared/*.swift Sources/*.h Web/* Info.plist Muskey.entitlements $(LAME_LIB) $(BUILD)/obj/ekshim.o $(BUILD)/obj/pitch.o $(BUILD)/obj/rubberband.o \
-		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player $(BUILD)/obj/muskey Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) | $(SPARKLE) $(SENTRY)
+		$(BUILD)/obj/$(HELPER) $(BUILD)/obj/player $(BUILD)/obj/muskey Player/Info.plist $(BUILD)/obj/Assets.car $(WHISPER_LIB) $(SPARKLE) $(SENTRY)
 	rm -rf $@ $(APP_DSYM)
 	mkdir -p $@/Contents/MacOS $@/Contents/Helpers $@/Contents/Frameworks $@/Contents/Resources
 	# With -g, swiftc writes a dSYM next to the binary, which Sentry needs to name the functions in a crash or a hang.
