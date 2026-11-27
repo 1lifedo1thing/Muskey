@@ -169,15 +169,21 @@
 
     async function api(path, body) {
         let response;
+        // A Mac that sleeps answers nothing, and the browser would wait a minute before it gives up.
+        const gaveUp = new AbortController();
+        const timer = setTimeout(() => gaveUp.abort(), 10000);
         try {
-            response = await fetch(path, body === undefined ? { cache: "no-store" } : {
+            response = await fetch(path, body === undefined ? { cache: "no-store", signal: gaveUp.signal } : {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(body),
+                signal: gaveUp.signal,
             });
         } catch (error) {
-            if (!path.startsWith("/api/state")) report(`${path} unreachable: ${error.message}`);
+            if (!path.startsWith("/api/state") && !offlineSince) report(`${path} unreachable: ${error.message}`);
             throw error;
+        } finally {
+            clearTimeout(timer);
         }
         if (!response.ok) {
             const text = (await response.text()) || response.statusText;
@@ -326,11 +332,20 @@
         }
     }
 
+    /** When the Mac stopped answering: it sleeps, Muskey quit, or the network is gone. The song view then stops its
+     * playhead and says so, and everything comes back with the next answer. */
+    let offlineSince = 0;
+    let missed = 0;
+    /** The newest request for the state. An answer to an older one is dropped, or it would move the playhead back. */
+    let stateAsked = 0;
+
     async function refreshState() {
         const asked = performance.now();
+        const mine = ++stateAsked;
         try {
             // The song view asks with view=song, which loads the stems model on the Mac for a tap on an instrument.
             const next = await api(open ? "/api/state?view=song" : "/api/state");
+            if (mine !== stateAsked) return;
             // An answer to a request sent before the last play, pause or seek doesn't know about it yet.
             if (asked < transportAt && state && next.title === state.title) {
                 next.playing = state.playing;
@@ -349,8 +364,20 @@
             stateAt = performance.now();
             watchRewinds();
         } catch {
+            // Two answers in a row have to be missing, since one can be lost on a weak network.
+            if (++missed < 2 || offlineSince) return;
+            offlineSince = performance.now();
             $("mac").classList.add("offline");
+            document.documentElement.classList.add("offline");
+            $("song-error").textContent = "The Mac doesn't answer";
+            $("song-error").hidden = false;
             return;
+        }
+        missed = 0;
+        if (offlineSince) {
+            offlineSince = 0;
+            document.documentElement.classList.remove("offline");
+            $("song-error").hidden = true;
         }
         $("mac").hidden = false;
         $("mac").classList.remove("offline");
@@ -1239,8 +1266,24 @@
     function macPosition() {
         if (scrubTime != null) return scrubTime;
         if (state?.position == null) return null;
-        const since = state.playing ? ((performance.now() - stateAt) / 1000) * (state.speed || 1) : 0;
-        return Math.min(state.position + since, state.duration ?? Infinity);
+        // A Mac that stopped answering isn't known to play on.
+        const until = offlineSince ? Math.max(stateAt, offlineSince) : performance.now();
+        const since = state.playing ? ((until - stateAt) / 1000) * (state.speed || 1) : 0;
+        let position = state.position + since;
+        // The Mac goes back to the start of a loop at its end, which the next state tells up to 1.5 seconds later.
+        const loop = currentLoop();
+        if (loop && loop.end != null && loop.end > loop.start && state.position <= loop.end + 0.05 && position > loop.end) {
+            position = loop.start + ((position - loop.start) % (loop.end - loop.start));
+        }
+        return Math.min(position, state.duration ?? Infinity);
+    }
+
+    /** The moment that is heard: the phone plays the Mac's sound a little later than the Mac makes it. The waveform,
+     * the clocks and the loop button go by it, as the notes and the lock screen do. */
+    function heardPosition() {
+        const position = macPosition();
+        if (position == null || scrubTime != null || output !== "phone" || !state?.playing) return position;
+        return Math.max(0, position - player.lag() * (state.speed || 1));
     }
 
     function drawTransport() {
@@ -1402,7 +1445,7 @@
             const loop = currentLoop();
             from = loop?.end != null && loop.end - loop.start <= span * 0.9
                 ? (loop.start + loop.end) / 2 - span / 2
-                : (macPosition() ?? 0) - span / 2;
+                : (heardPosition() ?? 0) - span / 2;
             if (released) {
                 const t = (performance.now() - released.at) / 350;
                 if (t >= 1) released = null;
@@ -1516,7 +1559,7 @@
     /** Every frame while the song view shows: the playhead, the clocks and the bars that changed colour. */
     function tick() {
         if (!state) return;
-        const position = macPosition();
+        const position = heardPosition();
         const duration = songDuration();
         if (position != null && duration > 0) {
             $("mac-elapsed").textContent = clock(position);
@@ -1544,7 +1587,7 @@
         if (!box.width || !duration) return;
         const { from, span } = viewRange();
         const xOf = (time) => ((time - from) / span) * box.width;
-        const position = macPosition() ?? 0;
+        const position = heardPosition() ?? 0;
         const head = xOf(Math.min(position, duration));
         $("playhead").style.transform = `translateX(${head}px)`;
         $("playhead").style.visibility = head < -1 || head > box.width + 1 ? "hidden" : "";
@@ -1893,7 +1936,7 @@
     /** The loop button works as R does on the Mac: it starts the loop where the song is, ends it, then clears it. */
     function pressLoop() {
         const loop = currentLoop();
-        const position = macPosition() ?? 0;
+        const position = heardPosition() ?? 0;
         if (!loop) changeLoop({ start: position, end: null });
         else if (loop.end == null) {
             const ended = { ...loop, end: Math.max(position, loop.start + 0.25) };
@@ -1904,7 +1947,9 @@
             changeLoop(null);
             if (autoZoomed) zoomOut();
         }
-        api("/api/loop", { action: "press" }).catch((error) => failIcon($("loop-button"), error));
+        // The Mac is ahead of what the phone plays, so it is told by how much the press is behind it.
+        const behind = output === "phone" && state?.playing ? player.lag() * (state.speed || 1) : 0;
+        api("/api/loop", { action: "press", behind }).catch((error) => failIcon($("loop-button"), error));
     }
 
     /** The buttons beside play: 5 seconds back or forward, or while a tab is picked, its end by 20 ms, again and again
@@ -2092,12 +2137,16 @@
         }, 1000);
 
         async function run(mine) {
+            // Failures in a row, which space the tries out up to 5 seconds while the Mac sleeps or is away.
+            let failures = 0;
             while (mine === generation) {
-                abort = new AbortController();
+                const request = new AbortController();
+                abort = request;
                 try {
                     const asked = !aacFailed && streamChoice() === "compressed" && (await decodesAAC);
-                    const response = await fetch(asked ? "/api/stream?format=aac" : "/api/stream", { cache: "no-store", signal: abort.signal });
+                    const response = await fetch(asked ? "/api/stream?format=aac" : "/api/stream", { cache: "no-store", signal: request.signal });
                     if (!response.ok) throw new Error(`the stream answered ${response.status}`);
+                    failures = 0;
                     // The Mac sends PCM when it can't encode AAC at its output's rate.
                     const aac = (response.headers.get("Content-Type") || "").startsWith("audio/aac");
                     const rate = Number(response.headers.get("X-Sample-Rate")) || 48000;
@@ -2125,10 +2174,12 @@
                     }
                 } catch (error) {
                     if (mine !== generation) return;
-                    report(`stream: ${error.message}`);
+                    if (failures++ === 0) report(`stream: ${error.message}`);
                 }
+                // A request that the page stopped reading, after a failed decoder, would still count as a listener.
+                request.abort();
                 // The Mac closes the stream when its output changes rate, and the page connects again at once.
-                if (mine === generation) await new Promise((resolve) => setTimeout(resolve, 300));
+                if (mine === generation) await new Promise((resolve) => setTimeout(resolve, Math.min(5000, 300 * 2 ** Math.min(failures, 5))));
             }
         }
 
@@ -2213,6 +2264,8 @@
             queue(buffer, loudest);
         }
 
+        /** Audio was left out and the sound is faded out up to `playAt`. */
+        let cut = false;
         function queue(buffer, loudest) {
             receivedSeconds += buffer.duration;
             peak = Math.max(peak, loudest);
@@ -2221,8 +2274,29 @@
             // Too close to the speaker after a gap: start again a quarter second ahead. Too far ahead after a burst, like
             // the first frames out of the AAC decoder or a stall on Wi-Fi: leave this part out, so that the phone stays
             // close to the Mac. Moving playAt back instead would play two parts over each other.
-            if (playAt < now + 0.03) playAt = now + 0.25;
-            else if (playAt > now + 0.45) return;
+            if (playAt < now + 0.03) {
+                playAt = now + 0.25;
+                if (cut) {
+                    // The fade out before the part left out has played, and nothing after it faded back in.
+                    cut = false;
+                    gain.gain.cancelScheduledValues(now);
+                    gain.gain.setValueAtTime(testMute ? 0 : 1, now);
+                }
+            } else if (playAt > now + 0.45) {
+                // The sound fades out over the last 8 ms before the part left out and back in after it, since a
+                // waveform cut in the middle clicks.
+                if (!cut && !testMute) {
+                    cut = true;
+                    gain.gain.setValueAtTime(1, playAt - 0.008);
+                    gain.gain.linearRampToValueAtTime(0, playAt);
+                }
+                return;
+            }
+            if (cut) {
+                cut = false;
+                gain.gain.setValueAtTime(0, playAt);
+                gain.gain.linearRampToValueAtTime(1, playAt + 0.008);
+            }
             const source = context.createBufferSource();
             source.buffer = buffer;
             source.connect(gain);
@@ -2255,9 +2329,20 @@
                 elementDelay = (performance.now() - elementAt) / 1000 - started.currentTime;
                 report(`stream: the audio element plays, ${elementDelay.toFixed(1)} s after it asked`, "info");
             }, { once: true });
-            started.addEventListener("error", () => {
-                if (mine === generation) report(`stream: the audio element failed (${started.error?.code ?? "unknown"})`);
-            });
+            // The Mac ends the stream when its output changes rate, and a network that dropped ends it with an error. An
+            // element starts neither again, so the page gives it the stream once more.
+            const again = (why) => {
+                if (mine !== generation || element !== started) return;
+                report(`stream: the audio element ${why}, connecting again`, "info");
+                setTimeout(() => {
+                    if (mine !== generation || element !== started) return;
+                    started.src = `/api/stream?format=aac&t=${Date.now()}`;
+                    elementAt = performance.now();
+                    started.play().catch(() => {});
+                }, 1000);
+            };
+            started.addEventListener("error", () => again(`failed (${started.error?.code ?? "unknown"})`));
+            started.addEventListener("ended", () => again("reached the end of the stream"));
             return started.play();
         }
 
@@ -2305,6 +2390,7 @@
                 }
                 sources.clear();
                 playAt = 0;
+                cut = false;
             },
             release() {
                 if (!held) return;
@@ -2341,6 +2427,8 @@
             });
         } else {
             player.stop();
+            // The Mac plays out loud again at once, instead of waiting to see whether the stream comes back.
+            api("/api/leave", {}).catch(() => {});
         }
         drawOutput();
         setTimeout(refreshState, 400);
