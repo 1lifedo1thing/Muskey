@@ -2112,7 +2112,8 @@
         setInterval(() => {
             if (!context || abort === null) return;
             const db = peak > 0 ? Math.round(20 * Math.log10(peak)) : -Infinity;
-            report(`stream: ${receivedSeconds.toFixed(1)} s received in 10 s as ${format} (${Math.round(receivedBytes / 1000)} kB), peak ${db} dB, ${Math.round((playAt - context.currentTime) * 1000)} ms ahead`, "debug");
+            report(`stream: ${receivedSeconds.toFixed(1)} s received in 10 s as ${format} (${Math.round(receivedBytes / 1000)} kB), peak ${db} dB, ${Math.round((playAt - context.currentTime) * 1000)} ms ahead${leftOut ? `, ${leftOut.toFixed(2)} s left out` : ""}`, "debug");
+            leftOut = 0;
             receivedSeconds = 0;
             receivedBytes = 0;
             peak = 0;
@@ -2300,6 +2301,8 @@
 
         /** Audio was left out and the sound is faded out up to `playAt`. */
         let cut = false;
+        /** Seconds of audio left out since the last report. */
+        let leftOut = 0;
         function queue(buffer, loudest) {
             receivedSeconds += buffer.duration;
             peak = Math.max(peak, loudest);
@@ -2316,20 +2319,26 @@
                     gain.gain.cancelScheduledValues(now);
                     gain.gain.setValueAtTime(testMute ? 0 : 1, now);
                 }
-            } else if (playAt > now + 0.45) {
+            } else if (playAt > now + (cut ? 0.28 : 0.45)) {
                 // The sound fades out over the last 8 ms before the part left out and back in after it, since a
-                // waveform cut in the middle clicks.
-                if (!cut && !testMute) {
+                // waveform cut in the middle clicks. Once audio is left out, it is left out until the phone is back
+                // near a quarter second: stopping right under the limit would cut again at every late packet.
+                if (!cut) {
                     cut = true;
-                    gain.gain.setValueAtTime(1, playAt - 0.008);
-                    gain.gain.linearRampToValueAtTime(0, playAt);
+                    if (!testMute) {
+                        gain.gain.setValueAtTime(1, playAt - 0.008);
+                        gain.gain.linearRampToValueAtTime(0, playAt);
+                    }
                 }
+                leftOut += buffer.duration;
                 return;
             }
             if (cut) {
                 cut = false;
-                gain.gain.setValueAtTime(0, playAt);
-                gain.gain.linearRampToValueAtTime(1, playAt + 0.008);
+                if (!testMute) {
+                    gain.gain.setValueAtTime(0, playAt);
+                    gain.gain.linearRampToValueAtTime(1, playAt + 0.008);
+                }
             }
             const source = context.createBufferSource();
             source.buffer = buffer;
