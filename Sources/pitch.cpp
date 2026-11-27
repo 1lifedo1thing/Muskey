@@ -127,14 +127,25 @@ struct Limiter {
 };
 
 // One Rubber Band stretcher and the shifted audio it handed back, waiting to be played.
+// Off in a self-test that compares the output with and without it.
+static std::atomic<bool> skipSilence{true};
+
 struct Voice {
     RubberBandStretcher stretcher;
     Fifo output;
     float semitones = 0;
     uint64_t start = 0; // frames fed to the voices before this one started
     bool priming = true;
+    // Frames of silence fed in a row. After two seconds of it, far longer than the stretcher holds audio, the
+    // stretcher has nothing but silence in it and makes silence from silence, at its full cost: a paused song with a
+    // key set kept a core busy. From then on the silence goes to the output as it is, frame for frame, which is what
+    // the stretcher hands out at a time ratio of one. When the song sounds again the voice starts over at that frame,
+    // the way a new voice does, so its place in the song is known exactly: a stretcher that took up where it rested
+    // came out 14 ms apart from one that worked through the silence.
+    size_t quiet = 0, idleAfter;
+    bool resting = false;
 
-    explicit Voice(double rate) : stretcher(size_t(rate), 2, options), output(size_t(rate) * 2) {
+    explicit Voice(double rate) : stretcher(size_t(rate), 2, options), output(size_t(rate) * 2), idleAfter(size_t(rate) * 2) {
         stretcher.setMaxProcessSize(maxChunk);
     }
 
@@ -150,10 +161,24 @@ struct Voice {
         output.written = output.read = 0;
         start = at;
         priming = true;
+        quiet = 0;
+        resting = false;
     }
 
     // `scratch` holds one chunk per channel and is overwritten.
-    void feed(const float *const *input, size_t n, float *const *scratch) {
+    // `at` is the frame of the shared input that `input` starts at.
+    void feed(const float *const *input, size_t n, float *const *scratch, uint64_t at) {
+        bool silent = true;
+        for (size_t i = 0; i < n && silent; i++) silent = input[0][i] == 0 && input[1][i] == 0;
+        quiet = silent ? quiet + n : 0;
+        if (quiet > idleAfter && skipSilence.load(std::memory_order_relaxed)) {
+            resting = true;
+            std::fill(scratch[0], scratch[0] + n, 0.0f);
+            std::fill(scratch[1], scratch[1] + n, 0.0f);
+            output.write(scratch[0], scratch[1], n, 1);
+            return;
+        }
+        if (resting) restart(semitones, at);
         stretcher.process(input, n, false);
         // Each retrieve takes at most a chunk, and `available` shrinks with every one, so this ends; the bound is a
         // guard against a stretcher that keeps reporting audio it doesn't hand over.
@@ -465,6 +490,8 @@ struct PSStream {
     std::vector<float> frames; // interleaved left and right
     size_t capacity;
     std::atomic<uint64_t> written{0};
+    // A phone listens. Without one the audio thread leaves the ring alone.
+    std::atomic<bool> wanted{false};
     uint64_t read = 0;
 
     explicit PSStream(size_t capacity) : frames(capacity * 2), capacity(capacity) {}
@@ -484,6 +511,10 @@ struct PSStream {
 PSStream *ps_stream_create(size_t capacityFrames) { return new PSStream(std::max<size_t>(capacityFrames, 4096)); }
 
 uint64_t ps_stream_written(PSStream *stream) { return stream->written.load(std::memory_order_acquire); }
+
+void ps_stream_want(PSStream *stream, int wanted) { stream->wanted.store(wanted != 0, std::memory_order_release); }
+
+void ps_skip_silence(int on) { skipSilence.store(on != 0, std::memory_order_relaxed); }
 
 void ps_stream_skip(PSStream *stream) { stream->read = stream->written.load(std::memory_order_acquire); }
 
@@ -1392,9 +1423,9 @@ struct PSShifter {
 
         // Every frame goes into the dry line, whether a voice plays or not, so that it can take over from any voice.
         dry.write(fed, inLeft.data(), inRight.data(), n);
-        if (!bypass) now.feed(ins, n, scratch);
+        if (!bypass) now.feed(ins, n, scratch, fed);
         bool nextRuns = phase == Phase::warming || (phase == Phase::fading && !toDry);
-        if (nextRuns) next.feed(ins, n, scratch);
+        if (nextRuns) next.feed(ins, n, scratch, fed);
         fed += n;
         if (phase == Phase::warming) {
             warmed += n;
@@ -1786,7 +1817,9 @@ void ps_process(PSShifter *s, const AudioBufferList *input, AudioBufferList *out
         s->limiter.process(s->outLeft.data(), s->outRight.data(), n);
         s->cutPauseTail(n);
         if (!s->recording.empty()) s->record(n);
-        if (PSStream *stream = s->stream.load(std::memory_order_acquire)) stream->write(s->outLeft.data(), s->outRight.data(), n);
+        if (PSStream *stream = s->stream.load(std::memory_order_acquire); stream && stream->wanted.load(std::memory_order_relaxed)) {
+            stream->write(s->outLeft.data(), s->outRight.data(), n);
+        }
         if (s->speakersSilent.load(std::memory_order_relaxed)) {
             std::fill(s->outLeft.begin(), s->outLeft.begin() + n, 0.0f);
             std::fill(s->outRight.begin(), s->outRight.begin() + n, 0.0f);

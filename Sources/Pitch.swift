@@ -1039,6 +1039,26 @@ enum PitchSelfTest {
                String(format: "slow pause, other sound   level %.2f at %.0f Hz (want 1000), backlog grew %.0f frames, song at %.1f Hz after (want %.1f)",
                       otherLevel, otherHz, other.heldWritten, songHz, songWant))
 
+        // A song paused for 5 seconds with a key set: the stretcher rests after 2 seconds of silence, and the song after
+        // the pause comes out as it does from a stretcher that never rested.
+        let rested = render(semitones: 2, chunk: 512, seconds: 9, gap: 1 ... 6).out
+        ps_skip_silence(0)
+        let worked = render(semitones: 2, chunk: 512, seconds: 9, gap: 1 ... 6).out
+        ps_skip_silence(1)
+        // The two are compared at the offset where they agree best, which is how far apart in time they play.
+        let from = Int(rate * 7), count = Int(rate * 0.5)
+        var best = (lag: 0, apart: Float(10))
+        for lag in -3000 ... 3000 {
+            var apart: Float = 0
+            for i in stride(from: 0, to: count, by: 7) { apart = max(apart, abs(rested[from + i] - worked[from + i + lag])) }
+            if apart < best.apart { best = (lag, apart) }
+        }
+        let restedHz = pitch(rested, from: 7, to: 8)
+        let quietBefore = rms(rested[Int(rate * 4) ..< Int(rate * 5.9)])
+        report(best.apart < 0.01 && abs(best.lag) < Int(rate * 0.03) && abs(restedHz / hz(2) - 1) < 0.01 && quietBefore < 0.0001,
+               String(format: "silence skipped  %.1f Hz after the pause (want %.1f), %d frames and %.4f from the stretcher that worked through it",
+                      restedHz, hz(2), best.lag, best.apart))
+
         CachedStemsTest.run(report)
 
         return failures == 0 ? 0 : 1
@@ -1178,7 +1198,8 @@ enum PitchSelfTest {
     /// Feeds the shifter the way the IOProc does, `chunk` frames of interleaved stereo in and out per call: half a
     /// second of silence, then the sine (or tone bursts every 250 ms). Each change sets another shift at that
     /// second, between two calls, as the app does from the main thread.
-    private static func render(semitones: Int, chunk: Int, seconds: Double = 4, amplitude: Double = 0.5, changes: [(at: Double, to: Int)] = [], bursts: Bool = false) -> (out: [Float], underruns: UInt64) {
+    private static func render(semitones: Int, chunk: Int, seconds: Double = 4, amplitude: Double = 0.5, changes: [(at: Double, to: Int)] = [], bursts: Bool = false,
+                               gap: ClosedRange<Double>? = nil) -> (out: [Float], underruns: UInt64) {
         let shifter = ps_create(rate, 0, 0)!
         defer { ps_destroy(shifter) }
         ps_set_semitones(shifter, Float(semitones))
@@ -1203,6 +1224,7 @@ enum PitchSelfTest {
                 let n = frame + i
                 var sample = n < onset ? 0 : amplitude * sin(2 * .pi * 440 * Double(n) / rate)
                 if bursts { sample *= envelope(Double(n - onset) / rate) }
+                if let gap, gap.contains(Double(n) / rate) { sample = 0 }
                 inData[i * 2] = Float(sample)
                 inData[i * 2 + 1] = Float(sample)
             }

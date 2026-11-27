@@ -36,6 +36,7 @@ final class WebStream: @unchecked Sendable {
             endWork?.cancel()
             endWork = nil
             if timer == nil {
+                ps_stream_want(ring, 1)
                 ps_stream_skip(ring)
                 lastWritten = ps_stream_written(ring)
                 lastFrames = .distantPast
@@ -98,6 +99,7 @@ final class WebStream: @unchecked Sendable {
             guard sinks.isEmpty else { return }
             timer?.cancel()
             timer = nil
+            ps_stream_want(ring, 0)
             DispatchQueue.main.async { [onListening] in onListening(false) }
         }
         endWork = work

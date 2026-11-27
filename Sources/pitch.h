@@ -47,6 +47,10 @@ void ps_stream_attach(PSShifter *shifter, PSStream *stream);
 size_t ps_stream_read(PSStream *stream, int16_t *out, size_t maxFrames);
 // Frames written so far, for telling a running output from a stopped one.
 uint64_t ps_stream_written(PSStream *stream);
+// 1 while a phone listens: the audio thread copies its output into the ring only then.
+void ps_stream_want(PSStream *stream, int wanted);
+// 0 runs the stretcher on silence too, for the self-test that compares both ways.
+void ps_skip_silence(int on);
 // The reader skips what is in the ring, so the first listener starts with the newest frames.
 void ps_stream_skip(PSStream *stream);
 
