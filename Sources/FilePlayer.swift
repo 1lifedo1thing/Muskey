@@ -103,6 +103,8 @@ final class FilePlayer {
     private(set) var current: Song?
     /// The song sent to Muskey Player, until it plays it.
     private var starting: Song?
+    /// The song of the queue that Muskey Player plays, while `currentID` may already name one that still opens.
+    private var playingID: UUID?
 
     /// The rate that Muskey Player plays its songs at, from 0.5 to 1.5, faster or slower with the pitch.
     private(set) var speed = 1.0
@@ -181,6 +183,12 @@ final class FilePlayer {
         if let currentID, ids.contains(currentID) {
             resume = place - before
             self.currentID = nil
+            // A removed song that still downloads would start playing when it is here.
+            if download != nil {
+                download?.cancel()
+                download = nil
+                show(nil)
+            }
         } else if currentID == nil {
             resume = max(0, resume - before)
         }
@@ -351,6 +359,8 @@ final class FilePlayer {
     /// Cancel, or the ✕ of a failure: whatever step runs stops, and the song that plays goes on.
     func dismiss() {
         if lastActivity != nil { log.info("opening cancelled") }
+        // The queue marks the song that plays again, not the one whose opening was cancelled.
+        if download != nil || reading, let playingID, queue.contains(where: { $0.id == playingID }) { currentID = playingID }
         download?.cancel()
         download = nil
         install?.cancel()
@@ -490,6 +500,11 @@ final class FilePlayer {
                 self.process = nil
                 self.input = nil
                 self.hasSong = false
+                // A song that it was reading never plays.
+                if self.reading {
+                    self.reading = false
+                    self.show(nil)
+                }
             }
         }
         do {
@@ -525,6 +540,7 @@ final class FilePlayer {
             if replaced, resolved(current?.path) == resolved(starting?.path) { log.info("Muskey Player plays the same file again from its start") }
             current = starting
             hasSong = true
+            playingID = currentID
             onPlaying()
             // A song of a folder that was opened is kept in Recents as its folder.
             if let opening { onStarted(queue.first { $0.id == currentID }?.folder ?? opening, starting) }
@@ -537,7 +553,14 @@ final class FilePlayer {
             reading = false
             log.error("Muskey Player can't play the song: \(line.dropFirst(7), privacy: .public)")
             current = nil
+            // A link whose download was no song, like the login page of a site saved as an MP3, is downloaded again
+            // at the next try instead of failing from the cache every time.
+            if let failed = starting?.path, failed.hasPrefix(cache.folder.path + "/") { cache.forget(file: failed) }
             show(.unplayable(name: opening.map { $0.isFileURL ? $0.lastPathComponent : SongName.link($0) ?? $0.host() ?? $0.absoluteString } ?? "Song"))
+        } else if line == "ended", download != nil {
+            // The song that was asked for is still downloading, and plays when it is here. Counting on from it would
+            // skip it, and cancel its download.
+            log.info("the song ended while the next one downloads")
         } else if line == "ended", currentID == nil ? resume < queue.count : index + 1 < queue.count {
             skip(1)
         } else if line.hasPrefix("moved "), let seconds = Double(line.dropFirst(6)) {
@@ -713,7 +736,9 @@ final class LinkDownload: NSObject, URLSessionDownloadDelegate {
 
     func urlSession(_: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200 else { return finish(nil) }
+        // A site that answers a song's link with a page (a login, an expired link) sends text, which is no song.
+        let page = downloadTask.response?.mimeType?.hasPrefix("text/") ?? false
+        guard status == 200, !page else { return finish(nil) }
         let target = folder.appending(path: "link-\(Self.key(url)).\(url.pathExtension.lowercased())")
         try? FileManager.default.removeItem(at: target)
         guard (try? FileManager.default.moveItem(at: location, to: target)) != nil else { return finish(nil) }
@@ -1029,6 +1054,16 @@ final class LinkCache {
         .sorted { $0.2 > $1.2 }
         .prefix(limit)
         .map { (link: $0.0, song: $0.1) }
+    }
+
+    /// Deletes a downloaded file that turned out to be no song, and forgets its link.
+    func forget(file path: String) {
+        Self.queue.async { [self] in
+            var songs = load()
+            songs = songs.filter { $0.value.path != path }
+            if let data = try? JSONEncoder().encode(songs) { try? data.write(to: index, options: .atomic) }
+            try? FileManager.default.removeItem(atPath: path)
+        }
     }
 
     /// Adds the song to the index, after deleting the oldest songs past the limit, which lists the whole folder.
