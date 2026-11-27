@@ -267,6 +267,13 @@ struct Slower {
     float holdGain = 1;
     bool wasPaused = false, awaitingSound = false;
     size_t awaitingFrames = 0;
+    // Sound that the tap hears during a pause isn't the song's: a call, a game, a video in another app. It plays as
+    // it is once it has lasted a second and a half, which is longer than a player takes to report that it plays
+    // again, and it stays out of the backlog, where it would come back slowed inside the song.
+    size_t pauseLoud = 0, pauseQuiet = 0;
+    uint64_t loudFrom = 0;
+    bool passing = false;
+    float passGain = 0;
     std::vector<float> left, right;
 
     explicit Slower(double rate) : rate(rate), kernel(size_t(phases + 1) * taps), left(maxFrames), right(maxFrames) {
@@ -333,8 +340,26 @@ struct Slower {
         wasPaused = paused;
         if (!quiet || awaitingFrames > size_t(rate)) awaitingSound = false;
         if (awaitingSound) awaitingFrames += frames;
+        if (paused) {
+            if (!quiet) {
+                if (pauseLoud == 0) loudFrom = b->written.load(std::memory_order_relaxed);
+                pauseLoud += frames;
+                pauseQuiet = 0;
+            } else if ((pauseQuiet += frames) > size_t(rate * 0.5)) {
+                pauseLoud = 0;
+                passing = false;
+            }
+            if (!passing && pauseLoud > size_t(rate * 1.5)) {
+                passing = true;
+                // What was written of it so far is taken back. The reader is held at the pause, before it.
+                if (loudFrom > at || !on) b->written.store(loudFrom, std::memory_order_release);
+            }
+        } else {
+            pauseLoud = pauseQuiet = 0;
+            passing = false;
+        }
         const float *planes[2] = {tapLeft, tapRight};
-        if (!(quiet && (paused || awaitingSound))) b->write(planes, frames, stride);
+        if (!passing && !(quiet && (paused || awaitingSound))) b->write(planes, frames, stride);
         uint64_t written = b->written.load(std::memory_order_relaxed);
         if (!want && !on) {
             engagedOut.store(false, std::memory_order_relaxed);
@@ -419,6 +444,9 @@ struct Slower {
                     clock += step;
                 }
             }
+            passGain += std::clamp((passing && held ? 1.0f : 0.0f) - passGain, -holdStep, holdStep);
+            l += tl * passGain;
+            r += tr * passGain;
             mix += std::clamp(target - mix, -mixStep, mixStep);
             left[f] = tl * (1 - mix) + l * mix;
             right[f] = tr * (1 - mix) + r * mix;

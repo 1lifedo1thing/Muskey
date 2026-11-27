@@ -1025,6 +1025,15 @@ enum PitchSelfTest {
                String(format: "slow pause       level %.4f while paused, lowest %.2f after, backlog grew %.0f and clock %.0f frames during it",
                       pausedLevel, resumedLevel, paused.heldWritten, paused.heldClock))
 
+        // Another app plays for 3.5 seconds during the pause: it is heard as it is after a second and a half, none of
+        // it stays in the backlog, and the song comes back slowed where it stopped.
+        let other = renderSlow(seconds: 10, speed: 0.8, pauseFrom: 3, pauseTo: 8, otherFrom: 4, otherTo: 7.5)
+        let otherLevel = rms(other.input[Int(rate * 5.8) ..< Int(rate * 7.3)]), otherHz = pitch(other.input, from: 6, to: 7)
+        let songHz = pitch(other.input, from: 9.3, to: 9.5), songWant = 0.8 * (300 + 50 * other.songAt(9.4))
+        report(otherLevel > 0.15 && abs(otherHz / 1000 - 1) < 0.01 && abs(other.heldWritten) < rate * 0.05 && abs(songHz / songWant - 1) < 0.02,
+               String(format: "slow pause, other sound   level %.2f at %.0f Hz (want 1000), backlog grew %.0f frames, song at %.1f Hz after (want %.1f)",
+                      otherLevel, otherHz, other.heldWritten, songHz, songWant))
+
         CachedStemsTest.run(report)
 
         return failures == 0 ? 0 : 1
@@ -1052,7 +1061,8 @@ enum PitchSelfTest {
     /// and `pauseFrom`…`pauseTo` pauses the song: the player goes silent 50 ms after the flag and plays on 100 ms
     /// after it clears.
     private static func renderSlow(seconds: Double, speed: Double, correction: Bool = false, seekBackAt: Double? = nil, spliceAt: Double? = nil,
-                                   flushAt: Double? = nil, pauseFrom: Double? = nil, pauseTo: Double? = nil, chunk: Int = 512) -> SlowRun {
+                                   flushAt: Double? = nil, pauseFrom: Double? = nil, pauseTo: Double? = nil, otherFrom: Double? = nil, otherTo: Double? = nil,
+                                   chunk: Int = 512) -> SlowRun {
         let shifter = ps_create(rate, 0, seconds)!
         defer { ps_destroy(shifter) }
         ps_slow_prepare(shifter, 30)
@@ -1111,6 +1121,9 @@ enum PitchSelfTest {
                     phase += 2 * .pi * (300 + 50 * player) / rate
                     sample = Float(0.5 * sin(phase))
                     player += 1 / rate
+                } else if let otherFrom, let otherTo, t >= otherFrom, t < otherTo {
+                    // Another app plays a tone while the song is paused.
+                    sample = Float(0.3 * sin(2 * .pi * 1000 * (Double(frame + i) / rate)))
                 }
                 inData[i * 2] = sample
                 inData[i * 2 + 1] = sample

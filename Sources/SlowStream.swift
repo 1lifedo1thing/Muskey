@@ -322,10 +322,15 @@ final class SlowStream {
         // Until the output engages, the reader's frame is still 0, and the backlog would read as days long.
         guard state.engaged != 0 else { return }
         defer { lastWritten = state.written }
-        if state.written < lastWritten, let report = player() {
+        if state.written < lastWritten {
+            // Every frame kept from the old backlog names audio that is gone: the move being followed, and the
+            // moment of a pause, which the play after it would look for and never find.
             log.info("slow: the output started over with an empty backlog")
             cancelDrain()
             next = nil
+            pausedWritten = nil
+            pendingResume = nil
+            guard let report = player() else { return }
             current = Heard(track: report, song: report.position(at: Date()) ?? 0, clock: state.clock)
             return refresh()
         }
@@ -411,6 +416,8 @@ final class SlowStream {
         guard drain == nil, pause.song > 3 else { return }
         // Some of the audio after the pause may be written already, so the old audio to find ends a little earlier.
         let seam = pause.frame
+        // A pause from a backlog that is gone, which the start over above clears; never trusted all the same.
+        guard seam <= state.written, seam > UInt64(1.8 * rate) else { return }
         let reference = seam - UInt64(1.8 * rate) ..< seam - UInt64(0.8 * rate)
         guard state.reading + UInt64(0.5 * rate) < reference.lowerBound else { return }
         // The player moves to 3.2 seconds before the pause, 1.4 seconds before the old audio: a player that reported the
@@ -474,7 +481,7 @@ final class SlowStream {
         // The player gets to the old audio's moment this long after the move, and then some, for a player that takes a
         // moment to play again.
         let needed = current.toReference + 0.5
-        guard Double(state.written - current.searchFrom) / rate >= needed else { return }
+        guard state.written >= current.searchFrom, Double(state.written - current.searchFrom) / rate >= needed else { return }
         drain?.searching = true
         lastSearch = Date()
         let id = searchID
