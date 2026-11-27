@@ -44,9 +44,10 @@ struct WebNotes: Encodable {
     var nowCover: () -> NSImage? = { nil }
     var mute: (Bool) -> Void = { _ in }
     /// Plays or pauses the song that plays on the Mac, or moves it, as the HUD's Space and arrow keys do.
-    var transport: (WebTransport) -> Void = { _ in }
+    /// Both answer why the Mac did nothing, for the page to show, or nil.
+    var transport: (WebTransport) -> String? = { _ in nil }
     /// A change of the region loop from the phone.
-    var loop: (WebLoop) -> Void = { _ in }
+    var loop: (WebLoop) -> String? = { _ in nil }
     /// Sets an instrument's volume, from 0 to 1.5, as a scroll over its circle does in the HUD.
     var volume: (Stem, Double) -> Void = { _, _ in }
     /// The waveform of the song that plays, as the HUD draws it.
@@ -296,7 +297,7 @@ struct WebNotes: Encodable {
             guard same(parts[1], key) else { return page("pair") }
             return WebResponse(status: 303, headers: [
                 ("Location", "/"), ("Cache-Control", "no-store"),
-                ("Set-Cookie", "\(cookie)=\(key); Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"),
+                ("Set-Cookie", "\(cookie)=\(key); Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax" + (request.secure ? "; Secure" : "")),
             ])
         }
         let paired = same(cookieValue(request) ?? "", key)
@@ -305,7 +306,8 @@ struct WebNotes: Encodable {
             // Phones paired by the first builds hold a Strict cookie, which Safari leaves out when the page opens from a
             // QR code or another app, so the cookie is set again as Lax.
             var response = page("remote")
-            response.headers.append(("Set-Cookie", "\(cookie)=\(key); Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"))
+            // Paired over HTTPS, the key is never sent on a plain connection to the same name.
+            response.headers.append(("Set-Cookie", "\(cookie)=\(key); Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax" + (request.secure ? "; Secure" : "")))
             return response
         }
         guard paired else { return .text("This device isn't paired", status: 403) }
@@ -409,13 +411,13 @@ struct WebNotes: Encodable {
             guard let action = try? JSONDecoder().decode(WebTransport.self, from: request.body), action.valid else {
                 return .text("Unreadable request", status: 400)
             }
-            await MainActor.run { shared.transport(action) }
+            if let refused = await MainActor.run(body: { shared.transport(action) }) { return .text(refused, status: 409) }
             return WebResponse(status: 204)
         case "api/loop" where request.method == "POST" && parts.count == 2:
             guard let action = try? JSONDecoder().decode(WebLoop.self, from: request.body), action.valid else {
                 return .text("Unreadable request", status: 400)
             }
-            await MainActor.run { shared.loop(action) }
+            if let refused = await MainActor.run(body: { shared.loop(action) }) { return .text(refused, status: 409) }
             return WebResponse(status: 204)
         case "api/volume" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode(WebVolume.self, from: request.body), let stem = Stem.allCases.first(where: { $0.name.lowercased() == body.stem }),
@@ -783,7 +785,11 @@ struct WebNotes: Encodable {
 
     private func cover(_ id: String) async -> Data? {
         if let cover = covers[id] { return cover }
-        guard let image = await item(id)?.artwork, let jpeg = SongTags.jpeg(image) else { return nil }
+        // The rows keep small covers, so the phone's is read from the file, at its full size.
+        guard let item = await item(id) else { return nil }
+        var image = item.artwork
+        if let file = item.file, let full = await QueueItem.cover(of: file) { image = full }
+        guard let image, let jpeg = SongTags.jpeg(image) else { return nil }
         if covers.count >= 200 { covers.removeAll() }
         covers[id] = jpeg
         return jpeg

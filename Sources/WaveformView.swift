@@ -65,6 +65,7 @@ struct WaveformView: View {
     @State private var dragged: Double?
     /// The song's place when a drag on the close-up began, which the drag moves like a tape under the playhead.
     @State private var tapeStart: Double?
+    @State private var tapeSpan: Double?
     /// Counts the seeks, so the timer of an earlier one leaves a later one alone, and the pointer is down.
     @State private var seekCount = 0
     @State private var pressing = false
@@ -539,8 +540,12 @@ struct WaveformView: View {
                     dragged = min(1, max(0, (from + Double(value.location.x / width) * span) / duration))
                 } else if zoomed, value.startLocation.y < mainHeight {
                     let start = tapeStart ?? (dragged.map { $0 * duration } ?? track.position(at: Date()) ?? 0)
-                    if tapeStart == nil { tapeStart = start }
-                    let moved = start - Double(value.translation.width / width) * span
+                    if tapeStart == nil {
+                        tapeStart = start
+                        tapeSpan = span
+                    }
+                    // At the zoom of the press: a zoom during the drag would make the song jump under the pointer.
+                    let moved = start - Double(value.translation.width / width) * (tapeSpan ?? span)
                     dragged = min(1, max(0, moved / duration))
                 } else {
                     dragged = min(1, max(0, value.location.x / width))
@@ -555,6 +560,7 @@ struct WaveformView: View {
                     dragged = target
                 }
                 tapeStart = nil
+                tapeSpan = nil
                 dragged = target
                 actions.seek(target)
                 // The waveform holds the place until the player reports the move. A press made meanwhile keeps its own
@@ -665,6 +671,8 @@ struct LoopFlags: View {
     /// The end drawn open: the one under the pointer, or the one that ← and → still nudge.
     private var open: LoopEnd? { hovered ?? held }
     @State private var dragged: (end: LoopEnd, start: Double, time: Double)?
+    /// The span of the waveform when the drag started, which a zoom during the drag doesn't change.
+    @State private var dragSpan: Double?
     @State private var lingering: LoopEnd?
     @State private var nudged: (end: LoopEnd, at: Date)?
     @State private var editing: LoopEnd?
@@ -793,7 +801,8 @@ struct LoopFlags: View {
                 HUDPanel.controlTracksDrag = true
                 guard abs(value.translation.width) > 2 || dragged != nil else { return }
                 let start = dragged?.start ?? time
-                dragged = (end, start, clamp(end, start + Double(value.translation.width / width) * span))
+                if dragged == nil { dragSpan = span }
+                dragged = (end, start, clamp(end, start + Double(value.translation.width / width) * (dragSpan ?? span)))
             }
             .onEnded { _ in
                 HUDPanel.controlTracksDrag = false

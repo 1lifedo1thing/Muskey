@@ -1341,6 +1341,14 @@
         transportAt = performance.now();
         try {
             await api("/api/transport", body);
+        } catch (error) {
+            // The Mac says why it did nothing, like a player that can't move the song. A Mac that doesn't answer
+            // already shows its own line.
+            if (!offlineSince) {
+                $("song-error").textContent = error.message;
+                $("song-error").hidden = false;
+                setTimeout(() => { if (!offlineSince) $("song-error").hidden = true; }, 6000);
+            }
         } finally {
             setTimeout(refreshState, 300);
         }

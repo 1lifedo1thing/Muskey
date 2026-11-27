@@ -3476,12 +3476,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The region loop from the phone: a tap on its loop button works as R does, a drag across the waveform sets the
     /// loop where the finger went, and a handle moves one end.
-    @MainActor private func remoteLoop(_ action: WebLoop) {
+    /// Answers why nothing was done, for the phone to show.
+    @MainActor private func remoteLoop(_ action: WebLoop) -> String? {
         switch action.action {
         case "press":
+            guard model.seekable || model.loop != nil else { return Self.cantMove }
             pressLoop(snapping: true, behind: min(action.behind ?? 0, 10))
         case "set":
-            guard let start = action.start, let end = action.end, end > start + 0.25, model.seekable else { return }
+            guard let start = action.start, let end = action.end, end > start + 0.25 else { return nil }
+            guard model.seekable else { return Self.cantMove }
             let duration = nowPlaying.track?.duration ?? end
             loopSnap?.cancel()
             withAnimation(.easeOut(duration: 0.2)) { model.loop = LoopRegion(start: max(0, start), end: min(end, duration)) }
@@ -3489,13 +3492,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log(String(format: "region loop from the phone: %.2f s to %.2f s", start, end))
             applyLoop()
         case "move":
-            guard let loop = model.loop, let seconds = action.seconds else { return }
+            guard let loop = model.loop, let seconds = action.seconds else { return nil }
             let end: LoopEnd = action.which == "end" ? .end : .start
             setLoopEnd(end, loop.clamped(end, seconds, duration: nowPlaying.track?.duration ?? .infinity))
         default:
             clearLoop()
         }
+        return nil
     }
+
+    private static let cantMove = "The player can't move this song now"
 
     /// A phone shows the song, so the stems model is loaded as it is for a pointer over the HUD, and a tap on an
     /// instrument starts the stems in a second instead of waiting for the model. It is freed 15 minutes after the
@@ -3547,20 +3553,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The Mac's name as Settings > General > Sharing shows it, read once without a lookup on the network.
     private static let macName = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "Mac"
 
-    @MainActor private func remoteTransport(_ request: WebTransport) {
+    /// Answers why nothing was done, for the phone to show.
+    @MainActor private func remoteTransport(_ request: WebTransport) -> String? {
         switch request.action {
         // The page asks for the state that its button shows the opposite of, so a tap on a page that is behind the
         // Mac does nothing instead of the reverse.
         case "play", "pause":
             let playing = remotePlaying(nowPlaying.track) ?? false
             if request.action == "play" ? !playing || model.phase == .idle : playing { playPause() }
-        case "back": seek(by: -5)
-        case "forward": seek(by: 5)
+        case "back", "forward":
+            guard model.seekable, songRecording == nil else { return Self.cantMove }
+            seek(by: request.action == "back" ? -5 : 5)
         case "seek":
-            guard let seconds = request.seconds, let duration = nowPlaying.track?.duration, duration > 0 else { return }
+            guard let seconds = request.seconds, let duration = nowPlaying.track?.duration, duration > 0, model.seekable, songRecording == nil else {
+                return Self.cantMove
+            }
             seek(to: seconds, flash: "\(Int((seconds / duration * 100).rounded()))%")
         default: break
         }
+        return nil
     }
 
     /// Jobs from the phone that run with the HUD hidden.
@@ -3653,7 +3664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for entry in RecentSongs.load() where !FilePlayer.isFolder(entry.url) {
             let id = entry.url.absoluteString
             var row = recentRows[id] ?? QueueItem(url: entry.url, cached: entry.song)
-            if !row.read, let file = row.file, FileManager.default.fileExists(atPath: file.path) {
+            if !row.read, let file = row.file, !Volumes.remote(file.path), FileManager.default.fileExists(atPath: file.path) {
                 row.apply(await QueueItem.details(file, name: entry.url.isFileURL ? nil : SongName.link(entry.url)))
                 recentRows[id] = row
             } else if recentRows[id] == nil {
@@ -7714,7 +7725,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private var hoverKeys: [HotKey] = []
+    private var hoverKeys: [HoverKey: HotKey] = [:]
     /// ⌘, opens Settings while the pointer is over the HUD, in every state of the HUD, so it lives apart from the
     /// hover keys that come and go with the phase, the picker and the lyrics editor.
     private var settingsKey: HotKey?
@@ -8349,8 +8360,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || hoverKeysForChords != !model.chords.isEmpty || hoverKeysForNotes != (model.notesPicking != nil) || hoverKeysLock != lock || hoverKeysQuestion != LayoutKey.questionMark))
         else { return }
         if Self.logKeys, wanted == hoverKeys.isEmpty { log("keys over the HUD \(wanted ? "on" : "off")", .debug) }
-        hoverKeys = []
-        guard wanted else { return }
+        guard wanted else { return hoverKeys = [:] }
+        // The keys are gathered first and compared with the ones registered: a pointer that crosses from the record
+        // to the waveform changes a handful of them, and registering all of them again took 60 to 90 calls each time.
+        var next: [HoverKey: () -> Void] = [:]
+        func add(_ code: Int, _ modifiers: Int, _ kind: String = "key", _ action: (() -> Void)? = nil) {
+            // A key that two lists add is registered once.
+            guard !next.keys.contains(where: { $0.code == code && $0.modifiers == modifiers }) else { return }
+            next[HoverKey(code: code, modifiers: modifiers, kind: kind)] = action ?? { [weak self] in
+                _ = self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
+            }
+        }
+        defer { registerHoverKeys(next) }
         hoverKeysForKey = keyed
         hoverKeysPasteboard = pasteboard
         hoverKeysForLyrics = model.lyricsShown
@@ -8373,17 +8394,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let question = hoverKeysQuestion.map { [($0.code, $0.modifiers)] } ?? []
         if lock != .none {
             let keys = lock == .shortcuts ? [(kVK_Escape, 0)] + question : lock == .opening ? [(kVK_Escape, 0), (kVK_Delete, 0)] : [(kVK_Escape, 0)]
-            hoverKeys = keys.compactMap { code, modifiers in
-                try? HotKey(keyCode: code, modifiers: modifiers) { [weak self] in
-                    self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
-                }
-            }
+            for (code, modifiers) in keys { add(code, modifiers) }
             // Another song can still be opened in place of the one that opens.
             if lock == .opening {
-                hoverKeys += [(kVK_ANSI_O, { [weak self] in self?.openFile() }), (kVK_ANSI_L, { [weak self] in self?.openLocation() }),
-                              (kVK_ANSI_V, { [weak self] in self?.pasteSongs() })].compactMap { (pair: (Int, () -> Void)) in
-                    try? HotKey(keyCode: pair.0, modifiers: cmdKey, action: pair.1)
-                }
+                add(kVK_ANSI_O, cmdKey, "open") { [weak self] in self?.openFile() }
+                add(kVK_ANSI_L, cmdKey, "link") { [weak self] in self?.openLocation() }
+                add(kVK_ANSI_V, cmdKey, "paste") { [weak self] in _ = self?.pasteSongs() }
             }
             return
         }
@@ -8392,13 +8408,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Tab picks the whole song or the region loop.
             let keys = [kVK_Escape, kVK_ANSI_T, kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space] + Self.digitKeys[1 ... picking.stems.count]
                 + (picking.region == nil ? [] : [kVK_Tab])
-            hoverKeys = keys.compactMap { code in
-                try? HotKey(keyCode: code, modifiers: 0) { [weak self] in self?.handleKey(code, shift: false, option: false) }
-            }
+            for code in keys { add(code, 0) }
             // ⌥↩ captures the rest of a song from another app before transcribing it.
-            if picking.heard != nil, let full = try? HotKey(keyCode: kVK_Return, modifiers: optionKey, action: { [weak self] in
-                self?.handleKey(kVK_Return, shift: false, option: true)
-            }) { hoverKeys.append(full) }
+            if picking.heard != nil { add(kVK_Return, optionKey) }
             return
         }
         let modifiers = [0, shiftKey, optionKey, optionKey | shiftKey]
@@ -8442,49 +8454,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Over the waveform, the arrows, 0 and the numbers of its bars move the song too, and do nothing while it can't move.
         if model.wave.hovered { keys += [kVK_LeftArrow, kVK_RightArrow, kVK_ANSI_0].map { ($0, 0) } }
         if model.wave.hovered, waveformNumbersBars { keys += Self.digitKeys.dropFirst().map { ($0, 0) } }
-        // A key that two lists add is registered once.
-        keys = keys.reduce(into: []) { unique, key in if !unique.contains(where: { $0 == key }) { unique.append(key) } }
-        hoverKeys = keys.compactMap { code, modifiers in
-            try? HotKey(keyCode: code, modifiers: modifiers) { [weak self] in
-                self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
-            }
-        }
-        if keyed, let karaoke = try? HotKey(keyCode: kVK_ANSI_K, modifiers: cmdKey, action: { [weak self] in self?.toggleKaraoke() }) {
-            hoverKeys.append(karaoke)
-        }
+        for (code, modifiers) in keys { add(code, modifiers) }
+        if keyed { add(kVK_ANSI_K, cmdKey, "karaoke") { [weak self] in self?.toggleKaraoke() } }
         // ⌘+ and ⌘− zoom the waveform in and out, with or without Shift for the +, and ⌘0 shows the whole song.
         if keyed {
             for (code, modifiers, factor) in [(kVK_ANSI_Equal, cmdKey, 1.5), (kVK_ANSI_Equal, cmdKey | shiftKey, 1.5), (kVK_ANSI_Minus, cmdKey, 1 / 1.5), (kVK_ANSI_0, cmdKey, 0)] {
-                if let zoom = try? HotKey(keyCode: code, modifiers: modifiers, action: { [weak self] in self?.zoomWaveform(factor) }) { hoverKeys.append(zoom) }
+                add(code, modifiers, "zoom") { [weak self] in self?.zoomWaveform(factor) }
             }
         }
-        if model.savable, let save = try? HotKey(keyCode: kVK_ANSI_S, modifiers: cmdKey, action: { [weak self] in self?.saveSong() }) {
-            hoverKeys.append(save)
-        }
-        if keyed, let reset = try? HotKey(keyCode: kVK_Delete, modifiers: cmdKey, action: { [weak self] in self?.resetAll() }) {
-            hoverKeys.append(reset)
-        }
+        if model.savable { add(kVK_ANSI_S, cmdKey, "save") { [weak self] in self?.saveSong() } }
+        if keyed { add(kVK_Delete, cmdKey, "reset") { [weak self] in self?.resetAll() } }
         // ⌘V over the HUD plays the files or the link on the clipboard. A clipboard with other text leaves ⌘V to the
         // app in front.
-        if !Self.pastedURLs().isEmpty, let paste = try? HotKey(keyCode: kVK_ANSI_V, modifiers: cmdKey, action: { [weak self] in self?.pasteSongs() }) {
-            hoverKeys.append(paste)
-        }
-        if let open = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey, action: { [weak self] in self?.openFile() }) { hoverKeys.append(open) }
-        if let link = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey, action: { [weak self] in self?.openLocation() }) { hoverKeys.append(link) }
+        // The clipboard is read once for each change of it, since the app that owns it is asked for its data.
+        if pastedSongs?.count != pasteboard { pastedSongs = (pasteboard, !Self.pastedURLs().isEmpty) }
+        let pasted = pastedSongs?.has ?? false
+        if pasted { add(kVK_ANSI_V, cmdKey, "paste") { [weak self] in _ = self?.pasteSongs() } }
+        add(kVK_ANSI_O, cmdKey, "open") { [weak self] in self?.openFile() }
+        add(kVK_ANSI_L, cmdKey, "link") { [weak self] in self?.openLocation() }
         // ⇧⌘O, ⇧⌘L and ⇧⌘V add to the queue.
-        if let add = try? HotKey(keyCode: kVK_ANSI_O, modifiers: cmdKey | shiftKey, action: { [weak self] in self?.addFiles() }) { hoverKeys.append(add) }
-        if let add = try? HotKey(keyCode: kVK_ANSI_L, modifiers: cmdKey | shiftKey, action: { [weak self] in self?.addLocation() }) { hoverKeys.append(add) }
-        if !Self.pastedURLs().isEmpty, let add = try? HotKey(keyCode: kVK_ANSI_V, modifiers: cmdKey | shiftKey, action: { [weak self] in self?.addCopied() }) {
-            hoverKeys.append(add)
+        add(kVK_ANSI_O, cmdKey | shiftKey, "add file") { [weak self] in self?.addFiles() }
+        add(kVK_ANSI_L, cmdKey | shiftKey, "add link") { [weak self] in self?.addLocation() }
+        if pasted { add(kVK_ANSI_V, cmdKey | shiftKey, "add copied") { [weak self] in _ = self?.addCopied() } }
+        if model.queueShown {
+            add(kVK_ANSI_A, cmdKey, "select all") { [weak self] in
+                guard let self else { return }
+                model.queueSelection = Set(model.queue.map(\.id))
+            }
         }
-        if model.queueShown, let all = try? HotKey(keyCode: kVK_ANSI_A, modifiers: cmdKey, action: { [weak self] in
-            guard let self else { return }
-            model.queueSelection = Set(model.queue.map(\.id))
-        }) {
-            hoverKeys.append(all)
-        }
-        if let home = try? HotKey(keyCode: kVK_ANSI_C, modifiers: cmdKey | optionKey, action: { [weak self] in self?.panel.returnHome() }) {
-            hoverKeys.append(home)
+        add(kVK_ANSI_C, cmdKey | optionKey, "home") { [weak self] in self?.panel.returnHome() }
+    }
+
+    /// A key over the HUD: its code and modifiers, and what it does, since one key can do another thing in another state.
+    private struct HoverKey: Hashable {
+        let code: Int, modifiers: Int
+        let kind: String
+    }
+
+    /// Whether the clipboard holds songs, read at its last change.
+    private var pastedSongs: (count: Int, has: Bool)?
+
+    /// Registers the keys that weren't registered yet and frees the ones that are no longer wanted.
+    private func registerHoverKeys(_ next: [HoverKey: () -> Void]) {
+        for key in hoverKeys.keys where next[key] == nil { hoverKeys[key] = nil }
+        for (key, action) in next where hoverKeys[key] == nil {
+            hoverKeys[key] = try? HotKey(keyCode: key.code, modifiers: key.modifiers, action: action)
         }
     }
 

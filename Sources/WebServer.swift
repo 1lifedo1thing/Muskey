@@ -160,7 +160,13 @@ final class WebServer: @unchecked Sendable {
         let secure = tls != nil
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return connection.cancel() }
-            guard connections.count < Self.maxConnections else { return connection.cancel() }
+            if connections.count >= Self.maxConnections {
+                // A device that opens connections and sends no request would hold every place and lock the paired
+                // phone out, so the oldest of those gives its place up.
+                let silent = connections.values.filter { $0.silent && Date().timeIntervalSince($0.opened) > 3 }
+                guard let oldest = silent.min(by: { $0.opened < $1.opened }) else { return connection.cancel() }
+                oldest.cancel()
+            }
             let client = WebConnection(connection, secure: secure, queue: queue, handler: handler) { [weak self] closed in
                 self?.connections[ObjectIdentifier(closed)] = nil
             }
@@ -195,6 +201,11 @@ private final class WebConnection: @unchecked Sendable {
     }
 
     func cancel() { connection.cancel() }
+
+    let opened = Date()
+    private var asked = false
+    /// No whole request arrived on it yet, and no upload either.
+    var silent: Bool { !asked && upload == nil }
 
     /// The headers of one request can't be larger than this, and a body sent to the server neither.
     private static let maxHeader = 32 * 1024
@@ -268,7 +279,10 @@ private final class WebConnection: @unchecked Sendable {
 
     private func receive() {
         guard !closed else { return }
-        if upload == nil, let request = parse() { return handle(request) }
+        if upload == nil, let request = parse() {
+            asked = true
+            return handle(request)
+        }
         guard !closed else { return }
         armIdle()
         connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, complete, error in
