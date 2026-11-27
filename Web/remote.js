@@ -317,10 +317,11 @@
         preferPhone();
         clearFailures();
         const artist = row.querySelector(".song-artist");
+        const asked = ++songAsked;
         try {
             await follow(await api("/api/play", { song: item.id }), row);
             await refreshState();
-            openSong();
+            if (asked === songAsked) openSong();
         } catch (error) {
             if (error.message === "Stopped") return;
             progress(row, null);
@@ -2399,6 +2400,10 @@
                 primed = primed ?? new Audio();
                 primed.play().catch(() => {});
             },
+            /** The stream that `unlock` prepared for never started. */
+            relock() {
+                if (abort === null && !element) context?.suspend();
+            },
             stop() {
                 generation++;
                 abort?.abort();
@@ -2445,7 +2450,8 @@
                 // moves it (an unmuted one does), so the delay at the start stands in until the clock moves.
                 if (element) return element.currentTime > 0.5 ? Math.max(0, (performance.now() - elementAt) / 1000 - element.currentTime) : elementDelay;
                 // The encoder on the Mac holds back about 60 ms of AAC.
-                return context && playAt ? Math.max(0, playAt - context.currentTime) + (format === "aac" ? 0.11 : 0.05) : 0;
+                // Headphones over Bluetooth play later still, by what the browser reports for its output.
+                return context && playAt ? Math.max(0, playAt - context.currentTime) + (format === "aac" ? 0.11 : 0.05) + (context.outputLatency || 0) : 0;
             },
         };
     })();
@@ -2910,11 +2916,12 @@
         if (!/^[a-z][a-z0-9+.-]*:/i.test(link) && /^[\w-]+(\.[\w-]+)+(\/|$)/.test(link)) link = `https://${link}`;
         clearFailures();
         button.disabled = true;
+        const asked = ++songAsked;
         try {
             await follow(await api("/api/open", { link }), button);
             $("link").value = "";
             await refreshState();
-            openSong();
+            if (asked === songAsked) openSong();
         } catch (error) {
             if (error.message !== "Stopped") fail(button, $("open-error"), error);
         } finally {
@@ -2935,11 +2942,19 @@
         // The picker answers outside the tap, so the audio is allowed to start here and plays once a file is picked.
         if (output !== "phone" && phoneByDefault()) player.unlock();
         $("upload-file").value = "";
+        // A picker closed without a file leaves the audio that was started for it running, which on iOS keeps another
+        // app's music paused.
+        $("upload-file").addEventListener("cancel", () => { if (output !== "phone") player.relock(); }, { once: true });
         $("upload-file").click();
     }
 
+    /** Counts the songs asked for. A song that took long to download or to send opens the song view only when no
+     * other song was asked for meanwhile, or it would close the view of the song that the person moved on to. */
+    let songAsked = 0;
+
     /** A file of this phone is sent to the Mac, with its progress as a fill in the row, and plays there. */
     async function sendFile(file) {
+        const asked = ++songAsked;
         const row = $("upload");
         uploadFile = file;
         clearFailures();
@@ -2965,7 +2980,7 @@
             await follow(job, row);
             uploadFile = null;
             await refreshState();
-            openSong();
+            if (asked === songAsked) openSong();
         } catch (error) {
             if (error.message === "Stopped") return;
             report(`sending ${file.name} failed: ${error.message}`);

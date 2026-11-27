@@ -488,6 +488,8 @@ struct MiniPlayerView: View {
                     .transformAnchorPreference(key: MiniFrames.self, value: .bounds) { $0["text"] = $1 }
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { mini.textSize = $0 }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mini.hitFrames["text"] = $0 }
+                    // Text that went away leaves no place that takes clicks meant for the window under it.
+                    .onDisappear { mini.hitFrames["text"] = nil }
                     .frame(width: textWidth, height: Self.textHeight, alignment: textAlignment)
                     .offset(textOffset)
                     .animation(.easeOut(duration: 0.15), value: mini.side)

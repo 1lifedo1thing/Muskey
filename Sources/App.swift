@@ -3668,15 +3668,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return rows
     }
 
+    /// Counts what was opened, so a folder that was still being read when something else was opened doesn't replace it.
+    private var opensAsked = 0
+
     /// A folder opens as its songs and the songs of its subfolders, read off the main thread, with the folder that each
     /// song came from. Files and links pass through at once.
     private func withFolders(_ urls: [URL], then open: @escaping ([URL], [URL: URL]) -> Void) {
+        opensAsked += 1
         guard urls.contains(where: FilePlayer.isFolder) else { return open(urls, [:]) }
+        let asked = opensAsked
         Task { @MainActor [weak self] in
             let expanded = await Task.detached(priority: .userInitiated) {
                 urls.map { url in FilePlayer.isFolder(url) ? (url, FilePlayer.songs(in: url)) : (url, [url]) }
             }.value
-            guard let self else { return }
+            // A big folder, or one on a network volume, can take seconds to read. A song opened meanwhile stays.
+            guard let self, asked == opensAsked else { return }
             var songs: [URL] = []
             var folders: [URL: URL] = [:]
             for (opened, found) in expanded {
@@ -6616,7 +6622,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveActivity = .saved(name: job.name)
         // The pill of a finished save goes away by itself after a while.
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
-            if case .saved = self?.saveActivity { self?.saveActivity = nil }
+            // A later save that finished meanwhile keeps its pill for its own 8 seconds.
+            if case .saved = self?.saveActivity, self?.savedURL == job.url { self?.saveActivity = nil }
         }
     }
 

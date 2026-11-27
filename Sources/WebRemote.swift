@@ -216,6 +216,8 @@ struct WebNotes: Encodable {
         else { return nil }
         let sent = (headers["x-file-name"]?.removingPercentEncoding ?? "song") as NSString
         var name = String(sent.lastPathComponent.filter { !"/:\\\0".contains($0) }.prefix(180))
+        // A file name holds 255 bytes, which 180 letters of Cyrillic or Chinese pass.
+        while name.utf8.count > 200 { name = String(name.dropFirst()) }
         if name.isEmpty || name.hasPrefix(".") { name = "song" + name }
         if !SongName.mediaExtensions.contains((name as NSString).pathExtension.lowercased()) { name += ".m4a" }
         let folder = uploads.appending(path: randomHex())
@@ -380,6 +382,8 @@ struct WebNotes: Encodable {
             // The Mac's output with no end, at the rate in the header: AAC in ADTS frames with `format=aac`, or 16-bit
             // stereo PCM, also for a page that asked for AAC at a rate that AAC can't be encoded at. The page reads the
             // format from the Content-Type.
+            // A link on another site can't open the stream in the phone's browser, which would mute the Mac.
+            if request.headers["sec-fetch-site"] == "cross-site" { return .text("Wrong origin", status: 403) }
             let rate = WebStream.shared.rate
             let aac = request.query["format"] == "aac" && ADTSEncoder.supports(rate)
             // An audio element can only play the compressed stream, which has no form at this rate.

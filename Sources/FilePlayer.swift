@@ -151,7 +151,8 @@ final class FilePlayer {
     func open(_ urls: [URL], folders: [URL: URL] = [:]) {
         let urls = Self.playable(urls)
         guard !urls.isEmpty else { return }
-        queue = urls.map { QueueItem(url: $0, cached: cache.song(for: $0), folder: folders[$0]) }
+        // Only a link has a download to look up, which reads the index of links: a folder of files would read it once per file.
+        queue = urls.map { QueueItem(url: $0, cached: $0.isFileURL ? nil : cache.song(for: $0), folder: folders[$0]) }
         play(queue[0].id)
         readDetails()
     }
