@@ -19,7 +19,9 @@ enum RecentSongs {
     /// downloads again.
     static func load() -> [Entry] {
         let entries = stored ?? seed()
-        return entries.filter { !$0.url.isFileURL || FileManager.default.fileExists(atPath: $0.url.path) }
+        // A file on a network volume is taken as there: asking a server that went away blocks for as long as the
+        // mount takes to give up, and this runs on the main thread whenever the HUD shows Recents.
+        return entries.filter { !$0.url.isFileURL || Volumes.remote($0.url.path) || FileManager.default.fileExists(atPath: $0.url.path) }
     }
 
     /// Muskey Player started a song: it moves to the top of the list.
@@ -53,5 +55,28 @@ enum RecentSongs {
     static func same(_ a: URL, _ b: URL) -> Bool {
         guard a.isFileURL, b.isFileURL else { return a.absoluteString == b.absoluteString }
         return a.resolvingSymlinksInPath().path == b.resolvingSymlinksInPath().path
+    }
+}
+
+/// Which paths are on a network volume, from the list of mounts that the kernel keeps, which answers at once also when
+/// a server doesn't.
+enum Volumes {
+    private static var cache: (at: Date, remote: [String])?
+
+    static func remote(_ path: String) -> Bool {
+        if cache == nil || Date().timeIntervalSince(cache!.at) > 2 {
+            var mounts: UnsafeMutablePointer<statfs>?
+            let count = getmntinfo(&mounts, MNT_NOWAIT)
+            var remote: [String] = []
+            if let mounts, count > 0 {
+                for mount in UnsafeBufferPointer(start: mounts, count: Int(count)) where mount.f_flags & UInt32(MNT_LOCAL) == 0 {
+                    var name = mount.f_mntonname
+                    let point = withUnsafePointer(to: &name) { $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) } }
+                    if point != "/" { remote.append(point.hasSuffix("/") ? point : point + "/") }
+                }
+            }
+            cache = (Date(), remote)
+        }
+        return cache?.remote.contains { path.hasPrefix($0) } ?? false
     }
 }

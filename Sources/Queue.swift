@@ -65,6 +65,30 @@ struct QueueItem: Identifiable, Equatable {
         artwork = artwork ?? details.artwork
     }
 
+    /// A row draws its cover at 30 points, and a queue of a folder holds up to 2000 rows, so each keeps a small copy
+    /// of its cover instead of the megabyte that a file can carry. The cover at its full size is read with `cover(of:)`.
+    static func thumbnail(_ data: Data) -> NSImage? {
+        guard data.count > 60000, let source = CGImageSourceCreateWithData(data as CFData, nil) else { return NSImage(data: data) }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 400,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let small = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              let jpeg = NSBitmapImageRep(cgImage: small).representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+        else { return NSImage(data: data) }
+        return NSImage(data: jpeg)
+    }
+
+    /// The cover that a file carries, at its full size.
+    static func cover(of url: URL) async -> NSImage? {
+        guard url.isFileURL else { return nil }
+        let items = (try? await AVURLAsset(url: url).load(.commonMetadata)) ?? []
+        guard let item = AVMetadataItem.metadataItems(from: items, withKey: AVMetadataKey.commonKeyArtwork, keySpace: .common).first,
+              let data = try? await item.load(.dataValue)
+        else { return nil }
+        return NSImage(data: data)
+    }
+
     /// The title, artist, album, length and cover that a file carries. A link has them once it is downloaded.
     /// A file without a title is named by `name`, or by its file without one: a download is named by its link.
     static func details(_ url: URL, name: String? = nil) async -> Details? {
@@ -84,7 +108,7 @@ struct QueueItem: Identifiable, Equatable {
         if let item = AVMetadataItem.metadataItems(from: items, withKey: AVMetadataKey.commonKeyArtwork, keySpace: .common).first,
            let data = try? await item.load(.dataValue)
         {
-            details.artwork = NSImage(data: data)
+            details.artwork = thumbnail(data)
         }
         // A file without a title is named after the file, and a name like `Artist - Title` gives both.
         if details.title == nil {

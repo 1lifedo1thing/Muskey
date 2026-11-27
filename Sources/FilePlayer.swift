@@ -229,16 +229,30 @@ final class FilePlayer {
     /// Reads the title, artist, album, length and cover of each song in the queue that doesn't have them yet.
     private func readDetails() {
         // A link has its details once it is downloaded, and is read then.
-        for item in queue where !item.read {
-            guard let file = item.file else { continue }
-            // The queue and the HUD that shows it change on the main thread only.
-            Task { @MainActor [weak self] in
-                let details = await QueueItem.details(file, name: SongName.link(item.url))
-                guard let self, let at = queue.firstIndex(where: { $0.id == item.id }) else { return }
-                queue[at].apply(details)
+        // One reader goes down the queue and changes it once for every 16 songs. A task for each song, each changing
+        // the queue, made the HUD compare and draw a folder of 2000 songs 2000 times.
+        guard detailsTask == nil else { return }
+        // The queue and the HUD that shows it change on the main thread only.
+        detailsTask = Task { @MainActor [weak self] in
+            while let self {
+                let batch = queue.filter { !$0.read && $0.file != nil }.prefix(16)
+                guard !batch.isEmpty else { break }
+                var read: [(UUID, QueueItem.Details?)] = []
+                for item in batch {
+                    guard let file = item.file else { continue }
+                    read.append((item.id, await QueueItem.details(file, name: SongName.link(item.url))))
+                }
+                var updated = queue
+                for (id, details) in read {
+                    if let at = updated.firstIndex(where: { $0.id == id }) { updated[at].apply(details) }
+                }
+                queue = updated
             }
+            self?.detailsTask = nil
         }
     }
+
+    private var detailsTask: Task<Void, Never>?
 
     /// Sets the key and the tempo of a song in the queue, once they are known.
     func setAnalysis(_ id: UUID, key: DetectedKey?, bpm: Double?) {
@@ -398,7 +412,7 @@ final class FilePlayer {
         if url.isFileURL {
             // Muskey Player reads the start of a file before it plays it, which takes a while over a network. A file
             // on the Mac plays before a step could be read.
-            if (try? url.resourceValues(forKeys: [.volumeIsLocalKey]))?.volumeIsLocal == false {
+            if Volumes.remote(url.path) {
                 show(.opening(step: .reading, name: url.deletingPathExtension().lastPathComponent, progress: nil))
             }
             return play(Song(path: url.path))
@@ -462,7 +476,8 @@ final class FilePlayer {
 
     private func play(_ song: Song) {
         let shown = song.title ?? song.name ?? (song.path as NSString).lastPathComponent
-        guard FileManager.default.fileExists(atPath: song.path) else { return show(.unplayable(name: shown)) }
+        // A file on a network volume is left to Muskey Player to find, which reads it off the main thread.
+        guard Volumes.remote(song.path) || FileManager.default.fileExists(atPath: song.path) else { return show(.unplayable(name: shown)) }
         guard let data = try? JSONEncoder().encode(song), let json = String(data: data, encoding: .utf8) else { return }
         handing += 1
         let current = handing
