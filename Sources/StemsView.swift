@@ -163,7 +163,7 @@ struct StemsRow: View {
         .overlay(alignment: .bottom) {
             if expanded {
                 // Nearly clear, with a hairline, so it reads as a quiet note on the edge of the tray rather than a control.
-                KeyHints(style: .stems, vocals: !model.lyricsShown, otherMode: "", palette: palette)
+                KeyHints(style: .stems, vocals: !model.lyricsShown, volumeChanged: !model.stemVolumes.isEmpty, otherMode: "", palette: palette)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 3)
                     .background(Capsule().fill(palette.ink.opacity(0.025)))
@@ -398,13 +398,24 @@ private struct StemHalo: View {
 
     private var side: CGFloat { (crowded ? 28 : compact ? 32 : 40) * (expanded ? 1 : 0.8) }
 
+    /// A volume other than 100% shows as a ring around the circle, and the halo of the level moves out past it.
+    private var ringShown: Bool { volume != 1 || adjusting }
+    /// Seven stems on the card leave no room for the halo past the ring, so the ring sits inside the halo's reach.
+    private var ringInset: CGFloat { crowded ? -2.5 : -4.5 }
+
     var body: some View {
         Button { action(NSEvent.modifierFlags.contains(.option)) } label: {
             VStack(spacing: compact ? 5 : 6) {
                 ZStack {
                     Circle()
                         .stroke(stem.color(scheme, opacity: on ? 0.25 + 0.5 * level : 0), lineWidth: 2)
-                        .padding(crowded ? -2 - 3 * level : -3 - 5 * level)
+                        .padding((crowded ? -2 - 3 * level : -3 - 5 * level) + (ringShown && !crowded ? ringInset - 1 : 0))
+                    if ringShown {
+                        VolumeRing(volume: volume, color: on ? stem.color(scheme, opacity: 0.95) : Color.oklch(scheme == .dark ? 0.68 : 0.6, 0.2, 25, opacity: 0.45),
+                                   track: palette.ink.opacity(0.12), tick: palette.ink.opacity(0.4), width: crowded ? 2 : 2.5)
+                            .padding(ringInset)
+                            .transition(.opacity)
+                    }
                     // In the stem's colour even while it is quiet, more saturated and brighter as it gets louder, so the
                     // circles move with the song as well as their rings. A muted stem is grey with stripes, a faint red
                     // tint and a faint red ring, which tell it apart from a quiet one at a glance.
@@ -447,13 +458,51 @@ private struct StemHalo: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.15), value: ringShown)
         .onHover { inside in
             hovering = inside
             if !inside { scrolled = false }
         }
         .onChange(of: adjusting) { if adjusting { scrolled = true } }
-        .help(adjusting || scrolled ? "" : on ? "Mute the \(stem.name.lowercased()) (\(key)) · Play only the \(stem.name.lowercased()) (⌥-click)"
-            : "Play the \(stem.name.lowercased()) (\(key)) · Play only the \(stem.name.lowercased()) (⌥-click)")
+        .help(adjusting || scrolled ? "" : "\(on ? "Mute" : "Play") the \(stem.name.lowercased()) (\(key)) · Play only the \(stem.name.lowercased()) (hold \(key) or ⌥-click)"
+            + (volume != 1 || !on ? " · Play at 100% (double-click or press \(key) twice)" : ""))
+    }
+}
+
+/// The volume of a stem as the web remote draws it: an arc that sweeps 270° from 0 to 150%, open at the bottom, over
+/// a faint track, with a tick at 100%.
+private struct VolumeRing: View {
+    let volume: Double
+    let color: Color
+    let track: Color
+    let tick: Color
+    let width: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle().trim(from: 0, to: 0.75).stroke(track, style: StrokeStyle(lineWidth: width, lineCap: .round))
+            Circle().trim(from: 0, to: 0.75 * min(1.5, max(0, volume)) / 1.5)
+                .stroke(color, style: StrokeStyle(lineWidth: width, lineCap: .round))
+            HundredTick(length: width + 3).stroke(tick, style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+        }
+        // The arc starts at the bottom left and goes clockwise, so 100% sits at the top right.
+        .rotationEffect(.degrees(135))
+        .animation(.easeOut(duration: 0.12), value: volume)
+    }
+
+    /// A short line across the ring at 100%, two thirds of the way around, drawn before the rotation of the ring.
+    private struct HundredTick: Shape {
+        let length: CGFloat
+
+        func path(in rect: CGRect) -> Path {
+            let radius = min(rect.width, rect.height) / 2
+            let angle = 0.75 * 2 * Double.pi / 1.5
+            let direction = CGPoint(x: cos(angle), y: sin(angle))
+            var path = Path()
+            path.move(to: CGPoint(x: rect.midX + direction.x * (radius - length / 2), y: rect.midY + direction.y * (radius - length / 2)))
+            path.addLine(to: CGPoint(x: rect.midX + direction.x * (radius + length / 2), y: rect.midY + direction.y * (radius + length / 2)))
+            return path
+        }
     }
 }
 

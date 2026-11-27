@@ -2676,7 +2676,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return AlignerModel.installed && StemModel.installed && prefs.lyricsLiveTiming && prefs.timingConditions.hold
         }
         model.onLyricsEdit = { [weak self] in self?.editLyrics() }
-        model.onStem = { [weak self] stem, solo in self?.toggleStem(stem, solo: solo) }
+        model.onStem = { [weak self] stem, solo in solo ? self?.toggleStem(stem, solo: true) : self?.pressStem(stem) }
         model.onVocals = { [weak self] in self?.toggleVocals() }
         model.onStemsReset = { [weak self] in self?.playAllStems() }
         model.onStemsRetry = { [weak self] in self?.retryStems() }
@@ -5900,7 +5900,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.present()
         panel.setInteraction(clickable: true, keyboard: true)
 
-        keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            // A key that waits to tell a press from a hold acts when it comes back up, as a press, or at its first
+            // repeat, as a hold. Its other repeats do nothing.
+            if event.type == .keyUp {
+                self?.releaseKey(Int(event.keyCode))
+                return event
+            }
+            if event.isARepeat, let self, self.heldKey?.code == Int(event.keyCode) {
+                self.holdKey()
+                return nil
+            }
             let flags = event.modifierFlags
             // ⌘⌥C moves the HUD back home, in every state, also while a song is saved or the shortcuts show.
             if let self, event.window === self.panel, flags.intersection(.deviceIndependentFlagsMask) == [.command, .option],
@@ -5967,9 +5977,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self?.loopTyping == true { return event }
             guard let self, self.model.picking, !flags.contains(.command), !flags.contains(.control),
                   event.window == nil || event.window === self.panel else { return event }
-            return self.handleKey(Int(event.keyCode), shift: flags.contains(.shift), option: flags.contains(.option)) ? nil : event
+            return self.pressKey(Int(event.keyCode), shift: flags.contains(.shift), option: flags.contains(.option)) ? nil : event
         }
         updateHoverKeys()
+    }
+
+    /// A number key of an instrument, or a letter of a key, that does one thing when pressed and another when held:
+    /// it waits for the key to come back up, or for as long as macOS waits before it repeats a key.
+    private struct HeldKey {
+        let code: Int
+        let press: () -> Void
+        let hold: () -> Void
+        let timer: Timer
+        var held = false
+    }
+
+    private var heldKey: HeldKey?
+    /// The key being handled was just pressed, by a person, so the keys that can be held wait for the hold.
+    private var holdable = false
+
+    /// A key that a person pressed, as the HUD's key events and the keys over the HUD get it.
+    @discardableResult private func pressKey(_ code: Int, shift: Bool, option: Bool) -> Bool {
+        // A key that still waits ends its wait as a press, since its release was lost or another key came first.
+        if let waiting = heldKey { releaseKey(waiting.code) }
+        holdable = true
+        defer { holdable = false }
+        return handleKey(code, shift: shift, option: option)
+    }
+
+    /// The hold starts after "Delay until repeat" in Keyboard settings, kept between 0.2 and 0.8 seconds.
+    private func waitForHold(_ code: Int, press: @escaping () -> Void, hold: @escaping () -> Void) {
+        let timer = Timer.scheduledTimer(withTimeInterval: min(0.8, max(0.2, NSEvent.keyRepeatDelay)), repeats: false) { [weak self] _ in
+            self?.holdKey()
+        }
+        heldKey = HeldKey(code: code, press: press, hold: hold, timer: timer)
+    }
+
+    private func holdKey() {
+        guard var key = heldKey, !key.held else { return }
+        key.timer.invalidate()
+        key.held = true
+        heldKey = key
+        if Self.logKeys { log("key \(key.code) held", .debug) }
+        key.hold()
+    }
+
+    private func releaseKey(_ code: Int) {
+        guard let key = heldKey, key.code == code else { return }
+        key.timer.invalidate()
+        heldKey = nil
+        if !key.held { key.press() }
     }
 
     /// The keys with Command that the HUD uses, which a save in progress turns off.
@@ -6833,16 +6890,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case kVK_UpArrow where model.shift + 12 <= Shift.range.upperBound: change(to: model.shift + 12)
         case kVK_DownArrow, kVK_UpArrow: break
         default:
-            guard let letter = Self.letters[code], let key = model.key else { return false }
-            // A letter picks a key in the mode that the row shows, which is the other mode after a key was picked
-            // in it, and Option picks one in the mode that it hides.
-            let other = option != model.relative
-            let minor = other ? !key.minor : key.minor
-            // A letter with no sharp or flat key in that mode does nothing with Shift, but still counts as used.
-            guard let pitchClass = DetectedKey.pitchClass(letter: letter, accidental: shift, minor: minor) else { return true }
-            change(to: key.shift(to: DetectedKey(pitchClass: pitchClass, minor: minor)), relative: other)
+            guard let letter = Self.letters[code], model.key != nil else { return false }
+            // Holding a letter picks the key in the other mode, as Option does. A press waits for the release, since
+            // picking a key and then its other mode would change the pitch twice.
+            if holdable, !option {
+                waitForHold(code, press: { [weak self] in self?.pickLetter(letter, shift: shift, option: false) },
+                            hold: { [weak self] in self?.pickLetter(letter, shift: shift, option: true) })
+            } else {
+                pickLetter(letter, shift: shift, option: option)
+            }
         }
         return true
+    }
+
+    /// A letter picks a key in the mode that the row shows, which is the other mode after a key was picked in it, and
+    /// Option picks one in the mode that it hides. A letter with no sharp or flat key in that mode does nothing with
+    /// Shift.
+    private func pickLetter(_ letter: Character, shift: Bool, option: Bool) {
+        guard let key = model.key else { return }
+        let other = option != model.relative
+        let minor = other ? !key.minor : key.minor
+        guard let pitchClass = DetectedKey.pitchClass(letter: letter, accidental: shift, minor: minor) else { return }
+        change(to: key.shift(to: DetectedKey(pitchClass: pitchClass, minor: minor)), relative: other)
     }
 
     /// A key pressed over a result or a listen opens the picker first, so the HUD stays up with the change.
@@ -6876,8 +6945,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Keys 1 to 7 for the stems in the order that the HUD shows them (7 with the winds model).
     private static let stemKeys = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7]
 
-    /// Keys 1 to 7 mute a stem or play it again, with Option they play only that stem, and 0 plays every stem.
-    /// V fades the vocals out or back in, in every layout.
+    /// Keys 1 to 7 mute a stem or play it again, held or with Option they play only that stem, pressed twice they set
+    /// it back to playing at 100%, and 0 plays every stem. V fades the vocals out or back in, in every layout.
     private func handleStemKey(_ code: Int, option: Bool) -> Bool {
         guard model.stemsAvailable else { return false }
         if code == kVK_ANSI_0 {
@@ -6885,11 +6954,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if code == kVK_ANSI_V, !option {
             toggleVocals()
         } else if let index = Self.stemKeys.firstIndex(of: code), index < Stem.shown.count {
-            toggleStem(Stem.shown[index], solo: option)
+            let stem = Stem.shown[index]
+            // A press mutes when the key comes back up, as a click does, so that a hold never mutes the stem first.
+            if option {
+                toggleStem(stem, solo: true)
+            } else if holdable {
+                waitForHold(code, press: { [weak self] in self?.pressStem(stem) }, hold: { [weak self] in self?.toggleStem(stem, solo: true) })
+            } else {
+                pressStem(stem)
+            }
         } else {
             return false
         }
         return true
+    }
+
+    /// The last press of a stem's number key, or click on its circle, for a second one that sets the stem back.
+    private var lastStemPress: (stem: Stem, at: Date)?
+
+    /// A press of a stem's number key or a click on its circle mutes it or plays it again. A second one within the
+    /// double-click interval of macOS plays it at 100%, as a double tap does on the phone.
+    private func pressStem(_ stem: Stem) {
+        if let last = lastStemPress, last.stem == stem, Date().timeIntervalSince(last.at) < NSEvent.doubleClickInterval {
+            lastStemPress = nil
+            return resetStem(stem)
+        }
+        lastStemPress = (stem, Date())
+        toggleStem(stem, solo: false)
+    }
+
+    /// A stem plays again at 100%, and the others stay as they are.
+    private func resetStem(_ stem: Stem) {
+        log("\(stem.name) plays at 100%")
+        if model.stemVolumes[stem] != nil { setStemVolume(stem, 1) }
+        setStems(model.stemsMuted.subtracting([stem]))
     }
 
     /// Option on a stem that already plays alone brings every stem back.
@@ -8368,7 +8466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // A key that two lists add is registered once.
             guard !next.keys.contains(where: { $0.code == code && $0.modifiers == modifiers }) else { return }
             next[HoverKey(code: code, modifiers: modifiers, kind: kind)] = action ?? { [weak self] in
-                _ = self?.handleKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
+                _ = self?.pressKey(code, shift: modifiers & shiftKey != 0, option: modifiers & optionKey != 0)
             }
         }
         defer { registerHoverKeys(next) }
@@ -8495,10 +8593,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pastedSongs: (count: Int, has: Bool)?
 
     /// Registers the keys that weren't registered yet and frees the ones that are no longer wanted.
+    /// A key that waits for its hold counts as released when its hotkey goes, since its release would never arrive.
     private func registerHoverKeys(_ next: [HoverKey: () -> Void]) {
-        for key in hoverKeys.keys where next[key] == nil { hoverKeys[key] = nil }
+        for key in hoverKeys.keys where next[key] == nil {
+            hoverKeys[key] = nil
+            if heldKey?.code == key.code { releaseKey(key.code) }
+        }
         for (key, action) in next where hoverKeys[key] == nil {
-            hoverKeys[key] = try? HotKey(keyCode: key.code, modifiers: key.modifiers, action: action)
+            let code = key.code
+            hoverKeys[key] = try? HotKey(keyCode: code, modifiers: key.modifiers, action: action, release: { [weak self] in self?.releaseKey(code) })
         }
     }
 
@@ -9168,7 +9271,7 @@ extension EnvironmentValues {
             }
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
-                        "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-waiting",
+                        "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-volume", "-stems-waiting",
                         "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-loop-zoom", "-lanes-hover-loop-zoom", "-waveform-hover-loop", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-lanes-separating", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-picker-region", "-notes-picker-whole", "-notes-outside-region", "-notes-outside-region-whole", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
@@ -9259,6 +9362,8 @@ extension EnvironmentValues {
                 model.stemsProgress = variant == "-stems-waiting" ? .separating(0.6) : nil
                 // Made-up levels of a loud passage.
                 if variant != "-stems-waiting" { model.stemMeters.levels = [0.13, 0.2, 0.025, 0.16, 0.05, 0.07, 0.09] }
+                // Volumes from a scroll: louder bass, quieter piano and guitar, and a muted stem at another volume.
+                if variant == "-stems-volume" { model.stemVolumes = [.bass: 1.35, .piano: 0.4, .guitar: 0.7, .drums: 0.6] }
             }
             model.card = layout.hasPrefix("-card")
             model.shortcuts = layout.hasSuffix("-shortcuts")

@@ -38,7 +38,7 @@ struct ShortcutsSheet: View {
         let stems = "1–\(Stem.shown.count)"
         let key = KeyGroup(name: "Key", symbol: "tuningfork", hue: 20, rows: [
             Row(caps: [.key("A–G")], name: "key"),
-            Row(caps: [.key("⌥"), .key("A–G")], name: "\(otherMode) key"),
+            Row(caps: [.key("hold"), .key("A–G")], name: "\(otherMode) key"),
             Row(caps: [.key("⌥"), .gesture("click key", symbol: "cursorarrow.click")], name: "relative key"),
             Row(caps: [.key("⇧"), .key("A–G")], name: "sharp or flat"),
             Row(caps: [.key("←"), .key("→")], name: card ? "fifth" : "semitone"),
@@ -77,7 +77,8 @@ struct ShortcutsSheet: View {
         ])
         let instruments = KeyGroup(name: "Instruments and vocals", symbol: "slider.vertical.3", hue: 82, rows: [
             Row(caps: [.key(stems)], name: "mute instrument"),
-            Row(caps: [.key("⌥"), .key(stems)], name: "solo instrument"),
+            Row(caps: [.key("hold"), .key(stems)], name: "solo instrument"),
+            Row(caps: [.key("2×"), .key(stems)], name: "original volume"),
             Row(caps: [.key("V")], name: "toggle vocals"),
             Row(caps: [.key("0")], name: "play all"),
         ])
@@ -126,6 +127,7 @@ struct ShortcutsSheet: View {
             Row(caps: [.gesture("scroll on instrument", symbol: "arrow.up.and.down")], name: "adjust volume"),
             Row(caps: [.gesture("scroll on tempo", symbol: "arrow.up.and.down")], name: "adjust tempo"),
             Row(caps: [.key("⌥"), .gesture("click instrument", symbol: "cursorarrow.click")], name: "solo instrument"),
+            Row(caps: [.gesture("double-click instrument", symbol: "cursorarrow.click.2")], name: "original volume"),
             Row(caps: [.gesture("drop file", symbol: "arrow.down.doc")], name: "play file or link"),
             Row(caps: [.gesture("pinch on waveform", symbol: "arrow.up.left.and.arrow.down.right")], name: "zoom"),
         ])

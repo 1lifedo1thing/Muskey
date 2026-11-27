@@ -794,6 +794,8 @@ struct KeyHints: View {
     var zoomed = false
     /// A region loop is set, whose start 0 goes to over the waveform.
     var loop = false
+    /// An instrument plays at another volume than 100%.
+    var volumeChanged = false
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -821,7 +823,7 @@ struct KeyHints: View {
                 // The keys 1 to 9 show on the bars of the waveform, in keycaps of their own.
                 + (seek ? [Hint(keys: ["0"], name: loop ? "loop start" : "song start")] : [])
         case .band where karaokeKeys, .footer where karaokeKeys:
-            [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
+            [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["hold", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["esc"], name: "close")]
         case .band where lyrics, .footer:
             // Karaoke's footer, no wider than its record, leaves out L, which leaves karaoke for the keys, while the
@@ -838,13 +840,15 @@ struct KeyHints: View {
                 // since the Lock Key button sits in the same row.
                 + (style == .band && (chords || seek && vocals) ? [] : [Hint(keys: ["K"], name: "lock key")]) + [Hint(keys: ["esc"], name: "close")]
         case .band:
-            [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["⌥", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
+            [Hint(keys: ["A–G"], name: "key"), Hint(keys: ["hold", "A–G"], name: otherMode), Hint(keys: ["⇧", "A–G"], name: "♯ or ♭"),
              Hint(keys: ["↑", "↓"], name: "octave"), Hint(keys: ["⌫"], name: "original key"), Hint(keys: ["L"], name: "lyrics"),
              Hint(keys: ["esc"], name: "close")]
         case .stems:
             // The lyrics list V in their own hints, so the tray under them leaves it out.
-            [Hint(keys: ["1–\(Stem.shown.count)"], name: "mute"), Hint(keys: ["⌥", "1–\(Stem.shown.count)"], name: "solo")]
-                + (vocals ? [Hint(keys: ["V"], name: "vocals")] : []) + [Hint(keys: ["0"], name: "play all"), Hint(keys: ["scroll"], name: "volume")]
+            // While an instrument plays at another volume, scrolling is known, and the hint names the way back to 100%.
+            [Hint(keys: ["1–\(Stem.shown.count)"], name: "mute"), Hint(keys: ["hold", "1–\(Stem.shown.count)"], name: "solo")]
+                + (vocals ? [Hint(keys: ["V"], name: "vocals")] : []) + [Hint(keys: ["0"], name: "play all")]
+                + [volumeChanged ? Hint(keys: ["2×", "1–\(Stem.shown.count)"], name: "original volume") : Hint(keys: ["scroll"], name: "volume")]
         }
     }
 

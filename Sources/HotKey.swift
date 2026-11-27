@@ -1,8 +1,10 @@
 import Carbon.HIToolbox
 
 /// A global hotkey through Carbon's RegisterEventHotKey, which needs no Accessibility permission
-/// (unlike an NSEvent global monitor or an event tap). The action runs on the main thread.
+/// (unlike an NSEvent global monitor or an event tap). The actions run on the main thread.
 /// Each hotkey has its own ID, and its handler passes on the presses of the others, so several can be registered.
+/// Carbon sends one press and one release for a key that is held, with no repeats in between, so a hold is timed by
+/// whoever handles the release.
 final class HotKey {
     struct RegistrationError: Error, CustomStringConvertible {
         let status: OSStatus
@@ -14,13 +16,18 @@ final class HotKey {
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
     private let action: () -> Void
+    private let release: (() -> Void)?
 
-    init(keyCode: Int, modifiers: Int, action: @escaping () -> Void) throws {
+    init(keyCode: Int, modifiers: Int, action: @escaping () -> Void, release: (() -> Void)? = nil) throws {
         self.action = action
+        self.release = release
         id = Self.nextID
         Self.nextID += 1
 
-        var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var kinds = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
         var status = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let event, let context else { return OSStatus(eventNotHandledErr) }
             var pressedID = EventHotKeyID()
@@ -30,10 +37,13 @@ final class HotKey {
             guard pressedID.id == hotKey.id else { return OSStatus(eventNotHandledErr) }
             // The action runs after the handler returns: an action that registers the hotkeys again would otherwise
             // free this one while its handler runs, and the keys pressed after it were lost.
-            let action = hotKey.action
-            DispatchQueue.main.async(execute: action)
+            if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
+                if let release = hotKey.release { DispatchQueue.main.async(execute: release) }
+            } else {
+                DispatchQueue.main.async(execute: hotKey.action)
+            }
             return noErr
-        }, 1, &pressed, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)
+        }, kinds.count, &kinds, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)
         guard status == noErr else { throw RegistrationError(status: status) }
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x4D55_534B), id: id) // "MUSK"
