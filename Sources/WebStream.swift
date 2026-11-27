@@ -76,6 +76,13 @@ final class WebStream: @unchecked Sendable {
 
     private var leftAt = Date.distantPast
 
+    /// Ends every phone's stream: the pairing key changed, or the remote was turned off.
+    func closeAll() {
+        queue.async { [self] in
+            for listener in sinks { listener.sink.close() }
+        }
+    }
+
     private func drop(_ sink: WebSink?) {
         sinks.removeAll { $0.sink === sink || $0.sink.closed }
         log.info("remote: a phone stopped listening (\(self.sinks.count) left)")

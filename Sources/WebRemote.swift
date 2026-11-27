@@ -109,6 +109,8 @@ struct WebNotes: Encodable {
         var stemVolumes: [String: Double] = [:]
         /// Phones that hear the Mac's output.
         var listeners = 0
+        /// Muskey isn't allowed to record the Mac's sound, so a phone can't play it.
+        var recordingDenied: Bool?
         /// The region loop: its start, and its end once it is set.
         var loop: Loop?
         /// Changes whenever the waveform has more of the song, so the page fetches it again only then.
@@ -183,7 +185,10 @@ struct WebNotes: Encodable {
     func update() {
         WebUploads.target = Self.uploadTarget
         Task.detached(priority: .background) { Self.removeOldUploads() }
-        guard Self.enabled else { return WebLinks.shared.stopIfIdle() }
+        guard Self.enabled else {
+            WebStream.shared.closeAll()
+            return WebLinks.shared.stopIfIdle()
+        }
         if Self.storedKey == nil { reset() }
         WebLinks.shared.start()
     }
@@ -221,6 +226,8 @@ struct WebNotes: Encodable {
     /// A new pairing key: the devices that opened the old link lose the remote.
     func reset() {
         UserDefaults.standard.set(Self.randomHex(), forKey: Self.pairKey)
+        // A phone that listens holds one request with no end, which the new key would never be checked against.
+        WebStream.shared.closeAll()
     }
 
     /// The link that pairs a device, at the address that reaches the furthest.
@@ -281,7 +288,10 @@ struct WebNotes: Encodable {
         if let response = appRoute(request, parts: parts, key: key) { return response }
 
         if parts.count == 2, parts[0] == "pair" {
-            guard request.method == "GET", same(parts[1], key) else { return .notFound }
+            // A link with an old key, like the one that an installed web app starts on after Reset Link, asks for the
+            // new link instead of answering that nothing is there.
+            guard request.method == "GET" else { return .notFound }
+            guard same(parts[1], key) else { return page("pair") }
             return WebResponse(status: 303, headers: [
                 ("Location", "/"), ("Cache-Control", "no-store"),
                 ("Set-Cookie", "\(cookie)=\(key); Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"),
@@ -372,6 +382,8 @@ struct WebNotes: Encodable {
             // format from the Content-Type.
             let rate = WebStream.shared.rate
             let aac = request.query["format"] == "aac" && ADTSEncoder.supports(rate)
+            // An audio element can only play the compressed stream, which has no form at this rate.
+            if !aac, request.query["element"] != nil { return .text("No compressed stream at this rate", status: 415) }
             // An audio element asks for the first two bytes before it asks for the stream, and keeps that connection
             // open when the answer has no end, so the phone would get the audio twice. The probe gets the two bytes
             // that every ADTS frame starts with.

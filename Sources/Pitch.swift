@@ -36,6 +36,8 @@ final class PitchChanger {
 
     /// Called when a rebuild after an output device change fails; the pitch change has stopped by then.
     var onFailure: ((Error) -> Void)?
+    /// Something other than a key needs the pitch change, so a fade back to the original key doesn't end it.
+    var stillNeeded: (() -> Bool)?
     /// The sample rate of the output, at every start and after every change of the output device.
     var onRate: ((Double) -> Void)?
 
@@ -295,7 +297,8 @@ final class PitchChanger {
         stopTimer?.invalidate()
         let deadline = Date().addingTimeInterval(2)
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
-            guard let self, semitones == 0, running else { return timer.invalidate() }
+            // A tempo, an instrument or a phone that asked for the pitch change during the fade keeps it.
+            guard let self, semitones == 0, running, stillNeeded?() != true else { return timer.invalidate() }
             if let shifter, ps_playing_semitones(shifter) != 0, Date() < deadline { return }
             stop()
             done()

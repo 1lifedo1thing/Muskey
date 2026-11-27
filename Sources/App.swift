@@ -2995,6 +2995,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pitch.onFailure = { [weak self] error in self?.pitchFailed("\(error)") }
         // A phone that listens is sent away at the old rate and connects again at the new one.
         pitch.onRate = { WebStream.shared.rate = $0 }
+        pitch.stillNeeded = { [weak self] in self?.pitchWanted ?? false }
         pitch.onStemsFailure = { [weak self] error in self?.stemsFailed("\(error)") }
         stopPitchOnSignals()
         network.pathUpdateHandler = { [weak self] path in
@@ -3375,6 +3376,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seekable: model.seekable, mac: Self.macName,
             mutedStems: model.stemsMuted.map { $0.name.lowercased() }.sorted(),
             stemVolumes: Dictionary(uniqueKeysWithValues: model.stemVolumes.map { ($0.key.name.lowercased(), $0.value) }),
+            recordingDenied: AudioCapturePermission.status == .denied ? true : nil,
             loop: model.loop.map { WebRemote.State.Loop(start: $0.start, end: $0.end) },
             // Changes when more of the song is heard, and when the phone's waveforms per instrument change or fill in.
             wave: model.wave.waveform.map { wave in
@@ -3444,13 +3446,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         phoneListening = on
         phoneWatch?.invalidate()
         phoneWatch = nil
-        pitch.speakersSilent = on
-        if on {
+        // Without the permission to record the Mac's sound, the phone would get silence from a muted Mac. The page
+        // reads the refusal in the state and goes back to the Mac.
+        let denied = AudioCapturePermission.status == .denied
+        pitch.speakersSilent = on && !denied
+        if on, denied {
+            log("remote: a phone listens, but system audio recording is not allowed", .error)
+        } else if on {
             muteForRemote()
             if !pitch.running { startPitch() }
             // Anything that stopped the pitch change, like a device change or a failed start, is undone while the phone
             // listens, or it would hear silence while the muted Mac plays.
-            phoneWatch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            phoneWatch = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, self.phoneListening, !self.pitch.running, AudioCapturePermission.status == .granted else { return }
                     self.startPitch()

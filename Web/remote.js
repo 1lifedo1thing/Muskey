@@ -187,6 +187,8 @@
         }
         if (!response.ok) {
             const text = (await response.text()) || response.statusText;
+            // The pairing link was reset on the Mac: the page that asks for the new one shows.
+            if (response.status === 403 && text.includes("paired")) location.replace("/");
             report(`${path} answered ${response.status}: ${text}`);
             throw new Error(text);
         }
@@ -359,6 +361,13 @@
                 tapped = null;
             }
             state = next;
+            if (output === "phone" && state.recordingDenied) {
+                // The Mac can't hear its own sound, so the phone would play silence.
+                player.stop();
+                output = "mac";
+                drawOutput();
+                failIcon($("output-button"), new Error("Muskey isn't allowed to record the Mac's sound. Allow it on the Mac in System Settings > Privacy & Security > Screen & System Audio Recording"));
+            }
             // A pause that the Mac never made, or a play from the Mac, brings the phone's sound back.
             if (state.playing) player.release();
             stateAt = performance.now();
@@ -481,6 +490,11 @@
             if (performance.now() - pageTapAt < 1500) return report(`media session: ${action} ignored after a tap on the page`, "debug");
             return setPlaying(action === "play", false);
         }
+        // The lock screen's scrubber stays where it was dragged to, instead of going back until the Mac answers.
+        if (seconds != null) {
+            state.position = seconds;
+            stateAt = performance.now();
+        }
         drawNowPlaying();
         transport(seconds == null ? { action } : { action, seconds });
     }
@@ -568,18 +582,29 @@
         setDock(0, false);
         drawSong();
         drawAll();
+        if ($("song").hidden) leftAt = scrollY;
         show("song");
         if (history.state?.song !== true) history.pushState({ song: true }, "");
         measureDock();
     }
+
+    /** How far the list that opened the song was scrolled. */
+    let leftAt = 0;
 
     /** Back to the view that opened the song: the home view or the files of the Mac. */
     function closeSong() {
         open = false;
         closeSheet();
         setDock(0, false);
-        if (history.state?.files === true) return show("files");
+        // The list that opened the song is where it was left, not back at its top.
+        const scroll = leftAt;
+        leftAt = 0;
+        if (history.state?.files === true) {
+            show("files");
+            return scrollTo(0, scroll);
+        }
         show("home");
+        scrollTo(0, scroll);
         loadSongs();
     }
 
@@ -2314,18 +2339,22 @@
         let elementAt = 0;
         /** Seconds from asking for the stream to hearing it, which is how far the element plays behind the Mac. */
         let elementDelay = 0;
-        const elementMode = () => streamChoice() === "compressed" && !webCodecs;
+        /** The element failed twice in a row, as it does at an output rate that the Mac can't compress: PCM from then on. */
+        let elementFailed = false;
+        let elementFailures = 0;
+        const elementMode = () => streamChoice() === "compressed" && !webCodecs && !elementFailed;
 
         function startElement(mine) {
             element = primed ?? new Audio();
             primed = null;
             element.muted = testMute;
-            element.src = `/api/stream?format=aac&t=${Date.now()}`;
+            element.src = `/api/stream?format=aac&element=1&t=${Date.now()}`;
             elementAt = performance.now();
             format = "aac in the audio element";
             const started = element;
             started.addEventListener("playing", () => {
                 if (mine !== generation) return;
+                elementFailures = 0;
                 elementDelay = (performance.now() - elementAt) / 1000 - started.currentTime;
                 report(`stream: the audio element plays, ${elementDelay.toFixed(1)} s after it asked`, "info");
             }, { once: true });
@@ -2333,10 +2362,19 @@
             // element starts neither again, so the page gives it the stream once more.
             const again = (why) => {
                 if (mine !== generation || element !== started) return;
+                if (++elementFailures >= 2) {
+                    report(`stream: the audio element ${why} again, switching to PCM`, "info");
+                    elementFailed = true;
+                    started.pause();
+                    started.removeAttribute("src");
+                    element = null;
+                    ensureContext().catch(() => {});
+                    return run(mine);
+                }
                 report(`stream: the audio element ${why}, connecting again`, "info");
                 setTimeout(() => {
                     if (mine !== generation || element !== started) return;
-                    started.src = `/api/stream?format=aac&t=${Date.now()}`;
+                    started.src = `/api/stream?format=aac&element=1&t=${Date.now()}`;
                     elementAt = performance.now();
                     started.play().catch(() => {});
                 }, 1000);
