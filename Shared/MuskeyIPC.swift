@@ -68,6 +68,22 @@ struct CLIRequest: Codable {
     var headless: Bool?
 }
 
+extension CLIRequest {
+    /// The changes of this request with those of a later one on top: each value that the later one sets wins.
+    func followed(by later: CLIRequest) -> CLIRequest {
+        var merged = later
+        merged.key = later.key ?? key
+        merged.speed = later.speed ?? speed
+        merged.from = later.from ?? from
+        merged.to = later.to ?? to
+        if later.stems == nil, later.mute == nil {
+            merged.stems = stems
+            merged.mute = mute
+        }
+        return merged
+    }
+}
+
 struct CLIResponse: Codable {
     var error: String?
     /// What the app did, for the tool to print.

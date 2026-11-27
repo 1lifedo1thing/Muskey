@@ -36,6 +36,8 @@ final class PitchChanger {
 
     /// Called when a rebuild after an output device change fails; the pitch change has stopped by then.
     var onFailure: ((Error) -> Void)?
+    /// The sample rate of the output, at every start and after every change of the output device.
+    var onRate: ((Double) -> Void)?
 
     /// Stems that don't play. While any is muted, the output plays the other stems, separated a few seconds behind
     /// the song, in place of the song.
@@ -359,6 +361,7 @@ final class PitchChanger {
         }
         self.shifter = shifter
         rate = sampleRate
+        onRate?(sampleRate)
         ps_stream_attach(shifter, stream)
         ps_set_semitones(shifter, Float(semitones))
         ps_set_correction(shifter, Float(correction))

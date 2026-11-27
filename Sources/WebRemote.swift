@@ -418,6 +418,10 @@ struct WebNotes: Encodable {
                 return WebWave.Lane(name: stem.name.lowercased(), levels: data.base64EncodedString(), low: range.low, high: range.high)
             }
             return json(WebWave(duration: wave.duration, rate: SongWaveform.rate, levels: wave.levels.base64EncodedString(), lanes: rows.isEmpty ? nil : rows))
+        case "api/leave" where request.method == "POST" && parts.count == 2:
+            // The phone picked the Mac in its output menu.
+            WebStream.shared.leave()
+            return WebResponse(status: 204)
         case "api/mute" where request.method == "POST" && parts.count == 2:
             guard let body = try? JSONDecoder().decode([String: Bool].self, from: request.body), let muted = body["muted"] else {
                 return .text("Unreadable request", status: 400)
@@ -794,11 +798,14 @@ struct WebLoop: Decodable {
     let end: Double?
     let which: String?
     let seconds: Double?
+    /// How far the phone's sound is behind the Mac's when the loop button is pressed there.
+    let behind: Double?
 
     var valid: Bool {
         let finite = { (value: Double?) in value.map { $0.isFinite && $0 >= 0 } ?? false }
         switch action {
-        case "press", "clear": return true
+        case "press": return behind == nil || finite(behind)
+        case "clear": return true
         case "set": return finite(start) && finite(end)
         case "move": return (which == "start" || which == "end") && finite(seconds)
         default: return false

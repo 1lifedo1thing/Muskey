@@ -30,6 +30,8 @@ final class WebStream: @unchecked Sendable {
         let rate = rate
         queue.async { [self] in
             sink.ended = { [weak self, weak sink] in self?.queue.async { self?.drop(sink) } }
+            // A phone that closed before the line above never calls it.
+            guard !sink.closed else { return drop(sink) }
             sinks.append((sink, rate, aac))
             endWork?.cancel()
             endWork = nil
@@ -60,11 +62,30 @@ final class WebStream: @unchecked Sendable {
     private var silentUntil = Date()
     private var samples = [Int16](repeating: 0, count: 2 * 24000)
 
+    /// The page tells that its phone picked the Mac, a moment before or after it closes its stream: the Mac plays out
+    /// loud again at once, without the wait for a stream that connects again.
+    func leave() {
+        queue.async { [self] in
+            leftAt = Date()
+            guard sinks.isEmpty, timer != nil else { return }
+            endWork?.cancel()
+            endWork = nil
+            end(after: 0)
+        }
+    }
+
+    private var leftAt = Date.distantPast
+
     private func drop(_ sink: WebSink?) {
         sinks.removeAll { $0.sink === sink || $0.sink.closed }
         log.info("remote: a phone stopped listening (\(self.sinks.count) left)")
-        guard sinks.isEmpty, endWork == nil else { return }
-        // Safari may close the stream and open it again, so the Mac waits a moment before it plays out loud again.
+        guard sinks.isEmpty, endWork == nil, timer != nil else { return }
+        // A stream that dropped is opened again by the page within half a second, so the Mac waits a moment before it
+        // plays out loud again. A phone that picked the Mac said so, and isn't waited for.
+        end(after: Date().timeIntervalSince(leftAt) < 2 ? 0 : 2)
+    }
+
+    private func end(after seconds: Double) {
         let work = DispatchWorkItem { [self] in
             endWork = nil
             guard sinks.isEmpty else { return }
@@ -73,7 +94,7 @@ final class WebStream: @unchecked Sendable {
             DispatchQueue.main.async { [onListening] in onListening(false) }
         }
         endWork = work
-        queue.asyncAfter(deadline: .now() + 4, execute: work)
+        queue.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
     private func start() {
@@ -90,6 +111,8 @@ final class WebStream: @unchecked Sendable {
         // A phone at another rate connects again and learns the new one.
         for listener in sinks where listener.rate != rate { listener.sink.close() }
         sinks.removeAll { $0.sink.closed }
+        // Every phone is gone and none of them said so through `drop`.
+        if sinks.isEmpty, endWork == nil { drop(nil) }
 
         var chunk = Data()
         let written = ps_stream_written(ring)
@@ -128,9 +151,10 @@ final class WebStream: @unchecked Sendable {
                     listener.sink.close()
                     continue
                 }
-                if !encoded.isEmpty { listener.sink.send(encoded) }
+                // Ten seconds of either format may wait for a slow phone: 160 kbps of AAC, or PCM at the stream's rate.
+                if !encoded.isEmpty { listener.sink.send(encoded, limit: 200_000) }
             } else {
-                listener.sink.send(chunk)
+                listener.sink.send(chunk, limit: Int(rate) * 4 * 10)
             }
         }
     }

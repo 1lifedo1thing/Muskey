@@ -95,9 +95,24 @@ enum OutputMute {
         return AudioObjectHasProperty(device, &address) && AudioObjectIsPropertySettable(device, &address, &settable) == noErr && settable.boolValue
     }
 
+    /// The device that the last mute was set on. The unmute goes to it, also after another output took its place
+    /// (AirPods that connected meanwhile), or the speakers would stay muted for the next time they play.
+    private static var mutedDevice: AudioObjectID?
+    private static let mutedKey = "outputMutedByMuskey"
+
+    /// Muskey muted the output and ended before it could unmute it, in a crash or a kill.
+    static var leftMuted: Bool {
+        get { UserDefaults.standard.bool(forKey: mutedKey) }
+        set { newValue ? UserDefaults.standard.set(true, forKey: mutedKey) : UserDefaults.standard.removeObject(forKey: mutedKey) }
+    }
+
     /// The output is muted, or its volume is at zero. Nil without an output device.
-    static var muted: Bool? {
-        guard let device else { return nil }
+    static var muted: Bool? { device.flatMap(muted(of:)) }
+
+    /// The device that Muskey muted is still muted. False when it is gone.
+    static var stillMuted: Bool { mutedDevice.flatMap(muted(of:)) ?? false }
+
+    private static func muted(of device: AudioObjectID) -> Bool? {
         if settable(device, kAudioDevicePropertyMute) {
             var value: UInt32 = 0
             var size = UInt32(MemoryLayout<UInt32>.size)
@@ -111,7 +126,13 @@ enum OutputMute {
     private static var volumeBefore: Float32?
 
     @discardableResult static func set(_ mute: Bool) -> Bool {
-        guard let device else { return false }
+        guard let device = mute ? device : mutedDevice ?? device else { return false }
+        if mute {
+            mutedDevice = device
+        } else {
+            mutedDevice = nil
+            leftMuted = false
+        }
         if settable(device, kAudioDevicePropertyMute) {
             var value: UInt32 = mute ? 1 : 0
             var address = address(kAudioDevicePropertyMute)

@@ -121,7 +121,16 @@ final class WebServer: @unchecked Sendable {
             sec_protocol_options_add_tls_application_protocol(options.securityProtocolOptions, "http/1.1")
             tlsOptions = options
         }
-        let parameters = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
+        // A phone that left without closing (airplane mode, out of range) is found by probes while the connection is
+        // quiet, and by the limit on resending while data waits for it. Without both, a stream to it stays open for
+        // minutes, and the Mac stays muted for a phone that is gone.
+        let tcp = NWProtocolTCP.Options()
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 5
+        tcp.keepaliveInterval = 2
+        tcp.keepaliveCount = 3
+        tcp.connectionDropTime = 12
+        let parameters = NWParameters(tls: tlsOptions, tcp: tcp)
         parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(address), port: port)
         parameters.allowLocalEndpointReuse = true
         guard let listener = try? NWListener(using: parameters) else {

@@ -1756,6 +1756,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A song that Muskey Player plays faster or slower keeps its pitch correction only while it is the one that plays.
         nowPlaying.watching = keptKey != nil || shown || songKey != nil || prefs.alwaysListen || model.stemsEngaged || lyricsDelayed
             || filePlayer.speed != 1 || songRecording != nil || slow.active || (prefs.pauseStop && changesRun)
+            // The mini player and the phone's page show the song with the HUD closed.
+            || prefs.miniPlayer || phoneWatches || phoneListening
     }
 
     /// A pitch change, a tempo change or the stems run, which the pause timeout stops.
@@ -2296,7 +2298,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showPlaying(false, flash: false)
             return
         }
-        guard model.shown else { return }
+        guard model.shown else {
+            // The mini player follows the song while the HUD is closed: its record, its title and its turning.
+            guard prefs.miniPlayer else { return }
+            if model.track != nowPlaying.track { model.track = nowPlaying.track }
+            if model.artwork !== nowPlaying.artwork { model.artwork = nowPlaying.artwork }
+            if let track = nowPlaying.track, playGuess == nil || playGuess?.playing == track.playing { showPlaying(track.playing, flash: false) }
+            return
+        }
         // A player that starts another song directly (Spotify's play track, a click on a song in a list) reports no
         // song for a moment. The record holds through that gap, so the HUD swaps records instead of shrinking and
         // growing back.
@@ -2551,7 +2560,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.syncWaveform() }
         }.store(in: &prefChanges)
         prefs.$waveformStyle.dropFirst().sink { [weak self] in self?.model.waveformStyle = $0 }.store(in: &prefChanges)
-        prefs.$miniPlayer.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.syncMini() } }.store(in: &prefChanges)
+        prefs.$miniPlayer.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                updateWatching(shown: model.shown)
+                syncMini()
+            }
+        }.store(in: &prefChanges)
         prefs.$miniLayout.dropFirst().sink { [weak self] layout in
             self?.mini.layout = layout
             DispatchQueue.main.async { self?.miniPanel.chooseSide() }
@@ -2978,6 +2993,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panelMoved()
         }
         pitch.onFailure = { [weak self] error in self?.pitchFailed("\(error)") }
+        // A phone that listens is sent away at the old rate and connects again at the new one.
+        pitch.onRate = { WebStream.shared.rate = $0 }
         pitch.onStemsFailure = { [weak self] error in self?.stemsFailed("\(error)") }
         stopPitchOnSignals()
         network.pathUpdateHandler = { [weak self] path in
@@ -3122,6 +3139,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The `muskey` tool reaches the app through `CLIService`, which plays its songs here.
     @MainActor private func startCLI() {
+        // A Muskey that crashed or was killed while a phone listened left the output muted.
+        if OutputMute.leftMuted {
+            OutputMute.set(false)
+            log("remote: the sound output that the last run left muted is unmuted")
+        }
         let cli = CLIService.shared
         cli.play = { [weak self] request, job in self?.cliPlay(request, job: job) }
         cli.knownKey = { [weak self] song in self?.knownKey(for: song)?.key }
@@ -3142,6 +3164,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WebRemote.shared.update()
         cli.start()
     }
+
+    /// The changes for the song that plays now which still wait for the HUD and the key.
+    private var liveWait: (request: CLIRequest, job: CLIJob)?
 
     /// Plays the inputs of the tool in the HUD, or listens to the song that plays now, and applies the changes once
     /// the song plays and its key is known: the key, the speed, the region loop, the stems and the notes window.
@@ -3170,8 +3195,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return job.fail("--notes needs a song file or a link. For the song that plays now, press T over the HUD")
             }
             if state == .idle { toggle() }
+            // A pitch change that only corrects a tempo has no key to open the HUD on, so the HUD listens for one.
+            if state == .idle { start() }
             job.step = "Listening"
-            return cliWait(job, seconds: 90, until: ready) { [weak self] in self?.cliApply(request, job: job) }
+            // Changes sent while an earlier one still waits for the HUD or the key are applied as one, the newest
+            // value of each winning. Waiting side by side, they would apply in the order that their waits end.
+            var request = request
+            if let waiting = liveWait, !waiting.job.done {
+                request = waiting.request.followed(by: request)
+                waiting.job.finish()
+            }
+            liveWait = (request, job)
+            // The tempo, the instruments and a loop need no key, so a song whose key isn't found still takes them
+            // once the listen ends.
+            let listened = { [weak self] () -> Bool in
+                guard let self else { return false }
+                return model.pending == nil && state != .idle && (model.key != nil || model.phase != .listening)
+            }
+            let changes = request
+            return cliWait(job, seconds: 90, until: request.key == nil ? listened : ready) { [weak self] in
+                guard let self else { return }
+                if liveWait?.job === job { liveWait = nil }
+                cliApply(changes, job: job)
+            }
         }
         let before = filePlayer.current?.path
         let songBefore = nowPlaying.track?.song
@@ -3283,6 +3329,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
         remoteMuteBefore = before
+        // Kept for a Muskey that crashes or is killed while the output is muted: the next launch unmutes it.
+        if !before { OutputMute.leftMuted = true }
         log("remote: sound output muted")
         return true
     }
@@ -3290,7 +3338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func restoreRemoteMute() {
         guard let before = remoteMuteBefore else { return }
         remoteMuteBefore = nil
-        if !before, OutputMute.muted == true {
+        if !before, OutputMute.stillMuted || OutputMute.muted == true {
             OutputMute.set(false)
             log("remote: sound output unmuted")
         }
@@ -3308,7 +3356,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// What the web remote shows of the HUD: the song that plays, its key and the change, and the Mac's sound output.
     @MainActor private func remoteState() -> WebRemote.State {
-        let track = model.track ?? nowPlaying.track
+        phonePolled()
+        // The HUD's record keeps the song that it showed last while it is hidden, so the phone reads the player then.
+        let track = model.shown ? model.track ?? nowPlaying.track : nowPlaying.track
         let app = track?.bundleID.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first?.localizedName }
         // A play, a pause or a seek that the player hasn't reported yet, as the HUD shows it.
         let playing = remotePlaying(track) ?? false
@@ -3420,7 +3470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func remoteLoop(_ action: WebLoop) {
         switch action.action {
         case "press":
-            pressLoop(snapping: true)
+            pressLoop(snapping: true, behind: min(action.behind ?? 0, 10))
         case "set":
             guard let start = action.start, let end = action.end, end > start + 0.25, model.seekable else { return }
             let duration = nowPlaying.track?.duration ?? end
@@ -3454,6 +3504,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The phone showed the song that plays a moment ago: its state is asked for every 1.5 seconds while it does.
     private var remoteSongSeenAt = Date.distantPast
     private var phoneShowsSong: Bool { Date().timeIntervalSince(remoteSongSeenAt) < 5 }
+
+    /// A phone has the page open: it asks for the state every second and a half. The helper that names the song
+    /// runs for it, or the page would show nothing playing with the HUD closed.
+    private var phonePolledAt = Date.distantPast
+    private var phonePollEnd: DispatchWorkItem?
+    private var phoneWatches: Bool { Date().timeIntervalSince(phonePolledAt) < 6 }
+
+    @MainActor private func phonePolled() {
+        phonePolledAt = Date()
+        if !nowPlaying.watching { updateWatching(shown: model.shown) }
+        phonePollEnd?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            updateWatching(shown: model.shown)
+        }
+        phonePollEnd = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.5, execute: work)
+    }
 
     @MainActor private func remoteSongShown() {
         remoteSongSeenAt = Date()
@@ -5145,8 +5213,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let shortcut else { return }
         do {
             hotKey = try HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
-                // Someone is at the Mac: the sound that the remote muted plays again.
-                self?.restoreRemoteMute()
+                // Someone is at the Mac: the sound that the remote muted plays again. While a phone listens, the song
+                // plays on the phone, and the Mac sends its output silence whatever the mute says.
+                if self?.phoneListening == false { self?.restoreRemoteMute() }
                 self?.toggle()
             }
         } catch {
@@ -5215,6 +5284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quitting while the lyrics show keeps the words heard and the lines written so far, as closing the HUD does.
     func applicationWillTerminate(_: Notification) {
+        restoreRemoteMute()
         filePlayer.stop()
         cancelAutoListen()
         pitch.stop(waiting: true)
@@ -5230,6 +5300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             signal(number, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
             source.setEventHandler { [weak self] in
+                self?.restoreRemoteMute()
                 self?.pitch.stop(waiting: true)
                 self?.lyricsSync.end()
                 self?.filePlayer.stop()
@@ -6933,9 +7004,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// R starts the region loop where the song is, ends it, then clears it. With the lyrics showing, the loop takes
     /// whole lines: from the start of the line sung now to the end of the line sung at the second press. ⌥R sets an
     /// end exactly where it is pressed.
-    private func pressLoop(snapping: Bool) {
+    /// `behind` is how much later than the Mac the press was heard, on a phone that plays the Mac's sound.
+    private func pressLoop(snapping: Bool, behind: Double = 0) {
         guard let track = nowPlaying.track, track.title?.isEmpty == false, let duration = track.duration, duration > 0,
-              let now = track.position(at: Date()) else { return log("region loop: the player gives no position for the song") }
+              let played = track.position(at: Date()) else { return log("region loop: the player gives no position for the song") }
+        let now = max(0, played - behind)
         guard model.seekable else { return log("region loop: the song can't move at once now") }
         let lines = loopLines
         if let loop = model.loop, loop.end != nil {
@@ -8583,7 +8656,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let started = CACurrentMediaTime()
                 pitch.heardProcess = heardProcess
                 try pitch.start()
-                WebStream.shared.rate = pitch.sampleRate
                 log(String(format: "pitch change started (%.0f ms to build%@)", (CACurrentMediaTime() - started) * 1000,
                            pitch.hearsOneProcess ? ", hearing only Muskey Player" : ""), .notice)
             } catch {
