@@ -3656,6 +3656,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !row.read, let file = row.file, FileManager.default.fileExists(atPath: file.path) {
                 row.apply(await QueueItem.details(file, name: entry.url.isFileURL ? nil : SongName.link(entry.url)))
                 recentRows[id] = row
+            } else if recentRows[id] == nil {
+                // A row whose file is gone is kept too, or it would be built again at every question of the phone.
+                recentRows[id] = row
             }
             let song: [String?] = [row.title, row.artist, row.album]
             if row.key == nil { row.key = knownKey(for: song)?.key }
@@ -6906,10 +6909,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard model.stemsAvailable else { return }
         if !model.picking, model.shown { pickKey() }
         model.stemsFailed = false
+        let adjusted = model.stemsAdjusted
         model.stemVolumes[stem] = volume == 1 ? nil : volume
         pitch.stemVolumes = model.stemVolumes
         engageStems(model.stemsAdjusted || (model.shown && model.stemsEngaged))
-        refreshStatus()
+        // A scroll changes the volume a percent at a time, and the menu bar only shows whether any instrument is
+        // changed, so the menu and the chords are left alone until that changes.
+        if adjusted != model.stemsAdjusted {
+            refreshStatus()
+        } else {
+            syncSavable()
+            syncPauseStop()
+        }
         if pitchWanted, !pitch.running { startPitch() }
     }
 
@@ -7197,13 +7208,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func checkLoopEnd() {
         // A region that is recorded for a save plays through to its end, where the recording stops, and goes back after.
+        // A paused song, or one more than a second from the end of the loop, is looked at four times a second instead of
+        // fifty.
+        let later = { [weak self] in self?.loopTimer?.fireDate = Date().addingTimeInterval(0.25) }
         guard songRecording == nil, let loop = model.loop, let end = loop.end, let track = nowPlaying.track, track.playing, model.seekable,
-              let now = track.position(at: Date()) else { return }
+              let now = track.position(at: Date()) else { return later() ?? () }
         // A seek that the player hasn't reported yet.
         if let target = seekTarget, Date().timeIntervalSince(target.at) < 1 { return }
         // A loop of the whole song goes back a little before the end, before the player moves on to the next song.
         let lead = loop.coversSong(track.duration) ? 0.4 : 0.03
-        guard now >= end - lead, now < end + 3 else { return }
+        guard now >= end - lead, now < end + 3 else {
+            if now < end - lead - 1 || now >= end + 3 { later() }
+            return
+        }
         seekTarget = (track.song, loop.start, Date())
         moveSong(track, to: loop.start)
     }

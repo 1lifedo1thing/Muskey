@@ -329,7 +329,7 @@ struct WebNotes: Encodable {
             state.listeners = WebStream.shared.listeners
             return json(state)
         case "api/nowcover" where reads && parts.count == 2:
-            guard let jpeg = await MainActor.run(body: { SongTags.jpeg(shared.nowCover()) }) else { return .notFound }
+            guard let jpeg = await MainActor.run(body: { shared.nowCoverJPEG() }) else { return .notFound }
             return WebResponse(status: 200, headers: [("Content-Type", "image/jpeg"), ("Cache-Control", "no-store")], body: .data(jpeg))
         case "api/appicon" where reads:
             // The icon of a player that runs on the Mac, for the badge on the cover.
@@ -749,15 +749,40 @@ struct WebNotes: Encodable {
     }
 
     /// The ID in Recents of the song whose audio is `file`: the file's own, or the link's that it was downloaded from.
-    func songID(file: String) async -> String {
-        let songs = await songs()
-        let url = URL(fileURLWithPath: file)
-        return songs.first { $0.item.file?.standardizedFileURL == url.standardizedFileURL }?.song.id ?? Self.id(url)
+    /// The phone asks for the state every second and a half, and the song that plays is the same one for minutes, so
+    /// its ID is found among Recents once.
+    private var playingID: (file: String, id: String)?
+
+    private var nowCoverKept: (image: NSImage, jpeg: Data)?
+
+    /// The cover of the song that plays, encoded once for each cover.
+    func nowCoverJPEG() -> Data? {
+        guard let image = nowCover() else { return nil }
+        if let kept = nowCoverKept, kept.image === image { return kept.jpeg }
+        guard let jpeg = SongTags.jpeg(image) else { return nil }
+        nowCoverKept = (image, jpeg)
+        return jpeg
     }
 
+    func songID(file: String) async -> String {
+        if let playingID, playingID.file == file { return playingID.id }
+        let songs = await songs()
+        let url = URL(fileURLWithPath: file)
+        // A song that Recents doesn't hold yet, a moment after it started, is looked for again at the next question.
+        guard let id = songs.first(where: { $0.item.file?.standardizedFileURL == url.standardizedFileURL })?.song.id else { return Self.id(url) }
+        playingID = (file, id)
+        return id
+    }
+
+    /// The covers as the phone gets them, since each is resized and encoded: Recents asks for twenty at once.
+    private var covers: [String: Data] = [:]
+
     private func cover(_ id: String) async -> Data? {
-        guard let image = await item(id)?.artwork else { return nil }
-        return SongTags.jpeg(image)
+        if let cover = covers[id] { return cover }
+        guard let image = await item(id)?.artwork, let jpeg = SongTags.jpeg(image) else { return nil }
+        if covers.count >= 200 { covers.removeAll() }
+        covers[id] = jpeg
+        return jpeg
     }
 
     /// The audio file of a song, as Muskey Player would play it: the file, or the download of a link.
