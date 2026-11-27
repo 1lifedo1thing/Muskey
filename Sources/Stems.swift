@@ -415,9 +415,10 @@ final class StemSeparator: @unchecked Sendable {
     }
 
     /// Waits for the window being separated, at most `seconds`, before the shifter goes away.
-    func waitUntilStopped(seconds: Double = 3) {
-        guard !stopped else { return }
-        _ = done.wait(timeout: .now() + seconds)
+    /// False when the thread still runs after the wait, and may still reach the shifter.
+    @discardableResult func waitUntilStopped(seconds: Double = 3) -> Bool {
+        guard !stopped else { return true }
+        return done.wait(timeout: .now() + seconds) == .success
     }
 
     private var isCancelled: Bool { lock.withLock { cancelled } }

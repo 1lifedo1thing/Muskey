@@ -426,15 +426,17 @@ final class PitchChanger {
         // The IOProc is stopped and destroyed above, so nothing on the audio thread can still reach the shifter.
         if let shifter {
             gaps += ps_underruns(shifter)
+            // A separation thread that outlasts its wait, in a model load on a Mac short of memory, still reads and
+            // writes the shifter, so the shifter is kept for it instead of freed under it.
             if waiting {
-                for stopping in separators { stopping.waitUntilStopped() }
-                ps_destroy(shifter)
+                let stopped = separators.map { $0.waitUntilStopped() }.allSatisfy { $0 }
+                if stopped { ps_destroy(shifter) }
             } else {
                 // Off the main thread, the wait can cover a model load that runs long, after which the thread would
                 // still reach the shifter.
                 Self.disposal.async {
-                    for stopping in separators { stopping.waitUntilStopped(seconds: 30) }
-                    ps_destroy(shifter)
+                    let stopped = separators.map { $0.waitUntilStopped(seconds: 30) }.allSatisfy { $0 }
+                    if stopped { ps_destroy(shifter) } else { log.error("a separation thread still runs, its shifter is kept") }
                 }
             }
         }
