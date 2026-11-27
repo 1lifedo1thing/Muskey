@@ -30,6 +30,19 @@ final class SystemAudioTap: AudioTapping {
     private let queue = DispatchQueue(label: "muskey.io", qos: .userInitiated)
     private(set) var sampleRate: Double = 48000
 
+    /// Closed by `stop`, which returns before Core Audio has stopped the device: no samples are handed on after it.
+    private final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isOpen = true
+        var open: Bool { lock.withLock { isOpen } }
+        func close() { lock.withLock { isOpen = false } }
+    }
+
+    private var gate: Gate?
+    /// Stopping a device and destroying it and its tap takes tens of milliseconds, which the main thread doesn't wait
+    /// for: the HUD starts and stops a tap whenever it shows and hides.
+    private static let teardown = DispatchQueue(label: "muskey.io.teardown", qos: .utility)
+
     private let description = CATapDescription(stereoGlobalTapButExcludeProcesses: AudioProcess.own.map { [$0] } ?? [])
 
     /// Creates the tap and reads its format, so `sampleRate` is known before any audio arrives.
@@ -66,7 +79,10 @@ final class SystemAudioTap: AudioTapping {
         ]
         try check(AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID), "Creating the aggregate device")
 
+        let gate = Gate()
+        self.gate = gate
         try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) { _, input, _, _, _ in
+            guard gate.open else { return }
             let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
             let channels = buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
             guard channels > 0, let first = buffers.first, first.mNumberChannels > 0 else { return }
@@ -95,18 +111,22 @@ final class SystemAudioTap: AudioTapping {
     }
 
     func stop() {
-        if aggregateID != kAudioObjectUnknown {
-            if let procID {
-                AudioDeviceStop(aggregateID, procID)
-                AudioDeviceDestroyIOProcID(aggregateID, procID)
-            }
-            AudioHardwareDestroyAggregateDevice(aggregateID)
-            aggregateID = AudioObjectID(kAudioObjectUnknown)
-        }
+        gate?.close()
+        gate = nil
+        let aggregate = aggregateID, proc = procID, tap = tapID
+        aggregateID = AudioObjectID(kAudioObjectUnknown)
         procID = nil
-        if tapID != kAudioObjectUnknown {
-            AudioHardwareDestroyProcessTap(tapID)
-            tapID = AudioObjectID(kAudioObjectUnknown)
+        tapID = AudioObjectID(kAudioObjectUnknown)
+        guard aggregate != kAudioObjectUnknown || tap != kAudioObjectUnknown else { return }
+        Self.teardown.async {
+            if aggregate != kAudioObjectUnknown {
+                if let proc {
+                    AudioDeviceStop(aggregate, proc)
+                    AudioDeviceDestroyIOProcID(aggregate, proc)
+                }
+                AudioHardwareDestroyAggregateDevice(aggregate)
+            }
+            if tap != kAudioObjectUnknown { AudioHardwareDestroyProcessTap(tap) }
         }
     }
 
