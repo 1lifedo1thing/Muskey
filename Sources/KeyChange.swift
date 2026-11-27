@@ -814,9 +814,9 @@ struct KeyHints: View {
             [Hint(keys: ["←", "→"], name: loopEnd == .start ? "nudge A" : "nudge B"), Hint(keys: ["⌥", "←", "→"], name: "by a beat"),
              Hint(keys: ["R"], name: "region loop"), Hint(keys: ["⌘", "+", "−"], name: "zoom")]
         case _ where waveform:
-            // The band has no room for ⇧R left of Lock Key, which the ⋯ menu lists as Loop Song.
-            [Hint(keys: ["R"], name: "region loop")] + (style == .band ? [] : [Hint(keys: ["⇧", "R"], name: "loop song")])
-                + (lanes ? [Hint(keys: ["⌥", "W"], name: style == .footer ? "one waveform per instrument" : "per instrument")] : [])
+            // The band has no room for hold R left of Lock Key, which the ⋯ menu lists as Loop Song.
+            [Hint(keys: ["R"], name: "region loop")] + (style == .band ? [] : [Hint(keys: ["hold", "R"], name: "loop song")])
+                + (lanes ? [Hint(keys: ["hold", "W"], name: style == .footer ? "one waveform per instrument" : "per instrument")] : [])
                 // In a close-up, ⌘0 joins the zoom keys. The card splits these keys over two lines, which fit the whole
                 // name of ⌥W, while the band names it by its last words to keep the row left of Lock Key.
                 + [Hint(keys: ["⌘", "+", "−"] + (zoomed ? ["0"] : []), name: "zoom"), Hint(keys: (seek ? ["←", "→"] : []) + ["scroll"], name: "move song")]

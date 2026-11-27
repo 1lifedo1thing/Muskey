@@ -6132,15 +6132,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             playPause()
             return true
         }
-        // W shows or hides the waveform in every layout, and ⌥W splits it into the lanes of the stems.
+        // W shows or hides the waveform in every layout, and holding it, or ⌥W, splits it into the lanes of the stems.
         if code == kVK_ANSI_W, !shift {
-            option ? toggleWaveformLanes() : toggleWaveform()
+            if option {
+                toggleWaveformLanes()
+            } else if holdable {
+                waitForHold(code, press: { [weak self] in self?.toggleWaveform() }, hold: { [weak self] in self?.holdWaveform() })
+            } else {
+                toggleWaveform()
+            }
             return true
         }
-        // R starts the region loop, ends it and clears it, in every layout. ⌥R doesn't snap the end, and ⇧R loops the
-        // whole song.
+        // R starts the region loop, ends it and clears it, in every layout. ⌥R doesn't snap the end, and holding R, or
+        // ⇧R, loops the whole song. A press acts when R comes back up, at the moment that R went down.
         if code == kVK_ANSI_R {
-            shift ? toggleSongLoop() : pressLoop(snapping: !option)
+            if shift {
+                toggleSongLoop()
+            } else if holdable, !option {
+                let pressed = Date()
+                waitForHold(code, press: { [weak self] in self?.pressLoop(snapping: true, at: pressed) }, hold: { [weak self] in self?.toggleSongLoop() })
+            } else {
+                pressLoop(snapping: !option)
+            }
             return true
         }
         if model.lyricsShown {
@@ -7143,9 +7156,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// whole lines: from the start of the line sung now to the end of the line sung at the second press. ⌥R sets an
     /// end exactly where it is pressed.
     /// `behind` is how much later than the Mac the press was heard, on a phone that plays the Mac's sound.
-    private func pressLoop(snapping: Bool, behind: Double = 0) {
+    /// `at` is when R went down, for a press that acts when R comes back up.
+    private func pressLoop(snapping: Bool, behind: Double = 0, at pressed: Date = Date()) {
         guard let track = nowPlaying.track, track.title?.isEmpty == false, let duration = track.duration, duration > 0,
-              let played = track.position(at: Date()) else { return log("region loop: the player gives no position for the song") }
+              let played = track.position(at: pressed) else { return log("region loop: the player gives no position for the song") }
         let now = max(0, played - behind)
         guard model.seekable else { return log("region loop: the song can't move at once now") }
         let lines = loopLines
@@ -7490,6 +7504,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func toggleWaveform() {
         prefs.waveform.toggle()
         log("waveform \(prefs.waveform ? "on" : "off")")
+    }
+
+    /// Holding W shows the lanes of the stems, and the waveform with them when it was hidden.
+    private func holdWaveform() {
+        if !prefs.waveform, !model.wave.lanes { toggleWaveform() }
+        toggleWaveformLanes()
     }
 
     /// ⌥W: one lane per stem, or the whole song again. A song without stems is separated first: a song in Muskey
