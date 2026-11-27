@@ -17,10 +17,19 @@ struct Shortcut: Codable, Equatable {
         self.key = key
     }
 
+    /// Q, W, C, V, X, Z, A, S, H, M, N, T, O, P, F, comma, Tab, Space and `.
+    private static let appKeys: Set<Int> = [
+        kVK_ANSI_Q, kVK_ANSI_W, kVK_ANSI_C, kVK_ANSI_V, kVK_ANSI_X, kVK_ANSI_Z, kVK_ANSI_A, kVK_ANSI_S, kVK_ANSI_H, kVK_ANSI_M, kVK_ANSI_N,
+        kVK_ANSI_T, kVK_ANSI_O, kVK_ANSI_P, kVK_ANSI_F, kVK_ANSI_Comma, kVK_Tab, kVK_Space, kVK_ANSI_Grave,
+    ]
+
     /// Nil for a key without ⌘, ⌃ or ⌥, which would take a key that other apps need for typing.
     init?(event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard !flags.isDisjoint(with: [.command, .control, .option]) else { return nil }
+        // ⌘ with one of the keys that every app uses, like ⌘W pressed to close Settings, would take that key from
+        // all of them.
+        if flags.subtracting(.shift) == .command, Self.appKeys.contains(Int(event.keyCode)) { return nil }
         var modifiers = 0
         if flags.contains(.command) { modifiers |= cmdKey }
         if flags.contains(.control) { modifiers |= controlKey }

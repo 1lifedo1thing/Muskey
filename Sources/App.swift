@@ -1774,6 +1774,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pauseStopWaits: Bool {
         prefs.pauseStop && !model.shown && !(nowPlaying.player?.playing ?? false) && changesRun && songRecording == nil
             && saveJob == nil && karaokeRestart == nil && !phoneListening
+            // The notes window is a place where a song is paused for long, to study a bar at the tempo it was set to.
+            && !notesWindow.isShown
     }
 
     private func syncPauseStop() {
@@ -6455,12 +6457,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startRecording(_ job: SaveJob) {
         // The player moves under a slowed song, which would stop the recording, so the song plays as it is while it is
         // recorded, and the save slows it down. The slowing comes back after the save.
+        guard case let .player(id, _, _) = job.source, let track = nowPlaying.track, track.bundleID == id else {
+            return saveFinished(job, error: SaveError(message: "The song isn't playing anymore"), seconds: 0, length: 0)
+        }
         if slow.active {
             speedBeforeRecording = slow.speed
             slow.stop("the song is recorded for a save")
-        }
-        guard case let .player(id, _, _) = job.source, let track = nowPlaying.track, track.bundleID == id else {
-            return saveFinished(job, error: SaveError(message: "The song isn't playing anymore"), seconds: 0, length: 0)
         }
         let recorder = SongRecorder(bundleID: id, pid: track.pid)
         let recording = SongRecording(job: job, recorder: recorder)
@@ -6669,6 +6671,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func seek(to seconds: Double, flash: String) {
         guard let track = nowPlaying.track, track.title?.isEmpty == false else { return }
         guard model.seekable else { return log("seek: not now, the player ignores seeks or the lyrics delay would start over") }
+        // A save moves the player to the song's start and records it from there.
+        guard songRecording == nil else { return log("seek: not while the song is recorded for a save") }
         let target = max(0, min(seconds, (track.duration ?? .infinity) - 1))
         seekTarget = (track.song, target, Date())
         log(String(format: "seek to %.1f s", target))
@@ -8685,10 +8689,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.shift = 0
         model.relative = false
         pitch.semitones = 0
+        model.stemVolumes = [:]
+        pitch.stemVolumes = [:]
         model.stemsMuted = []
         pitch.mutedStems = []
         model.stemsEngaged = false
         pitch.stemsEngaged = false
+        endKaraokeRestart()
+        updateStemMeters(shown: model.shown)
         model.pitchFailed = true
         follow = nil
         keptKey = nil
@@ -8736,10 +8744,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         follow = nil
         model.pending = nil
         keptKey = nil
+        // The volumes set by a scroll go too, or the instruments would stay open at them over a song that plays whole.
+        model.stemVolumes = [:]
+        pitch.stemVolumes = [:]
         model.stemsMuted = []
         pitch.mutedStems = []
         model.stemsEngaged = false
         pitch.stemsEngaged = false
+        endKaraokeRestart()
         updateStemMeters(shown: model.shown)
         setShift(0, relative: false, byPerson: false)
         if model.picking { dismiss() }

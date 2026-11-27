@@ -173,6 +173,8 @@ enum SongRender {
     static func read(_ url: URL) throws -> StereoAudio {
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
+        // The whole song is held in memory more than once while it is changed, about 2 GB for an hour.
+        guard Double(file.length) / format.sampleRate <= 3600 else { throw SaveError(message: "Songs longer than an hour can't be saved") }
         guard file.length > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length)) else {
             throw SaveError(message: "The song is empty")
         }

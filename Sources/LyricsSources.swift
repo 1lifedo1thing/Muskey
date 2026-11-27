@@ -148,7 +148,9 @@ extension LyricsFinder {
                 }
             }
         } catch { failures += 1 }
-        result.failed = failures == 2
+        // Without an album or a length the exact song isn't asked for, so the search is the only request that can fail.
+        let asked = duration != nil && album?.isEmpty == false ? 2 : 1
+        result.failed = failures >= asked
         for (record, exact) in records {
             if record.instrumental == true {
                 if exact { result.instrumental = true; result.decisive = true }
