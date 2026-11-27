@@ -192,6 +192,9 @@ struct LevelAccumulator {
     private let perSlot: Double
     private var slot = 0
     private var filled = 0
+    /// The samples added so far. A slot ends where its share of them does, so a slot of 220.5 samples takes 220 and
+    /// 221 in turn, and the levels stay at their moments to the end of the song.
+    private var total = 0
     private var squares: Float = 0
 
     init(duration: Double, sampleRate: Double) {
@@ -203,13 +206,15 @@ struct LevelAccumulator {
         var offset = 0
         let slots = waveform.levels.count
         while offset < count, slot < slots {
-            let take = min(count - offset, Int(perSlot) - filled)
+            let slotEnd = Int((Double(slot + 1) * perSlot).rounded())
+            let take = min(count - offset, max(1, slotEnd - total))
             var sum: Float = 0
             vDSP_svesq(samples + offset, 1, &sum, vDSP_Length(take))
             squares += sum
             filled += take
+            total += take
             offset += take
-            if filled >= Int(perSlot) {
+            if total >= slotEnd {
                 waveform.levels[slot] = SongWaveform.byte(rms: (squares / Float(filled)).squareRoot())
                 slot += 1
                 filled = 0
@@ -482,7 +487,8 @@ enum WaveformStore {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
               let size = attributes[.size] as? Int, let date = attributes[.modificationDate] as? Date
         else { return nil }
-        return digest(["file", path, "\(size)", "\(date.timeIntervalSince1970)"])
+        // "file2": the levels read before it drifted late by a quarter of a percent, so those are read again.
+        return digest(["file2", path, "\(size)", "\(date.timeIntervalSince1970)"])
     }
 
     static func key(song: [String?], duration: Double) -> String {

@@ -65,6 +65,9 @@ struct WaveformView: View {
     @State private var dragged: Double?
     /// The song's place when a drag on the close-up began, which the drag moves like a tape under the playhead.
     @State private var tapeStart: Double?
+    /// Counts the seeks, so the timer of an earlier one leaves a later one alone, and the pointer is down.
+    @State private var seekCount = 0
+    @State private var pressing = false
     /// Where the close-up starts while an end of the region loop is held, instead of following the playhead.
     @State private var frozenFrom: Double?
     /// Where a close-up held still was, and when it let go: it slides back to the playhead from there.
@@ -529,6 +532,7 @@ struct WaveformView: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 HUDPanel.controlTracksDrag = true
+                pressing = true
                 if let held = heldLoop(at: Date()), value.startLocation.y < mainHeight {
                     // A held close-up stays still, so the song moves to the moment under the pointer.
                     let from = (held.start + held.end) / 2 - span / 2
@@ -544,15 +548,20 @@ struct WaveformView: View {
             }
             .onEnded { value in
                 HUDPanel.controlTracksDrag = false
+                pressing = false
                 var target = dragged ?? 0
                 if zoomed, value.startLocation.y < mainHeight, abs(value.translation.width) < 3, let now = track.position(at: Date()) {
                     target = min(1, max(0, (closeUpStart(now, at: Date()) + Double(value.location.x / width) * span) / duration))
                     dragged = target
                 }
                 tapeStart = nil
+                dragged = target
                 actions.seek(target)
-                // The waveform holds the place until the player reports the move.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { dragged = nil }
+                // The waveform holds the place until the player reports the move. A press made meanwhile keeps its own
+                // place: cleared under it, its release would send the song to its start.
+                seekCount += 1
+                let seek = seekCount
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { if seekCount == seek, !pressing { dragged = nil } }
             }
     }
 }
@@ -671,7 +680,11 @@ struct LoopFlags: View {
         }
         .frame(width: width, height: height, alignment: .topLeading)
         .onChange(of: hovered) { _, end in hoveredEnd(end) }
-        .onDisappear { hoveredEnd(nil) }
+        .onDisappear {
+            hoveredEnd(nil)
+            // A time that was being typed when the loop went away, with its song, gives the HUD its keys back.
+            if editing != nil { stopEditing() }
+        }
     }
 
     private func x(_ time: Double) -> CGFloat { CGFloat((time - from) / max(span, 0.001)) * width }
