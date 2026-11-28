@@ -916,8 +916,9 @@ struct HUDView: View {
                     .transition(.opacity)
             }
             }
-            // The key sits in the middle of the space above the stems.
-            .frame(maxHeight: .infinity)
+            // The key sits at the top of the space above the stems rather than in its middle, so that the stems, which
+            // take more of that space than their button, leave the title and the keys where they are.
+            .frame(maxHeight: .infinity, alignment: .top)
             // The stems stay at the bottom of this column, beside the record, so they don't make the glass taller.
             stems(palette)
         }
