@@ -420,7 +420,9 @@ final class WaveformRecorder: @unchecked Sendable {
             let slot = Int((heard * SongWaveform.rate).rounded(.down))
             guard slot >= 0, slot < count else { return lastStemSlot = nil }
             var stems = waveform.stems ?? Dictionary(uniqueKeysWithValues: Stem.allCases.map { ($0.rawValue, Data(count: count)) })
-            let from = lastStemSlot.flatMap { ($0 ..< slot).contains($0) && slot - $0 <= 6 ? $0 + 1 : nil } ?? slot
+            // The place heard can move back a slot or two when the player's clock is corrected, which only this slot
+            // gets: a range from the last slot would run backwards.
+            let from = lastStemSlot.flatMap { $0 < slot && slot - $0 <= 6 ? $0 + 1 : nil } ?? slot
             for stem in Stem.allCases where stem.rawValue < levels.count {
                 let byte = SongWaveform.byte(rms: levels[stem.rawValue])
                 if stems[stem.rawValue]?.count != count { stems[stem.rawValue] = Data(count: count) }
