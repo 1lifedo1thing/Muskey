@@ -707,6 +707,7 @@ private struct MiniPlayerPane: View {
                     Text("Fade key")
                     Text("Fades the mini player and passes clicks to the windows under it, until the pointer leaves it")
                 }
+                Toggle("Three-finger tap", isOn: $prefs.miniThreeFingerTap)
             }
             Section("Song") {
                 Toggle("Track", isOn: $prefs.miniLayout.track)

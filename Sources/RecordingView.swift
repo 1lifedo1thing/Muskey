@@ -60,6 +60,8 @@ struct MicCard: View {
     let mic: MicState
     let palette: Palette
     let stop: () -> Void
+    /// Stops and deletes the recording.
+    let cancel: () -> Void
     let edit: (RecordingAnalysis) -> Void
     @Environment(\.colorScheme) private var scheme
 
@@ -92,8 +94,14 @@ struct MicCard: View {
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(palette.muted)
                 } else {
-                    HUDButton(title: mic.failed ? "Close" : "Stop", symbol: mic.failed ? "xmark" : "stop.fill", palette: palette, small: true, action: stop)
-                        .help(mic.failed ? "Close" : "Stop recording and play it back (\(mic.hotkey))")
+                    HStack(spacing: 6) {
+                        HUDButton(title: mic.failed ? "Close" : "Stop", symbol: mic.failed ? "xmark" : "stop.fill", palette: palette, small: true, action: stop)
+                            .help(mic.failed ? "Close" : "Stop recording and play it back (\(mic.hotkey))")
+                        if !mic.failed {
+                            HUDButton(title: "Cancel", symbol: "trash", palette: palette, isOn: true, small: true, action: cancel)
+                                .help("Stop recording and delete it")
+                        }
+                    }
                 }
             }
             deviceLine
@@ -294,6 +302,7 @@ struct RecordingStrip: View {
                     dragged = nil
                     edit(changed)
                 })
+            .keepsDrag()
             .onContinuousHover { phase in
                 if case let .active(point) = phase { hovered = Double(point.x / max(width, 1)) * span } else { hovered = nil }
             }
@@ -330,6 +339,8 @@ struct SensitivityRow: View {
     let palette: Palette
     /// The word Sensitivity before the sliders, where the row has the width for it.
     var titled = true
+    /// Narrower on the card.
+    var sliderWidth: CGFloat = 70
     let set: (RecordingSensitivity) -> Void
     @Environment(\.colorScheme) private var scheme
 
@@ -360,7 +371,8 @@ struct SensitivityRow: View {
                 set(changed)
             }), in: 0 ... 1)
                 .controlSize(.mini)
-                .frame(width: 70)
+                .frame(width: sliderWidth)
+                .keepsDrag()
         }
     }
 }

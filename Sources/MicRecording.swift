@@ -625,6 +625,26 @@ final class MicRecorder: @unchecked Sendable {
         }
     }
 
+    /// Stops recording and deletes the samples and the analysis, then calls `done` on the main queue.
+    func cancel(_ done: @escaping () -> Void) {
+        queue.async { [self] in
+            if !stopped {
+                stopped = true
+                if usesInput {
+                    engine.inputNode.removeTap(onBus: 0)
+                    engine.stop()
+                }
+                fileSource?.cancel()
+                analyzer?.completeAnalysis()
+                try? handle?.close()
+                handle = nil
+            }
+            try? FileManager.default.removeItem(at: RecordingStore.samples(base))
+            try? FileManager.default.removeItem(at: RecordingStore.analysisFile(base))
+            DispatchQueue.main.async(execute: done)
+        }
+    }
+
     /// Writes what is on disk so far without stopping, for a quit that leaves no time to finish the song file.
     func flush() {
         queue.sync {

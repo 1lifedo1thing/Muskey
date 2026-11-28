@@ -1,3 +1,4 @@
+import os
 import AppKit
 import Carbon.HIToolbox
 import Combine
@@ -1035,6 +1036,7 @@ final class MiniPlayerPanel: NSPanel {
         place()
         orderFrontRegardless()
         watchPointer(true)
+        watchThreeFingerTap()
     }
 
     func hide() {
@@ -1045,6 +1047,7 @@ final class MiniPlayerPanel: NSPanel {
         faded = false
         alphaValue = 1
         watchFadeKey()
+        watchThreeFingerTap()
     }
 
     private func place() {
@@ -1209,6 +1212,28 @@ final class MiniPlayerPanel: NSPanel {
             if FadeKey.none(flags), Date().timeIntervalSince(down) < 0.35 { setFaded(!faded) }
         }
     }
+
+    /// A three-finger tap fades the player while the pointer is over it, and brings it back.
+    private var threeFingerTap: ThreeFingerTap?
+
+    private func watchThreeFingerTap() {
+        let wanted = isVisible && Preferences.shared.miniThreeFingerTap
+        guard wanted != (threeFingerTap != nil) else { return }
+        if wanted {
+            threeFingerTap = ThreeFingerTap()
+            Logger(subsystem: LOG_SUBSYSTEM, category: "MiniPlayer").log("three-finger tap \(self.threeFingerTap == nil ? "not allowed by macOS" : "watched", privacy: .public)")
+            threeFingerTap?.onTap = { [weak self] in
+                guard let self, isVisible, frame.contains(NSEvent.mouseLocation) else { return }
+                setFaded(!faded)
+            }
+        } else {
+            threeFingerTap?.stop()
+            threeFingerTap = nil
+        }
+    }
+
+    /// Settings changed the three-finger tap.
+    func syncGestures() { watchThreeFingerTap() }
 
     func setFaded(_ on: Bool) {
         guard faded != on else { return }
@@ -1519,5 +1544,85 @@ struct RecordLinesFit {
     static func height(size: CGFloat, kind: RecordSongLine.Kind) -> CGFloat {
         let font = font(size: size, kind: kind)
         return (font.ascender - font.descender).rounded(.up)
+    }
+}
+
+/// A tap of three fingers on the trackpad, read from the session's gesture events: touches never reach the mini
+/// player's non-activating panel, and they don't reach it at all while it is faded. The tap only listens, so it
+/// holds back no event, and it calls `onTap` on the main queue when three fingers touch and lift within 0.4 s without
+/// moving. Nil when macOS doesn't allow the tap.
+final class ThreeFingerTap: @unchecked Sendable {
+    var onTap: () -> Void = {}
+    private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
+    private var thread: Thread?
+    private var runLoop: CFRunLoop?
+    private var started: Date?
+    private var moved = false
+    private var positions: [Int: CGPoint] = [:]
+
+    init?() {
+        // 29 is the gesture event, which isn't in CGEventType.
+        let mask: CGEventMask = 1 << 29
+        let me = Unmanaged.passUnretained(self).toOpaque()
+        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap, options: .listenOnly, eventsOfInterest: mask,
+                                          callback: { _, type, event, info in
+                                              if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                                                  if let info { Unmanaged<ThreeFingerTap>.fromOpaque(info).takeUnretainedValue().enable() }
+                                              } else if type.rawValue == 29, let info, let ns = NSEvent(cgEvent: event) {
+                                                  Unmanaged<ThreeFingerTap>.fromOpaque(info).takeUnretainedValue().read(ns)
+                                              }
+                                              return Unmanaged.passUnretained(event)
+                                          }, userInfo: me)
+        else { return nil }
+        self.tap = tap
+        source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+        let thread = Thread { [weak self] in
+            guard let self, let source else { return }
+            runLoop = CFRunLoopGetCurrent()
+            CFRunLoopAddSource(runLoop, source, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+            CFRunLoopRun()
+        }
+        thread.name = "muskey.three-finger-tap"
+        thread.start()
+        self.thread = thread
+    }
+
+    private func enable() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+    }
+
+    func stop() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
+        if let runLoop { CFRunLoopStop(runLoop) }
+        tap = nil
+    }
+
+    deinit { stop() }
+
+    /// On the tap's thread.
+    private func read(_ event: NSEvent) {
+        // Only trackpad touches have a position; a touch screen's would raise an exception.
+        let touches = event.touches(matching: .touching, in: nil).filter { $0.type == .indirect }
+        if touches.count == 3 {
+            if started == nil {
+                started = Date()
+                moved = false
+                positions = Dictionary(touches.map { ($0.identity.hash, $0.normalizedPosition) }, uniquingKeysWith: { a, _ in a })
+            } else if !moved {
+                moved = touches.contains { touch in
+                    positions[touch.identity.hash].map { hypot(touch.normalizedPosition.x - $0.x, touch.normalizedPosition.y - $0.y) > 0.06 } ?? false
+                }
+            }
+            return
+        }
+        guard let start = started else { return }
+        if touches.count < 3, !moved, Date().timeIntervalSince(start) < 0.4 {
+            DispatchQueue.main.async { [weak self] in self?.onTap() }
+        }
+        started = nil
+        moved = false
+        positions = [:]
     }
 }

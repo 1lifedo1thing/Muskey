@@ -318,6 +318,11 @@ final class Preferences: ObservableObject {
     @Published var miniFadeKey: FadeKey {
         didSet { defaults.set(miniFadeKey.rawValue, forKey: "miniFadeKey") }
     }
+    /// A three-finger tap on the trackpad fades the mini player under the pointer and brings it back (Settings > Mini
+    /// player > Fade).
+    @Published var miniThreeFingerTap: Bool {
+        didSet { defaults.set(miniThreeFingerTap, forKey: "miniThreeFingerTap") }
+    }
     /// The size of the mini player's record against its usual size (Settings > Mini player > Record > Size).
     @Published var miniRecordScale: Double {
         didSet { defaults.set(miniRecordScale, forKey: "miniRecordScale") }
@@ -401,6 +406,7 @@ final class Preferences: ObservableObject {
         miniBackground = defaults.data(forKey: "miniBackground").flatMap { try? JSONDecoder().decode(MiniBackground.self, from: $0) } ?? MiniBackground()
         miniDirection = defaults.string(forKey: "miniDirection").flatMap(MiniDirection.init) ?? .automatic
         miniFadeKey = defaults.string(forKey: "miniFadeKey").flatMap(FadeKey.init) ?? .fn
+        miniThreeFingerTap = defaults.object(forKey: "miniThreeFingerTap") as? Bool ?? true
         // The song on the record was a switch of its own before it became a layout.
         if defaults.bool(forKey: "miniSongOnRecord") {
             miniDirection = .onRecord

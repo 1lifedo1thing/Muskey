@@ -1271,8 +1271,10 @@ final class StatusItem: NSObject {
     @objc private func checkForUpdates() { Updates.shared.check() }
     @objc private func toggleMic() { onMic() }
     @objc private func showMic() { onShowMic() }
+    @objc private func cancelMic() { onCancelMic() }
 
     var onMic: () -> Void = {}
+    var onCancelMic: () -> Void = {}
     var onShowMic: () -> Void = {}
 
     /// A red dot, for the icon while the microphone records.
@@ -1303,6 +1305,7 @@ final class StatusItem: NSObject {
         let menu = NSMenu()
         menu.addItem(.sectionHeader(title: "Recording · \(status)"))
         menu.addItem(menuItem("Stop Recording", #selector(toggleMic), hotkey: micHotkey))
+        menu.addItem(menuItem("Cancel Recording", #selector(cancelMic)))
         menu.addItem(menuItem("Show Recording", #selector(showMic)))
         menu.addItem(.separator())
         menu.addItem(menuItem("Settings…", #selector(settings), key: ","))

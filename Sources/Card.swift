@@ -545,6 +545,20 @@ struct HUDCard: View {
                         CardWaveform(wave: model.wave, track: track, width: ring - 30, ticking: model.shown && model.playing,
                                      bpm: model.shownTempo?.bpm, muted: model.stemsMuted, loop: model.loop, setLoop: model.onLoopSet,
                                      typing: model.onLoopTyping, palette: palette)
+                        // A recording from the microphone: its parts along the waveform, and how readily each kind is heard.
+                        if let recording = model.recording {
+                            VStack(spacing: 8) {
+                                RecordingStrip(analysis: recording, palette: palette, edit: model.onRecordingEdit)
+                                    .frame(width: ring - 30, height: 16)
+                                SensitivityRow(sensitivity: recording.sensitivity, palette: palette, titled: false, sliderWidth: 46) { sensitivity in
+                                    var changed = recording
+                                    changed.sensitivity = sensitivity
+                                    model.onRecordingEdit(changed)
+                                }
+                            }
+                            .padding(.top, 4)
+                            .transition(.opacity)
+                        }
                     } else {
                         SongTimeBar(track: track, ticking: model.shown && model.playing, palette: palette, width: 110)
                             .padding(.top, 3)

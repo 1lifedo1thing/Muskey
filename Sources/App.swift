@@ -233,6 +233,7 @@ final class HUDModel: ObservableObject {
     /// Microphone in Nothing playing, and the microphone hotkey.
     var onMic: () -> Void = {}
     var onMicStop: () -> Void = {}
+    var onMicCancel: () -> Void = {}
     /// A change of sensitivity, or a part added to the key or left out, while the microphone records.
     var onMicEdit: (RecordingAnalysis) -> Void = { _ in }
     @Published var micHotkey = ""
@@ -619,7 +620,7 @@ struct HUDView: View {
         Group {
             if let mic = model.mic {
                 // A recording from the microphone takes the whole HUD until it stops.
-                MicCard(mic: mic, palette: palette, stop: model.onMicStop, edit: model.onMicEdit)
+                MicCard(mic: mic, palette: palette, stop: model.onMicStop, cancel: model.onMicCancel, edit: model.onMicEdit)
                     .transition(.opacity)
             } else if let saving = model.saving {
                 // A save takes the whole HUD until it ends, in a compact layout with the record, so nothing else
@@ -1267,6 +1268,21 @@ struct HUDBackground: ViewModifier {
 }
 
 /// The first click on a button in the HUD acts on it, instead of only making the panel key.
+/// A SwiftUI control in the HUD that a drag adjusts, which the panel leaves the drag to instead of moving with it.
+struct KeepsDrag: ViewModifier {
+    @State private var token = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { HUDPanel.dragKeepers[token] = $0 }
+            .onDisappear { HUDPanel.dragKeepers[token] = nil }
+    }
+}
+
+extension View {
+    func keepsDrag() -> some View { modifier(KeepsDrag()) }
+}
+
 final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for _: NSEvent?) -> Bool { true }
 }
@@ -1338,6 +1354,16 @@ final class HUDPanel: NSPanel {
     /// A control that a drag along it moves, like the bar with the song's time, sets this while its drag runs, so
     /// that the drag doesn't move the panel instead.
     static var controlTracksDrag = false
+    /// Where the SwiftUI controls that a drag adjusts sit in the panel, like the sliders and the strip of a recording,
+    /// in the coordinates of the glass from its top left. A press there keeps its drag.
+    static var dragKeepers: [UUID: CGRect] = [:]
+
+    private func onDragKeeper(_ event: NSEvent) -> Bool {
+        guard !Self.dragKeepers.isEmpty, let view = contentView else { return false }
+        let local = view.convert(event.locationInWindow, from: nil)
+        let point = CGPoint(x: local.x, y: view.isFlipped ? local.y : view.bounds.height - local.y)
+        return Self.dragKeepers.values.contains { $0.insetBy(dx: -3, dy: -3).contains(point) }
+    }
     /// Where the pointer and the panel were when the mouse button went down on the glass.
     private var pressStart: (mouse: NSPoint, origin: NSPoint)?
     private var draggingPanel = false
@@ -1374,7 +1400,7 @@ final class HUDPanel: NSPanel {
             let hit = contentView?.hitTest(event.locationInWindow)
             let onBar = onTimeBar(event)
             // The list of the queue keeps its drags too, which move songs.
-            pressStart = hit is NSControl || hit is NSText || onBar || onQueue(event) ? nil : (NSEvent.mouseLocation, frame.origin)
+            pressStart = hit is NSControl || hit is NSText || onBar || onQueue(event) || onDragKeeper(event) ? nil : (NSEvent.mouseLocation, frame.origin)
             pressHit = onBar ? "the time bar" : hit.map { String(describing: type(of: $0)).components(separatedBy: "<").first ?? "" } ?? "nothing"
             pressedAt = Date()
             pressDragged = false
@@ -2624,6 +2650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.miniPanel.chooseSide() }
         }.store(in: &prefChanges)
         // Published before the change, so the panel takes its new size on the next turn, once the setting reads it.
+        prefs.$miniThreeFingerTap.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.miniPanel.syncGestures() } }.store(in: &prefChanges)
         prefs.$miniRecordScale.dropFirst().sink { [weak self] scale in
             self?.mini.recordScale = scale
             DispatchQueue.main.async { self?.miniPanel.resize() }
@@ -2779,8 +2806,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onOpenLocation = { [weak self] in self?.openLocation() }
         statusItem.onMic = { [weak self] in self?.toggleMic() }
         statusItem.onShowMic = { [weak self] in self?.showMic() }
+        statusItem.onCancelMic = { [weak self] in self?.cancelMic() }
         model.onMic = { [weak self] in self?.toggleMic() }
         model.onMicStop = { [weak self] in self?.stopMic() }
+        model.onMicCancel = { [weak self] in self?.cancelMic() }
         model.onMicEdit = { [weak self] in self?.editMic($0) }
         model.onRecordingEdit = { [weak self] in self?.editRecording($0) }
         filePlayer.onActivity = { [weak self] in self?.openActivity = $0 }
@@ -6422,7 +6451,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // A region loop with both ends saves only the region.
         if let loop = model.loop, let end = loop.end, end > loop.start, !loop.coversSong(nowPlaying.track?.duration) { changes.range = loop.start ... end }
-        return changes.isEmpty ? nil : changes
+        // A recording from the microphone can be saved as it is, since it lives in Muskey's folder until then.
+        return changes.isEmpty && model.recording == nil ? nil : changes
     }
 
     private func saveSource() -> SaveSource? {
@@ -9148,6 +9178,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             log(String(format: "microphone: %.1f s in %@, %d parts of music", analysis.duration, url.lastPathComponent, analysis.regions().count))
             open([url])
+        }
+    }
+
+    /// Cancel: the recording stops and its files are deleted.
+    private func cancelMic() {
+        guard let recorder = micRecorder, model.mic?.finishing != true else { return }
+        log("microphone: cancelled, deleting \(recorder.base)")
+        recorder.cancel { [weak self] in
+            guard let self else { return }
+            micRecorder = nil
+            micStatus = nil
+            model.mic = nil
+            refreshStatus()
+            dismiss()
         }
     }
 
