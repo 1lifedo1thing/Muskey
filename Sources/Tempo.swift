@@ -125,6 +125,15 @@ extension KeyAnalyzer {
             mono += mixed
         }
         guard !mono.isEmpty else { return nil }
+        // A recording from the microphone gets its key from its music only, without the talk and the noise around it.
+        if let ranges = RecordingStore.keyRanges(forSong: path) {
+            var music = [Float]()
+            for range in ranges {
+                let from = max(0, Int(range.lowerBound * rate)), to = min(mono.count, Int(range.upperBound * rate))
+                if from < to { music += mono[from ..< to] }
+            }
+            if !music.isEmpty { mono = music }
+        }
         let result = mono.withUnsafeBufferPointer { ek_key($0.baseAddress, UInt32($0.count), rate, profile) }
         let tempo = peak >= 0.0005 ? TempoDetector.bpm(mono, sourceRate: rate) : nil
         return (result, peak, tempo, Double(mono.count) / rate)

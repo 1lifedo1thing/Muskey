@@ -62,6 +62,8 @@ enum OpenActivity: Equatable {
     case saved(name: String)
     /// Saving failed, and Retry saves it again.
     case saveFailed(name: String)
+    /// A recording from the microphone that a crash cut short was written as a song file, and Play plays it.
+    case recovered(name: String)
 }
 
 /// Plays the songs that Muskey opens: files, links to audio and video files, and pages that yt-dlp downloads from.

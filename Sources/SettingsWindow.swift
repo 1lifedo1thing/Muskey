@@ -224,6 +224,12 @@ private struct GeneralPane: View {
                     Text("Hotkey").frame(minHeight: 24)
                 }
                 .padding(.vertical, -2)
+                LabeledContent {
+                    ShortcutRecorder(shortcut: $prefs.micHotkey, recording: $prefs.recordingMicHotkey, failed: prefs.micHotkeyFailed, standard: .mic)
+                } label: {
+                    Text("Microphone hotkey").frame(minHeight: 24)
+                }
+                .padding(.vertical, -2)
             }
             Section("Trackpad") {
                 Toggle(isOn: $prefs.naturalSwipes) {
@@ -1006,6 +1012,31 @@ private struct HUDPane: View {
     }
 }
 
+/// Settings > Listening > Microphone: Automatic, which follows the input that macOS uses, or one microphone. A picked
+/// microphone that isn't connected stays in the list, so the setting doesn't change by itself.
+private struct MicrophonePicker: View {
+    @ObservedObject var prefs: Preferences
+    @State private var devices: [MicDevices.Device] = []
+    @State private var standard: String?
+
+    var body: some View {
+        Picker("Microphone", selection: Binding(get: { prefs.micDevice }, set: { uid in
+            prefs.micDevice = uid
+            prefs.micDeviceName = devices.first { $0.uid == uid }?.name ?? ""
+        })) {
+            Text(standard.map { "Automatic (\($0))" } ?? "Automatic").tag("")
+            ForEach(devices, id: \.uid) { Text($0.name).tag($0.uid) }
+            if !prefs.micDevice.isEmpty, !devices.contains(where: { $0.uid == prefs.micDevice }) {
+                Text("\(prefs.micDeviceName.isEmpty ? "Microphone" : prefs.micDeviceName) (not connected)").tag(prefs.micDevice)
+            }
+        }
+        .onAppear {
+            devices = MicDevices.all()
+            standard = MicDevices.defaultInput()?.name
+        }
+    }
+}
+
 private struct ListeningPane: View {
     @ObservedObject var prefs: Preferences
     @ObservedObject var keyCache: KeyCache
@@ -1025,6 +1056,9 @@ private struct ListeningPane: View {
                     Text("Listen length")
                     Text("Audio analysed to detect a key")
                 }
+            }
+            Section("Microphone") {
+                MicrophonePicker(prefs: prefs)
             }
             Section("Song keys") {
                 Toggle(isOn: $prefs.onlineKeys) {
@@ -1498,14 +1532,16 @@ struct ShortcutRecorder: View {
     @Binding var shortcut: Shortcut
     @Binding var recording: Bool
     let failed: Bool
+    /// The shortcut that the reset button puts back.
+    var standard = Shortcut.default
     @State private var monitor: Any?
 
     var body: some View {
         HStack(spacing: 6) {
-            if shortcut != .default, !recording {
-                Button { shortcut = .default } label: { Image(systemName: "arrow.counterclockwise") }
+            if shortcut != standard, !recording {
+                Button { shortcut = standard } label: { Image(systemName: "arrow.counterclockwise") }
                     .buttonStyle(.borderless)
-                    .help("Reset to \(Shortcut.default.symbols)")
+                    .help("Reset to \(standard.symbols)")
             }
             Button(action: recording ? stop : start) {
                 Text(recording ? "press a shortcut" : shortcut.symbols)

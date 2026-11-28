@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Carbon.HIToolbox
 import Combine
 import Network
@@ -227,6 +228,17 @@ final class HUDModel: ObservableObject {
     /// The pointer is over the record and its time bar, where ← → and 0 move the song.
     @Published var overRecord = false
     var onOpenLocation: () -> Void = {}
+    /// The microphone records, and the HUD shows the recording in place of either layout.
+    @Published var mic: MicState?
+    /// Microphone in Nothing playing, and the microphone hotkey.
+    var onMic: () -> Void = {}
+    var onMicStop: () -> Void = {}
+    /// A change of sensitivity, or a part added to the key or left out, while the microphone records.
+    var onMicEdit: (RecordingAnalysis) -> Void = { _ in }
+    @Published var micHotkey = ""
+    /// What was heard in the recording from the microphone that Muskey Player plays, with its parts under the waveform.
+    @Published var recording: RecordingAnalysis?
+    var onRecordingEdit: (RecordingAnalysis) -> Void = { _ in }
     /// A seek would be instant: the stems aren't separated live, the lyrics don't play behind, and the player took
     /// the last seek. The seek keys and their hints exist only then.
     @Published var seekable = false
@@ -574,8 +586,8 @@ struct HUDView: View {
 
     /// The ✕ closes the HUD while it stays up: with the key row, a listen, its result, or nothing playing. A failed
     /// listen closes by itself.
-    private var closable: Bool { model.picking || model.opening != nil || [.listening, .done, .idle].contains(model.phase) }
-    private var showsSave: Bool { showsStrip && model.saving == nil && model.opening == nil && !model.shortcuts && !focus && model.savable && !(model.card && model.queueShown) }
+    private var closable: Bool { model.mic != nil || model.picking || model.opening != nil || [.listening, .done, .idle].contains(model.phase) }
+    private var showsSave: Bool { model.mic == nil && showsStrip && model.saving == nil && model.opening == nil && !model.shortcuts && !focus && model.savable && !(model.card && model.queueShown) }
 
     /// The large lyrics take the place of either layout.
     private var focus: Bool { model.saving == nil && model.opening == nil && !model.shortcuts && model.lyricsFocus && model.lyricsShown && showsStrip }
@@ -605,7 +617,11 @@ struct HUDView: View {
     var body: some View {
         let palette = Palette.of(colorScheme)
         Group {
-            if let saving = model.saving {
+            if let mic = model.mic {
+                // A recording from the microphone takes the whole HUD until it stops.
+                MicCard(mic: mic, palette: palette, stop: model.onMicStop, edit: model.onMicEdit)
+                    .transition(.opacity)
+            } else if let saving = model.saving {
                 // A save takes the whole HUD until it ends, in a compact layout with the record, so nothing else
                 // changes while the song is saved.
                 SavingCard(saving: saving, track: model.track?.title?.isEmpty == false ? model.track : nil, artwork: model.artwork,
@@ -681,7 +697,7 @@ struct HUDView: View {
         }
         .overlay(alignment: .topTrailing) {
             // The queue has its own button in this corner, and the other buttons wait until it turns back.
-            if showsStrip, model.saving == nil, model.opening == nil, !model.shortcuts, !model.queueShown {
+            if showsStrip, model.mic == nil, model.saving == nil, model.opening == nil, !model.shortcuts, !model.queueShown {
                 HStack(spacing: 6) {
                     // Karaoke keeps only its own button, which closes it.
                     if !focus {
@@ -914,6 +930,20 @@ struct HUDView: View {
             if showsWaveform(.ribbon) {
                 waveform(palette, width: Self.keyRowWidth - 14, height: 40)
                     .transition(.opacity)
+            }
+            // A recording from the microphone: its parts along the waveform, and how readily each kind is heard.
+            if let recording = model.recording, showsStrip {
+                VStack(spacing: 8) {
+                    RecordingStrip(analysis: recording, palette: palette, edit: model.onRecordingEdit)
+                        .frame(width: Self.keyRowWidth - 14, height: 16)
+                    SensitivityRow(sensitivity: recording.sensitivity, palette: palette, titled: false) { sensitivity in
+                        var changed = recording
+                        changed.sensitivity = sensitivity
+                        model.onRecordingEdit(changed)
+                    }
+                }
+                .padding(.top, -4)
+                .transition(.opacity)
             }
             }
             // The key sits at the top of the space above the stems rather than in its middle, so that the stems, which
@@ -2563,6 +2593,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefs.$hotkey.combineLatest(prefs.$recordingHotkey).sink { [weak self] shortcut, recording in
             self?.registerHotKey(recording ? nil : shortcut)
         }.store(in: &prefChanges)
+        prefs.$micHotkey.combineLatest(prefs.$recordingMicHotkey).sink { [weak self] shortcut, recording in
+            self?.registerMicHotKey(recording ? nil : shortcut)
+            self?.model.micHotkey = shortcut.symbols
+        }.store(in: &prefChanges)
         prefs.$launchAtLogin.sink { [weak self] in self?.updateLoginItem($0) }.store(in: &prefChanges)
         prefs.$relativeKeys.sink { [weak self] in self?.model.relativeKeys = $0 }.store(in: &prefChanges)
         prefs.$waveform.dropFirst().sink { [weak self] shown in
@@ -2743,6 +2777,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onSettings = { [weak self] in self?.settingsWindow.show() }
         statusItem.onOpenFile = { [weak self] in self?.openFile() }
         statusItem.onOpenLocation = { [weak self] in self?.openLocation() }
+        statusItem.onMic = { [weak self] in self?.toggleMic() }
+        statusItem.onShowMic = { [weak self] in self?.showMic() }
+        model.onMic = { [weak self] in self?.toggleMic() }
+        model.onMicStop = { [weak self] in self?.stopMic() }
+        model.onMicEdit = { [weak self] in self?.editMic($0) }
+        model.onRecordingEdit = { [weak self] in self?.editRecording($0) }
         filePlayer.onActivity = { [weak self] in self?.openActivity = $0 }
         filePlayer.onPlaying = { [weak self] in self?.filePlays() }
         filePlayer.pauseOthers = { [weak self] done in
@@ -2763,6 +2803,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onOpenCancel = { [weak self] in self?.cancelOpening() }
         model.onOpenBackground = { [weak self] in self?.continueOpeningInBackground() }
         activityPill.onReveal = { [weak self] in
+            if case .recovered = self?.saveActivity, let url = self?.recoveredURL {
+                self?.saveActivity = nil
+                return self?.open([url]) ?? ()
+            }
             guard let url = self?.savedURL else { return }
             NSWorkspace.shared.activateFileViewerSelecting([url])
             self?.saveActivity = nil
@@ -2817,6 +2861,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onSkip = { [weak self] in self?.skip($0) }
         model.onLink = { [weak self] url in self?.log("opening \(url.host() ?? url.absoluteString) in the browser") }
         filePlayer.onChange = { [weak self] in
+            self?.syncRecording()
             self?.syncChords()
             self?.refreshStatus()
             self?.syncSpeed()
@@ -3059,6 +3104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if Self.lyricsPlain, model.picking {
             toggleLyrics()
         }
+        recoverRecordings()
         let firstLaunch = !UserDefaults.standard.bool(forKey: "launchedBefore")
         if TestFlags.has("--settings") || firstLaunch {
             UserDefaults.standard.set(true, forKey: "launchedBefore")
@@ -5330,6 +5376,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quitting while the lyrics show keeps the words heard and the lines written so far, as closing the HUD does.
     func applicationWillTerminate(_: Notification) {
+        // A recording keeps its samples on disk and becomes a song file at the next launch.
+        micRecorder?.flush()
         restoreRemoteMute()
         filePlayer.stop()
         cancelAutoListen()
@@ -5382,6 +5430,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// While a pitch change runs or a key is kept, the hotkey opens the key picker instead of starting another listen.
     private func toggle() {
+        // While the microphone records, the hotkey brings its HUD back.
+        if micRecorder != nil { return showMic() }
         if state != .idle, panel.headless { return revealHeadless() }
         switch state {
         case .idle: (pitch.running && changesNeedPitch) || keptKey != nil ? pickKey() : start()
@@ -8972,7 +9022,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           current: currentKey,
                           stems: model.stemsAdjusted ? Stem.shown.filter { !model.stemsMuted.contains($0) } : nil,
                           alwaysShown: prefs.menuBarIcon == .always, playing: filePlayer.hasSong, savable: model.savable, miniPlayer: prefs.miniPlayer,
-                          hotkey: prefs.hotkey)
+                          hotkey: prefs.hotkey, micHotkey: prefs.micHotkey, recording: model.mic?.status)
     }
 
     private func logShift() {
@@ -8989,6 +9039,162 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Cancels a listen in progress, or closes the result or the key picker. A pitch change keeps running.
+    // MARK: Recording from the microphone
+
+    private var micRecorder: MicRecorder?
+    private var micHotKey: HotKey?
+    /// The status that the menu bar shows, which it redraws only when this changes.
+    private var micStatus: String?
+    /// The recording from the microphone that Muskey Player plays.
+    private var recordingPath: String?
+    private var recordingRedetect: DispatchWorkItem?
+    private var recoveredURL: URL?
+
+    private func registerMicHotKey(_ shortcut: Shortcut?) {
+        micHotKey = nil
+        prefs.micHotkeyFailed = false
+        guard let shortcut else { return }
+        do {
+            micHotKey = try HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in self?.toggleMic() }
+        } catch {
+            prefs.micHotkeyFailed = true
+            log("\(error); is \(shortcut.symbols) taken by another app?", .error)
+        }
+    }
+
+    /// The microphone hotkey, Microphone in Nothing playing and the menu: starts a recording, or stops the one that runs.
+    private func toggleMic() {
+        if micRecorder != nil { return stopMic() }
+        if Self.stringOption("--mic-file") != nil { return startMic() }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: startMic()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted { self?.startMic() } else { self?.log("microphone: recording was not allowed", .error) }
+                }
+            }
+        default:
+            log("microphone: recording is not allowed in Privacy & Security", .error)
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") { NSWorkspace.shared.open(url) }
+        }
+    }
+
+    private func startMic() {
+        guard micRecorder == nil else { return }
+        if state != .idle { dismiss() }
+        let recorder = MicRecorder(sensitivity: prefs.micSensitivity)
+        recorder.onUpdate = { [weak self] analysis, seconds in
+            guard let self, micRecorder === recorder, model.mic != nil else { return }
+            model.mic?.analysis = analysis
+            model.mic?.seconds = seconds
+            if model.mic?.status != micStatus {
+                micStatus = model.mic?.status
+                refreshStatus()
+            }
+        }
+        recorder.onKey = { [weak self] result, peak in
+            guard let self, micRecorder === recorder, peak >= 0.0005, let key = DetectedKey(result) else { return }
+            model.mic?.key = key
+        }
+        micRecorder = recorder
+        model.mic = MicState(analysis: RecordingAnalysis(rate: 48000), hotkey: prefs.micHotkey.symbols)
+        recorder.start(file: Self.stringOption("--mic-file"), deviceUID: Self.stringOption("--mic-device") ?? prefs.micDevice,
+                       deviceName: prefs.micDeviceName.isEmpty ? nil : prefs.micDeviceName) { [weak self] error in
+            guard let self, micRecorder === recorder else { return }
+            if let error {
+                model.mic?.failed = true
+                return log("microphone: \(error.localizedDescription)", .error)
+            }
+            if let fallback = recorder.fallback {
+                log("microphone: \(fallback.tried) is unavailable, recording from \(fallback.using)", .error)
+            }
+            log("microphone: recording from \(recorder.deviceName) to \(recorder.base)")
+            model.mic?.device = recorder.deviceName
+            model.mic?.tried = recorder.fallback?.tried
+        }
+        showMic()
+        refreshStatus()
+    }
+
+    private func showMic() {
+        guard model.mic != nil else { return }
+        session += 1
+        state = .showing
+        stayOpen = true
+        model.shown = true
+        panel.setInteraction(clickable: true, keyboard: false)
+        panel.present()
+    }
+
+    /// Stops the recording and plays it in Muskey Player once its song file is written.
+    private func stopMic() {
+        guard let recorder = micRecorder, model.mic?.finishing != true else { return }
+        model.mic?.finishing = true
+        log("microphone: stopping")
+        let failed = model.mic?.failed == true
+        recorder.stop { [weak self] url, analysis in
+            guard let self else { return }
+            micRecorder = nil
+            micStatus = nil
+            if !failed { prefs.micSensitivity = analysis.sensitivity }
+            model.mic = nil
+            refreshStatus()
+            guard let url else {
+                if analysis.duration > 0 {
+                    log("microphone: the recording couldn't be written as a song file; its samples stay for the next launch", .error)
+                }
+                return dismiss()
+            }
+            log(String(format: "microphone: %.1f s in %@, %d parts of music", analysis.duration, url.lastPathComponent, analysis.regions().count))
+            open([url])
+        }
+    }
+
+    private func editMic(_ analysis: RecordingAnalysis) {
+        guard let recorder = micRecorder else { return }
+        model.mic?.analysis = analysis
+        prefs.micSensitivity = analysis.sensitivity
+        recorder.setSensitivity(analysis.sensitivity)
+        recorder.setEdits(analysis.edits)
+    }
+
+    /// Muskey Player plays a recording from the microphone, whose parts show under the waveform.
+    private func syncRecording() {
+        let path = filePlayer.current?.path
+        guard path != recordingPath else { return }
+        recordingPath = path
+        model.recording = path.flatMap(RecordingStore.analysis(forSong:))
+    }
+
+    /// A part of the recording that plays was added to the key or left out, or a sensitivity changed: the key is read
+    /// again from the parts used for it, a moment after the last change.
+    private func editRecording(_ analysis: RecordingAnalysis) {
+        guard let path = recordingPath else { return }
+        model.recording = analysis
+        RecordingStore.save(analysis, forSong: path)
+        prefs.micSensitivity = analysis.sensitivity
+        recordingRedetect?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.redetect() }
+        recordingRedetect = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+
+    /// Recordings that a crash or a forced quit cut short become song files, and the pill at the top right plays the
+    /// newest one.
+    private func recoverRecordings() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let urls = RecordingStore.recover()
+            guard let newest = urls.max(by: { $0.lastPathComponent < $1.lastPathComponent }) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                log("microphone: recovered \(urls.map(\.lastPathComponent).joined(separator: ", "))", .notice)
+                recoveredURL = newest
+                saveActivity = .recovered(name: newest.deletingPathExtension().lastPathComponent)
+            }
+        }
+    }
+
     private func dismiss() {
         stopCapture()
         analyzer = nil
@@ -9336,7 +9542,7 @@ extension EnvironmentValues {
         // Two states once more without the relative keys, once more with Option held, and once with the lyrics.
         for variant in ["", "-clean", "-option", "-lyrics", "-lyrics-estimated", "-lyrics-heard", "-lyrics-downloading", "-lyrics-loading",
                         "-lyrics-missing", "-lyrics-instrumental", "-lyrics-failed", "-lyrics-nosong", "-stems", "-stems-solo", "-stems-volume", "-stems-waiting",
-                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-loop-zoom", "-lanes-hover-loop-zoom", "-waveform-hover-loop", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-lanes-separating", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-picker-region", "-notes-picker-whole", "-notes-outside-region", "-notes-outside-region-whole", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
+                        "-stems-failed", "-stems-button", "-stems-option", "-skip", "-skip-paused", "-tempo", "-tempo-return", "-saving", "-recording", "-mic", "-mic-fallback", "-mic-recording", "-lyrics-focus-skip", "-labels", "-lyrics-stems", "-lyrics-stems-button", "-lyrics-focus", "-lyrics-focus-stems", "-lyrics-focus-separate", "-lyrics-focus-keys", "-paused", "-lyrics-focus-paused", "-lyrics-waiting", "-lyrics-focus-waiting", "-lyrics-focus-rewind", "-lyrics-focus-restart", "-lyrics-focus-loading", "-lyrics-focus-ending", "-arriving", "-lyrics-focus-arriving", "-stems-idle", "-lyrics-idle", "-lyrics-focus-idle", "-key-hover", "-waveform-off", "-waveform-strip", "-waveform-zoom", "-waveform-lanes", "-waveform-streamed", "-waveform-stems", "-waveform-hover", "-waveform-hover-zoom", "-waveform-hover-loop-zoom", "-lanes-hover-loop-zoom", "-waveform-hover-loop", "-waveform-hover-stems", "-lanes-one", "-lanes-four", "-lanes-zoom", "-lanes-loop", "-lanes-loop-zoom", "-lanes-stems", "-lanes-loop-hover", "-lanes-separating", "-loop", "-loop-armed", "-loop-zoom", "-loop-hover", "-stems-loop-hover", "-lyrics-loop", "-lyrics-focus-loop", "-lyrics-chords", "-lyrics-focus-chords", "-lyrics-seek", "-lyrics-stems-seek", "-lyrics-stems-chords", "-queue", "-queue-labels", "-queue-drop", "-queue-drop-next", "-queue-drop-now", "-drop-live", "-notes-picker", "-notes-picker-region", "-notes-picker-whole", "-notes-outside-region", "-notes-outside-region-whole", "-notes-download", "-notes-outside", "-notes-outside-none", "-notes-outside-long", "-shift", "-lyrics-fix", "-lyrics-fix-working", "-lyrics-fix-checking", "-lyrics-fix-found", "-lyrics-fix-applied", "-lyrics-fix-ontime", "-lyrics-fix-unknown", "-lyrics-fix-failed", "-lyrics-focus-fix-found", "-lyrics-fix-hover", "-lyrics-fix-found-hover", "-lyrics-fix-applied-hover", "-lyrics-fix-idle", "-lyrics-fix-idle-hover", "-lyrics-fix-nudged", "-lyrics-focus-fix-found-hover"] {
             // The stems once without a record too, where the key column sets the height of the wide glass.
             let noRecord = suffix.isEmpty && layout.isEmpty && ["-stems", "-stems-button"].contains(variant)
             // Karaoke's record once more with a long title, and with no cover.
@@ -9542,6 +9748,12 @@ extension EnvironmentValues {
             // A slowed song on its way back to 100 %, with the ring on the tempo pill part filled.
             model.tempoReturn = variant == "-tempo-return" ? 0.6 : nil
             // A save of the song in progress, rendered or recorded, which covers the HUD.
+            // A recording from the microphone: 54 s of talk, a song and noise, while it records, and once it plays.
+            model.mic = variant.hasPrefix("-mic") && variant != "-mic-recording"
+                ? MicState(analysis: RecordingAnalysis.sample(), seconds: 54, key: variant == "-mic" ? DetectedKey(pitchClass: 1, minor: true) : nil,
+                           hotkey: Shortcut.mic.symbols, device: "MacBook Pro Microphone", tried: variant == "-mic-fallback" ? "Studio Display Microphone" : nil)
+                : nil
+            model.recording = variant == "-mic-recording" ? RecordingAnalysis.sample() : nil
             model.saving = variant == "-saving" ? SavingState(name: "Paper Lanterns (C minor, 90%)", progress: 0.42, left: nil)
                 : variant == "-recording" ? SavingState(name: "Paper Lanterns (no vocals)", progress: nil, left: "2:15 left") : nil
             // The arm on the record, or lifted off it with the pause glyph that Space shows.

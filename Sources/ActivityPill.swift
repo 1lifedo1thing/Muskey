@@ -108,6 +108,8 @@ struct ActivityPillView: View {
             done("\(name) saved") { button("Show in Finder", action: model.reveal) }
         case let .saveFailed(name):
             failure("Saving \(name) failed") { button("Retry", action: model.retry) }
+        case let .recovered(name):
+            done("\(name) recovered") { button("Play", action: model.reveal) }
         }
     }
 

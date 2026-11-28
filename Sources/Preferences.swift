@@ -10,6 +10,8 @@ struct Shortcut: Codable, Equatable {
     var key: String
 
     static let `default` = Shortcut(keyCode: kVK_ANSI_M, modifiers: controlKey | cmdKey, key: "M")
+    /// The hotkey with Option: records from the microphone.
+    static let mic = Shortcut(keyCode: kVK_ANSI_M, modifiers: controlKey | optionKey | cmdKey, key: "M")
 
     init(keyCode: Int, modifiers: Int, key: String) {
         self.keyCode = keyCode
@@ -172,6 +174,24 @@ final class Preferences: ObservableObject {
 
     @Published var hotkey: Shortcut {
         didSet { defaults.set(try? JSONEncoder().encode(hotkey), forKey: "hotkey") }
+    }
+    /// Records from the microphone, and stops the recording (Settings > General > Microphone hotkey).
+    @Published var micHotkey: Shortcut {
+        didSet { defaults.set(try? JSONEncoder().encode(micHotkey), forKey: "micHotkey") }
+    }
+    @Published var micHotkeyFailed = false
+    /// The microphone that records, by its unique ID, empty for the one that macOS uses (Settings > Listening >
+    /// Microphone). Its name is kept for the message when it isn't there.
+    @Published var micDevice: String {
+        didSet { defaults.set(micDevice, forKey: "micDevice") }
+    }
+    @Published var micDeviceName: String {
+        didSet { defaults.set(micDeviceName, forKey: "micDeviceName") }
+    }
+    @Published var recordingMicHotkey = false
+    /// The sensitivity of the last recording from the microphone, which the next one starts with.
+    @Published var micSensitivity: RecordingSensitivity {
+        didSet { defaults.set(try? JSONEncoder().encode(micSensitivity), forKey: "micSensitivity") }
     }
     /// The hotkey is taken by another app.
     @Published var hotkeyFailed = false
@@ -346,6 +366,10 @@ final class Preferences: ObservableObject {
     private init() {
         defaults.register(defaults: ["launchAtLogin": true, "rememberKeys": true, "onlineKeys": false, "relativeKeys": false, "listenSeconds": 20, "karaokeMutesVocals": true, "karaokeRestarts": true, "karaokeBackdrop": true, "lyricsLiveTiming": true, "pauseStop": true, "pauseStopSeconds": 10, "autoHide": false, "autoHideSeconds": 6, "cacheCleanup": CacheCleanup.weekly.rawValue, "waveform": true, "enableSentry": true])
         hotkey = defaults.data(forKey: "hotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .default
+        micHotkey = defaults.data(forKey: "micHotkey").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? .mic
+        micDevice = defaults.string(forKey: "micDevice") ?? ""
+        micDeviceName = defaults.string(forKey: "micDeviceName") ?? ""
+        micSensitivity = defaults.data(forKey: "micSensitivity").flatMap { try? JSONDecoder().decode(RecordingSensitivity.self, from: $0) } ?? RecordingSensitivity()
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         menuBarIcon = defaults.string(forKey: "menuBarIcon").flatMap(MenuBarIcon.init) ?? .always
         let seconds = defaults.integer(forKey: "listenSeconds")

@@ -185,6 +185,8 @@ struct IdleActions: View {
         HStack(spacing: 8) {
             IdleButton(symbol: "doc", title: "Open File", key: "⌘O", palette: palette, action: model.onOpenFile)
             IdleButton(symbol: "link", title: "Open URL", key: "⌘L", palette: palette, action: model.onOpenLocation)
+            IdleButton(symbol: "mic", title: "Microphone", key: model.micHotkey, palette: palette, action: model.onMic)
+                .help("Record from the microphone and find the key of what plays (\(model.micHotkey))")
         }
     }
 }

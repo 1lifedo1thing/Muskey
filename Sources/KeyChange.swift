@@ -1180,8 +1180,9 @@ final class StatusItem: NSObject {
     /// `playing` is true while Muskey Player has a song, which the menu can stop, so the icon shows then too.
     /// `savable` is true while the song can be saved with its changes.
     func update(shift: Int, from original: DetectedKey?, heard: DetectedKey?, kept: DetectedKey?, current: DetectedKey?, stems: [Stem]?,
-                alwaysShown: Bool, playing: Bool, savable: Bool, miniPlayer: Bool, hotkey: Shortcut)
+                alwaysShown: Bool, playing: Bool, savable: Bool, miniPlayer: Bool, hotkey: Shortcut, micHotkey: Shortcut, recording: String? = nil)
     {
+        if let recording { return showRecording(recording, micHotkey: micHotkey) }
         let changing = shift != 0 || kept != nil || stems != nil
         guard changing || alwaysShown || playing else {
             if let item { NSStatusBar.system.removeStatusItem(item) }
@@ -1190,6 +1191,7 @@ final class StatusItem: NSObject {
         }
         let item = item ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.item = item
+        item.length = NSStatusItem.variableLength
         if let button = item.button {
             button.image = current.map(Self.pill) ?? Self.turntable
             button.imagePosition = .imageLeading
@@ -1220,6 +1222,7 @@ final class StatusItem: NSObject {
         menu.addItem(.separator())
         menu.addItem(menuItem("Open File…", #selector(openFile), key: "o"))
         menu.addItem(menuItem("Open URL…", #selector(openLocation), key: "l"))
+        menu.addItem(menuItem("Record from Microphone", #selector(toggleMic), hotkey: micHotkey))
         // Songs added while Muskey Player plays wait in its queue.
         if playing {
             let files = menuItem("Add Files to Queue…", #selector(addFiles), key: "O")
@@ -1266,4 +1269,44 @@ final class StatusItem: NSObject {
     @objc private func addLocation() { onAddLocation() }
     @objc private func toggleMiniPlayer() { onMiniPlayer() }
     @objc private func checkForUpdates() { Updates.shared.check() }
+    @objc private func toggleMic() { onMic() }
+    @objc private func showMic() { onShowMic() }
+
+    var onMic: () -> Void = {}
+    var onShowMic: () -> Void = {}
+
+    /// A red dot, for the icon while the microphone records.
+    private static let recordDot: NSImage = {
+        let image = NSImage(size: NSSize(width: 10, height: 18), flipped: false) { _ in
+            NSColor(red: 0.93, green: 0.26, blue: 0.24, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 1, y: 5, width: 8, height: 8)).fill()
+            return true
+        }
+        image.isTemplate = false
+        image.accessibilityDescription = "Recording"
+        return image
+    }()
+
+    /// While the microphone records: a red dot and what it hears, at the width of the longest status, so the icons
+    /// beside it don't move as the status changes.
+    private func showRecording(_ status: String, micHotkey: Shortcut) {
+        let item = item ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.item = item
+        if let button = item.button {
+            button.image = Self.recordDot
+            button.imagePosition = .imageLeading
+            button.title = status
+            let font = button.font ?? NSFont.menuBarFont(ofSize: 0)
+            let widest = ["Waiting", "Music", "Speech", "Noise", "Silence"].map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 50
+            item.length = ceil(widest + 10 + 14)
+        }
+        let menu = NSMenu()
+        menu.addItem(.sectionHeader(title: "Recording · \(status)"))
+        menu.addItem(menuItem("Stop Recording", #selector(toggleMic), hotkey: micHotkey))
+        menu.addItem(menuItem("Show Recording", #selector(showMic)))
+        menu.addItem(.separator())
+        menu.addItem(menuItem("Settings…", #selector(settings), key: ","))
+        menu.addItem(NSMenuItem(title: "Quit Muskey", action: #selector(NSApplication.terminate), keyEquivalent: "q"))
+        item.menu = menu
+    }
 }
