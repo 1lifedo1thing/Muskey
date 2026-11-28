@@ -160,8 +160,13 @@ private struct TitlePill: View {
                 .font(.system(size: small ? 9 : 10, weight: .bold))
             Accidental.text(text, color: palette.ink)
                 .font(.system(size: small ? 10.5 : 11.5, weight: .semibold, design: .rounded))
-            if let key { Keycap(text: key, palette: palette, small: true) }
+            if let key {
+                Spacer(minLength: 0)
+                Keycap(text: key, palette: palette, small: true)
+            }
         }
+        // As wide as the widest pill of the stack, so the stacked pills share both edges.
+        .frame(maxWidth: small ? .infinity : nil, alignment: .leading)
         .foregroundStyle(palette.ink)
         .padding(.leading, small ? 7 : 9)
         .padding(.trailing, key == nil ? (small ? 7 : 9) : 3)
