@@ -293,6 +293,11 @@ final class Preferences: ObservableObject {
     @Published var miniDirection: MiniDirection {
         didSet { defaults.set(miniDirection.rawValue, forKey: "miniDirection") }
     }
+    /// The modifier that, tapped with the pointer over the mini player, fades it and lets clicks through it until the
+    /// pointer leaves it (Settings > Mini player > Fade key).
+    @Published var miniFadeKey: FadeKey {
+        didSet { defaults.set(miniFadeKey.rawValue, forKey: "miniFadeKey") }
+    }
     /// The size of the mini player's record against its usual size (Settings > Mini player > Record > Size).
     @Published var miniRecordScale: Double {
         didSet { defaults.set(miniRecordScale, forKey: "miniRecordScale") }
@@ -371,6 +376,7 @@ final class Preferences: ObservableObject {
         miniLayout = defaults.data(forKey: "miniLayout").flatMap { try? JSONDecoder().decode(MiniLayout.self, from: $0) } ?? MiniLayout()
         miniBackground = defaults.data(forKey: "miniBackground").flatMap { try? JSONDecoder().decode(MiniBackground.self, from: $0) } ?? MiniBackground()
         miniDirection = defaults.string(forKey: "miniDirection").flatMap(MiniDirection.init) ?? .automatic
+        miniFadeKey = defaults.string(forKey: "miniFadeKey").flatMap(FadeKey.init) ?? .fn
         // The song on the record was a switch of its own before it became a layout.
         if defaults.bool(forKey: "miniSongOnRecord") {
             miniDirection = .onRecord
@@ -387,4 +393,56 @@ final class Preferences: ObservableObject {
         remoteHeadless = defaults.bool(forKey: "remoteHeadless")
         saveFormat = defaults.string(forKey: "saveFormat").flatMap(SaveFormat.init).flatMap { SaveFormat.available.contains($0) ? $0 : nil } ?? .m4a
     }
+}
+
+/// A modifier that is tapped on its own, by itself and quickly: the fn key, or one side of Command, Option or Control.
+enum FadeKey: String, CaseIterable {
+    case fn, leftCommand, rightCommand, leftOption, rightOption, leftControl, rightControl, off
+
+    var title: String {
+        switch self {
+        case .fn: "fn"
+        case .leftCommand: "⌘ Left Command"
+        case .rightCommand: "⌘ Right Command"
+        case .leftOption: "⌥ Left Option"
+        case .rightOption: "⌥ Right Option"
+        case .leftControl: "⌃ Left Control"
+        case .rightControl: "⌃ Right Control"
+        case .off: "Off"
+        }
+    }
+
+    /// The bits of the session's modifier flags for this key alone, with the side that the device sets.
+    private var mask: UInt64 {
+        switch self {
+        case .fn: CGEventFlags.maskSecondaryFn.rawValue
+        case .leftCommand: 0x08
+        case .rightCommand: 0x10
+        case .leftOption: 0x20
+        case .rightOption: 0x40
+        case .leftControl: 0x01
+        case .rightControl: 0x2000
+        case .off: 0
+        }
+    }
+
+    /// Every modifier, so that a tap counts only when nothing else is held with it.
+    private static let all: UInt64 = CGEventFlags.maskSecondaryFn.rawValue | CGEventFlags.maskCommand.rawValue | CGEventFlags.maskAlternate.rawValue
+        | CGEventFlags.maskControl.rawValue | CGEventFlags.maskShift.rawValue
+
+    /// This key is down and no other modifier is.
+    func isAlone(_ flags: CGEventFlags) -> Bool {
+        guard self != .off, flags.rawValue & mask != 0 else { return false }
+        let group: UInt64 = switch self {
+        case .fn: CGEventFlags.maskSecondaryFn.rawValue
+        case .leftCommand, .rightCommand: CGEventFlags.maskCommand.rawValue
+        case .leftOption, .rightOption: CGEventFlags.maskAlternate.rawValue
+        case .leftControl, .rightControl: CGEventFlags.maskControl.rawValue
+        case .off: 0
+        }
+        return flags.rawValue & Self.all & ~group == 0
+    }
+
+    /// No modifier is down.
+    static func none(_ flags: CGEventFlags) -> Bool { flags.rawValue & all == 0 }
 }

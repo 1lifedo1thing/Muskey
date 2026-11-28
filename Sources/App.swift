@@ -3059,9 +3059,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if Self.lyricsPlain, model.picking {
             toggleLyrics()
         }
-        if TestFlags.has("--settings") || !UserDefaults.standard.bool(forKey: "launchedBefore") {
+        let firstLaunch = !UserDefaults.standard.bool(forKey: "launchedBefore")
+        if TestFlags.has("--settings") || firstLaunch {
             UserDefaults.standard.set(true, forKey: "launchedBefore")
             settingsWindow.show()
+        }
+        // The first launch shows the HUD too, as the hotkey does, so that someone who opened Muskey sees more than an
+        // icon in the menu bar: the key of what plays, or Nothing playing with the ways to open a song.
+        if firstLaunch || TestFlags.has("--first-launch") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self, state == .idle else { return }
+                toggle()
+            }
         }
         launched = true
         MainActor.assumeIsolated { startCLI() }

@@ -1042,6 +1042,9 @@ final class MiniPlayerPanel: NSPanel {
         orderOut(nil)
         watchPointer(false)
         setHovering(false)
+        faded = false
+        alphaValue = 1
+        watchFadeKey()
     }
 
     private func place() {
@@ -1160,6 +1163,11 @@ final class MiniPlayerPanel: NSPanel {
             return CGPath(roundedRect: frame, cornerWidth: radius, cornerHeight: radius, transform: nil).contains(point)
         } == true
         let over = record || backdrop || (mini.hitFrames["text"]?.insetBy(dx: -4, dy: -4).contains(point) ?? false)
+        // Faded, the player lets every click through until the pointer leaves it.
+        if faded {
+            if !over { setFaded(false) }
+            return
+        }
         if ignoresMouseEvents == over { ignoresMouseEvents = !over }
         setHovering(over)
     }
@@ -1168,6 +1176,53 @@ final class MiniPlayerPanel: NSPanel {
         guard hovering != over else { return }
         hovering = over
         onHover(over)
+        watchFadeKey()
+    }
+
+    // MARK: Fading with a tap of a modifier
+
+    /// Faded to a tenth of its opacity by a tap of the fade key, to see and click what is under the player.
+    private(set) var faded = false
+    private var fadeTimer: Timer?
+    private var fadeKeyDown: Date?
+
+    /// The modifier keys are read 60 times a second while the pointer is over the player or it is faded. Reading the
+    /// state of the keys needs no permission, while watching their events from another app needs Accessibility.
+    private func watchFadeKey() {
+        let wanted = (hovering || faded) && Preferences.shared.miniFadeKey != .off
+        guard wanted != (fadeTimer != nil) else { return }
+        fadeTimer?.invalidate()
+        fadeTimer = nil
+        fadeKeyDown = nil
+        guard wanted else { return }
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.readFadeKey() }
+    }
+
+    /// A tap is the key going down alone and coming up within 0.35 s, with no other modifier held meanwhile.
+    private func readFadeKey() {
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        let key = Preferences.shared.miniFadeKey
+        if key.isAlone(flags) {
+            if fadeKeyDown == nil { fadeKeyDown = Date() }
+        } else if let down = fadeKeyDown {
+            fadeKeyDown = nil
+            if FadeKey.none(flags), Date().timeIntervalSince(down) < 0.35 { setFaded(!faded) }
+        }
+    }
+
+    func setFaded(_ on: Bool) {
+        guard faded != on else { return }
+        faded = on
+        if on {
+            ignoresMouseEvents = true
+            setHovering(false)
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            animator().alphaValue = on ? 0.1 : 1
+        }
+        if !on { updatePassThrough() }
+        watchFadeKey()
     }
 
     // MARK: Moving

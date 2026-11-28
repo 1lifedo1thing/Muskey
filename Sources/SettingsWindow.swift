@@ -693,6 +693,15 @@ private struct MiniPlayerPane: View {
             Section {
                 Toggle("Mini player", isOn: $prefs.miniPlayer)
             }
+            Section("Fade") {
+                // Read only while the pointer is over the player, where a tap of the key fades it.
+                Picker(selection: $prefs.miniFadeKey) {
+                    ForEach(FadeKey.allCases, id: \.self) { Text($0.title).tag($0) }
+                } label: {
+                    Text("Fade key")
+                    Text("Fades the mini player and passes clicks to the windows under it, until the pointer leaves it")
+                }
+            }
             Section("Song") {
                 Toggle("Track", isOn: $prefs.miniLayout.track)
                 Toggle("Artist", isOn: $prefs.miniLayout.artist)
