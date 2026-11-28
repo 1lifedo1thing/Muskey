@@ -566,6 +566,9 @@ struct HUDView: View {
 
     /// How much taller the card gets when the stems take the place of the Separate instruments and vocals button.
     private static let cardStemsGrowth: CGFloat = 79.5
+    /// The wide glass with the key row and the Separate instruments and vocals button, whose top edge stays where it was
+    /// while the glass was centred in the panel.
+    private static let wideUsualHeight: CGFloat = 322
 
     private var cardStemsOpen: Bool { model.card && model.saving == nil && (model.opening == nil || model.openingGlass != nil) && !focus && showsStrip && model.stemsAvailable && model.stemsOpen && !model.shortcuts }
 
@@ -770,7 +773,11 @@ struct HUDView: View {
         // instead of reaching down toward the Dock. The stems open downward, which keeps the top of the card and its
         // corner buttons in place and the card inside the panel.
         .padding(.bottom, model.card && !focus ? HUDPanel.size.height / 2 - 150 - (cardStemsOpen ? Self.cardStemsGrowth : 0) : 0)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: model.card && !focus ? .bottom : .center)
+        // The wide glass keeps its top edge where a glass of its usual height has it, and grows down, so that the stems,
+        // their button and the hints that come and go under the key row leave the title, the keys and the record in
+        // place. Centred, every change of height moved the whole glass by half of it.
+        .padding(.top, !model.card && !focus ? HUDPanel.size.height / 2 - Self.wideUsualHeight / 2 : 0)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: focus ? .center : model.card ? .bottom : .top)
     }
 
     /// The key beside the record, with the hint bar along the bottom, which has Lock Key and Stop Pitch Change at
@@ -7514,7 +7521,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, waveformKey == key else { return }
             var waveform = model.wave.waveform ?? base
             waveform.stems = stems
-            model.wave.waveform = waveform
+            // In one animation with the glass, which grows with the lanes that this brings.
+            withAnimation(Self.glassResize) { self.model.wave.waveform = waveform }
             WaveformStore.save(waveform, as: key)
             log("waveform: lanes for the stems")
         }
@@ -7522,7 +7530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// W shows or hides the waveform, and remembers it.
     private func toggleWaveform() {
-        prefs.waveform.toggle()
+        withAnimation(Self.glassResize) { prefs.waveform.toggle() }
         log("waveform \(prefs.waveform ? "on" : "off")")
     }
 
@@ -7534,13 +7542,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleWaveformLanes()
     }
 
+    /// A change that makes the glass taller or shorter, done in one animation with the glass. The views that animate it
+    /// on their own leave the glass to jump to its new size while they move, which shook the HUD.
+    static let glassResize = Animation.snappy(duration: 0.25)
+
     /// ⌥W: one lane per stem, or the whole song again. A song without stems is separated first: a song in Muskey
     /// Player quietly as a whole, with the lanes once it is done, and a song from another app as it plays, with
     /// lanes that fill in from what its stems play.
     private func toggleWaveformLanes() {
         guard model.waveformStyle == .ribbon else { return log("waveform: lanes only in the ribbon style") }
         if lanesAvailable || model.wave.lanes {
-            model.wave.lanes.toggle()
+            withAnimation(Self.glassResize) { model.wave.lanes.toggle() }
             if !model.wave.lanes { stopLanesSeparation() }
             return log("waveform: lanes \(model.wave.lanes ? "on" : "off")")
         }

@@ -187,10 +187,14 @@ struct KeyMove: Equatable {
     let to: DetectedKey
 }
 
-/// The change of key under the title, written short: `A → Cm` with the shift in a circle. While the pointer is over
+/// The change of key under the title, written short: `A → Cm` with the shift in a circle. While the pointer rests on
 /// it, it widens to `A major → C minor` and `−6 semitones`. The wide pill is drawn over the short one, so the row
 /// keeps its layout, and `expanded` lets the row hide the pills that the wide one covers.
 struct KeyMovePill: View {
+    /// How long the pointer rests on the pill before it widens, so that a pointer that only crosses it on the way to
+    /// the tempo pill beside it doesn't hide the tempo.
+    static let expandDelay: Duration = .milliseconds(700)
+    @State private var expanding: Task<Void, Never>?
     /// No key yet while a new song waits for its key to be found: `→ Cm` with a spinner.
     let from: DetectedKey?
     let to: DetectedKey
@@ -212,12 +216,25 @@ struct KeyMovePill: View {
                 pill(full: hovering || forcedExpanded)
                     .contentShape(Capsule())
                     .onHover { on in
-                        hovering = on
-                        expanded = on
+                        expanding?.cancel()
+                        guard on else {
+                            hovering = false
+                            expanded = false
+                            return
+                        }
+                        expanding = Task { @MainActor in
+                            try? await Task.sleep(for: Self.expandDelay)
+                            guard !Task.isCancelled else { return }
+                            hovering = true
+                            expanded = true
+                        }
                     }
             }
             .animation(.easeOut(duration: 0.12), value: hovering)
-            .onDisappear { if hovering { expanded = false } }
+            .onDisappear {
+                expanding?.cancel()
+                if hovering { expanded = false }
+            }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(keys(full: true) + (shift == 0 ? "" : ", " + Shift.text(shift)))
     }
@@ -796,6 +813,9 @@ struct KeyHints: View {
     var loop = false
     /// An instrument plays at another volume than 100%.
     var volumeChanged = false
+    /// An instrument is muted or plays at another volume, and the hint of 0 is a button that plays them all again,
+    /// which takes no more room than the hint, so the tray keeps its height.
+    var playAll: (() -> Void)? = nil
     /// The other mode than the song's, which Option shows and picks.
     let otherMode: String
     let palette: Palette
@@ -866,15 +886,18 @@ struct KeyHints: View {
                 row(hints)
             }
         }
-        .opacity(0.62)
         .fixedSize()
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: playAll == nil ? .combine : .contain)
     }
 
     private func row(_ hints: [Hint]) -> some View {
         HStack(spacing: style == .stems ? 11 : style == .footer ? 10 : 13) {
             ForEach(hints, id: \.name) { hint in
-                HStack(spacing: 5) { keycaps(hint); name(hint) }
+                if hint.name == "play all", let playAll {
+                    PlayAllHint(palette: palette, action: playAll) { HStack(spacing: 5) { keycaps(hint); name(hint) } }
+                } else {
+                    HStack(spacing: 5) { keycaps(hint); name(hint) }.opacity(0.62)
+                }
             }
         }
     }
@@ -891,6 +914,29 @@ struct KeyHints: View {
             .foregroundStyle(palette.muted)
             // A row laid out at exactly its ideal width can come up a fraction short, which shortens a name to "…".
             .fixedSize()
+    }
+}
+
+/// The hint of 0 under the instruments while one is muted or at another volume: a button that plays them all again,
+/// with a capsule drawn past its edges, so the hints keep their places.
+private struct PlayAllHint<Label: View>: View {
+    let palette: Palette
+    let action: () -> Void
+    @ViewBuilder let label: Label
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            label
+                .background(Capsule().fill(palette.ink.opacity(hovering ? 0.16 : 0.09)).padding(.horizontal, -5).padding(.vertical, -2))
+                .contentShape(Capsule().inset(by: -5))
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help("Play all instruments and vocals (0)")
+        .transition(.opacity)
     }
 }
 

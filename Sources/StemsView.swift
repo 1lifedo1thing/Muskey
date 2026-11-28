@@ -93,21 +93,22 @@ struct StemsRow: View {
     /// The keys work only while the pointer is over the HUD, so their numbers and the hints show only then, and the
     /// circles are smaller otherwise.
     private var expanded: Bool { model.keysActive }
-    /// The header holds Play all, which shows only with the pointer over the HUD.
-    private var header: Bool { showsPlayAll }
+    /// Play all is the hint of 0 in the pill on the bottom edge, which shows only with the pointer over the HUD.
     private var showsPlayAll: Bool { model.stemsAdjusted && expanded }
     /// The stems aren't separated yet: the progress takes the place of the Separate button, centred, and no circle
     /// shows until the stems play.
     private var separating: StemsProgress? { model.stemsFailed ? nil : model.stemsProgress }
 
     var body: some View {
+        // The progress and the failure sit where the tray is going to be, at its height, so the HUD doesn't change
+        // its height again when the stems arrive.
         if let progress = separating {
-            ProgressPill(progress: progress, palette: palette)
-                .frame(maxWidth: .infinity)
+            tray.hidden()
+                .overlay { ProgressPill(progress: progress, palette: palette) }
                 .transition(.opacity)
         } else if model.stemsFailed {
-            FailedPill(palette: palette, retry: model.onStemsRetry, dismiss: { model.stemsFailed = false })
-                .frame(maxWidth: .infinity)
+            tray.hidden()
+                .overlay { FailedPill(palette: palette, retry: model.onStemsRetry, dismiss: { model.stemsFailed = false }) }
                 .transition(.opacity)
         } else {
             tray.transition(.opacity)
@@ -115,80 +116,66 @@ struct StemsRow: View {
     }
 
     private var tray: some View {
-        // Play all keeps clear of the rings around the circles, which reach up to 8 points past them at the loudest.
-        VStack(alignment: .leading, spacing: (compact ? 4 : 6) + (header ? 7 : 0)) {
-            if header { headerRow }
-            StemHalos(model: model, meters: model.stemMeters, palette: palette, compact: compact, card: card, expanded: expanded)
-        }
-        .padding(.horizontal, 12)
-        // The halos reach a few points past the circles, so they keep that much room under the top edge.
-        .padding(.top, header ? 8 : 10)
-        // Room for the top half of the hints pill, which sits on the bottom edge.
-        .padding(.bottom, expanded ? 14 : 8)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { trayWidth = $0 }
-        .background {
-            // The tray is cut around the pill, so its edge doesn't run behind the hints.
-            // Only while the pointer is over the HUD, which is when the stems take keys.
-            RoundedRectangle(cornerRadius: 13).fill(palette.ink.opacity(expanded ? 0.06 : 0))
-                .mask {
-                    Rectangle()
-                        .overlay(alignment: .bottom) {
-                            if expanded {
-                                Capsule()
-                                    .frame(width: pillSize.width * pillScale + 4, height: pillSize.height * pillScale + 4)
-                                    .offset(y: Self.pillHeight / 2 + 2)
-                                    .blendMode(.destinationOut)
+        StemHalos(model: model, meters: model.stemMeters, palette: palette, compact: compact, card: card, expanded: expanded)
+            .padding(.horizontal, 12)
+            // The halos reach a few points past the circles, so they keep that much room under the top edge.
+            .padding(.top, 10)
+            // Room for the top half of the hints pill, which sits on the bottom edge.
+            .padding(.bottom, expanded ? 14 : 8)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { trayWidth = $0 }
+            .background {
+                // The tray is cut around the pill, so its edge doesn't run behind the hints.
+                // Only while the pointer is over the HUD, which is when the stems take keys.
+                RoundedRectangle(cornerRadius: 13).fill(palette.ink.opacity(expanded ? 0.06 : 0))
+                    .mask {
+                        Rectangle()
+                            .overlay(alignment: .bottom) {
+                                if expanded {
+                                    Capsule()
+                                        .frame(width: pillSize.width * pillScale + 4, height: pillSize.height * pillScale + 4)
+                                        .offset(y: Self.pillHeight / 2 + 2)
+                                        .blendMode(.destinationOut)
+                                }
                             }
-                        }
-                        .compositingGroup()
-                }
-        }
-        .overlay(alignment: .topTrailing) {
-            if expanded {
-                Button(action: model.onStemsClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 7.5, weight: .heavy))
-                        .foregroundStyle(.white)
-                        .frame(width: 15, height: 15)
-                        .background(Circle().fill(Color(red: 0.93, green: 0.33, blue: 0.3)))
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .help("Close the stems")
-                .offset(x: 5, y: -5)
-                .transition(.opacity)
+                            .compositingGroup()
+                    }
             }
-        }
-        .overlay(alignment: .bottom) {
-            if expanded {
-                // Nearly clear, with a hairline, so it reads as a quiet note on the edge of the tray rather than a control.
-                KeyHints(style: .stems, vocals: !model.lyricsShown, volumeChanged: !model.stemVolumes.isEmpty, otherMode: "", palette: palette)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(palette.ink.opacity(0.025)))
-                    .overlay(Capsule().strokeBorder(palette.ink.opacity(0.09), lineWidth: 0.5))
-                    .onGeometryChange(for: CGSize.self) { $0.size } action: { pillSize = $0 }
-                    .scaleEffect(pillScale)
-                    .offset(y: Self.pillHeight / 2)
+            .overlay(alignment: .topTrailing) {
+                if expanded {
+                    Button(action: model.onStemsClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 7.5, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .frame(width: 15, height: 15)
+                            .background(Circle().fill(Color(red: 0.93, green: 0.33, blue: 0.3)))
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .help("Close the stems")
+                    .offset(x: 5, y: -5)
                     .transition(.opacity)
+                }
             }
-        }
-        .animation(.easeOut(duration: 0.15), value: model.keysActive)
-        .animation(.snappy(duration: 0.2), value: header)
-        .animation(.easeOut(duration: 0.15), value: showsPlayAll)
-        .animation(.snappy(duration: 0.2), value: model.stemsMuted)
-        .animation(.snappy(duration: 0.2), value: model.stemsFailed)
-    }
-
-    private var headerRow: some View {
-        Button("Play all") { model.onStemsReset() }
-            .buttonStyle(PillButtonStyle(palette: palette))
-            .focusable(false)
-            .help("Play all instruments and vocals (0)")
-            .transition(.opacity)
-            .frame(maxWidth: .infinity)
-            .frame(height: 16)
+            .overlay(alignment: .bottom) {
+                if expanded {
+                    // Nearly clear, with a hairline, so it reads as a quiet note on the edge of the tray rather than a control.
+                    KeyHints(style: .stems, vocals: !model.lyricsShown, volumeChanged: !model.stemVolumes.isEmpty,
+                             playAll: showsPlayAll ? { model.onStemsReset() } : nil, otherMode: "", palette: palette)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(palette.ink.opacity(0.025)))
+                        .overlay(Capsule().strokeBorder(palette.ink.opacity(0.09), lineWidth: 0.5))
+                        .onGeometryChange(for: CGSize.self) { $0.size } action: { pillSize = $0 }
+                        .scaleEffect(pillScale)
+                        .offset(y: Self.pillHeight / 2)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: model.keysActive)
+            .animation(.easeOut(duration: 0.15), value: showsPlayAll)
+            .animation(.snappy(duration: 0.2), value: model.stemsMuted)
+            .animation(.snappy(duration: 0.2), value: model.stemsFailed)
     }
 }
 

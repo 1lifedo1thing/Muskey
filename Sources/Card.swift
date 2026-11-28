@@ -96,23 +96,21 @@ struct TitleLine: View {
                         .opacity(pillShown ? 0 : 1)
                         // In the relative key's place, over it, so the title doesn't move when it shows.
                         .overlay(alignment: .leading) {
-                            if switching {
-                                TitlePill(symbol: "arrow.left.arrow.right", text: key.relative.name, palette: palette).fixedSize().transition(.opacity)
-                            } else if pillShown {
-                                HStack(spacing: 8) {
-                                    TitlePill(symbol: "arrow.clockwise", text: "Re-detect key", palette: palette)
-                                    // What Option does here, which the pill turns into while Option is held.
-                                    if switchable, optionHint {
-                                        HStack(spacing: 4) {
-                                            Keycap(text: "⌥", palette: palette, small: true)
-                                            Accidental.text(key.relative.name, color: palette.muted)
-                                                .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                                                .foregroundStyle(palette.muted)
-                                        }
-                                    }
+                            if optionHint, switchable, pillShown {
+                                // Both actions of a click on the key, one above the other, centred on the key: the
+                                // click, and the Option-click, which takes over while Option is held.
+                                VStack(alignment: .leading, spacing: 3) {
+                                    TitlePill(symbol: "arrow.clockwise", text: "Re-detect key", palette: palette, small: true)
+                                        .opacity(switching || !redetectable ? 0.4 : 1)
+                                    TitlePill(symbol: "arrow.left.arrow.right", text: key.relative.name, key: "⌥", palette: palette, small: true, strong: switching)
                                 }
                                 .fixedSize()
+                                .offset(y: -relativeSize * 0.3)
                                 .transition(.opacity)
+                            } else if switching {
+                                TitlePill(symbol: "arrow.left.arrow.right", text: key.relative.name, palette: palette).fixedSize().transition(.opacity)
+                            } else if pillShown {
+                                TitlePill(symbol: "arrow.clockwise", text: "Re-detect key", palette: palette).fixedSize().transition(.opacity)
                             }
                         }
                 }
@@ -148,19 +146,28 @@ struct TitleLine: View {
 private struct TitlePill: View {
     let symbol: String
     let text: String
+    /// The modifier that the click needs, in a keycap at the end.
+    var key: String? = nil
     let palette: Palette
+    /// Two pills stacked beside the key, in the wide layout.
+    var small = false
+    /// Option is held, and a click does what this pill says.
+    var strong = false
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: symbol)
-                .font(.system(size: 10, weight: .bold))
-            Text(text)
-                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                .font(.system(size: small ? 9 : 10, weight: .bold))
+            Accidental.text(text, color: palette.ink)
+                .font(.system(size: small ? 10.5 : 11.5, weight: .semibold, design: .rounded))
+            if let key { Keycap(text: key, palette: palette, small: true) }
         }
         .foregroundStyle(palette.ink)
-        .padding(.horizontal, 9)
-        .frame(height: 22)
-        .background(Capsule().fill(palette.ink.opacity(0.1)))
+        .padding(.leading, small ? 7 : 9)
+        .padding(.trailing, key == nil ? (small ? 7 : 9) : 3)
+        .frame(height: small ? 18 : 22)
+        .background(Capsule().fill(palette.ink.opacity(strong ? 0.18 : 0.1)))
+        .animation(.easeOut(duration: 0.12), value: strong)
     }
 }
 
@@ -242,11 +249,12 @@ struct ShiftPills: View {
 
     @ViewBuilder private var tempoPills: some View {
         if model.speedAdjustable || model.shownTempo != nil || model.slowFailed != nil {
-            // The tempo and the speed are one thing to scroll over, so the speed that appears beside the tempo, which
-            // moves it, is scrolled as well.
+            // The tempo pill, and the red speed beside it when slowing a song from another player failed, are one thing
+            // to scroll over.
             ScrollLifted(region: .tempo, scroll: model.scroll, depth: 2.5) { inner, _ in
                 HStack(spacing: 6) {
                     TempoPill(bpm: model.shownTempo.map { $0.bpm * (model.speedAdjustable ? model.speed : 1) }, adjustable: model.speedAdjustable,
+                              speed: model.speedAdjustable && model.slowFailed == nil ? model.speed : 1,
                               slower: model.speed > 0.5, faster: model.speed < model.fastestSpeed, keysShown: model.keysActive, palette: palette, lift: inner, step: model.onSpeed)
                         // The return of a slowed song to 100 %, while the output catches up with the player: the
                         // border fills as the song gets back to its tempo.
@@ -262,10 +270,6 @@ struct ShiftPills: View {
                         .animation(.easeOut(duration: 0.15), value: model.tempoReturn == nil)
                     if let failed = model.slowFailed {
                         FailedSpeedPill(speed: failed, dismiss: { model.slowFailed = nil }, retry: model.onSlowRetry)
-                            .offset(y: inner)
-                            .transition(.opacity)
-                    } else if model.speedAdjustable, model.speed != 1 {
-                        SpeedPill(speed: model.speed, palette: palette) { model.onSpeed(0) }
                             .offset(y: inner)
                             .transition(.opacity)
                     }
@@ -325,10 +329,13 @@ struct ScrollLifted<Content: View>: View {
 }
 
 /// The song's tempo at the speed that it plays. A song in Muskey Player gets keycaps at the ends of the pill, which
-/// slow it down or speed it up by 5 %, and a scroll over it changes the speed by 1 % steps.
+/// slow it down or speed it up by 5 %, and a scroll over it changes the speed by 1 % steps. A changed speed shows as a
+/// short `0.9×` inside the pill, which plays the song at its original tempo again when clicked, as = does.
 struct TempoPill: View {
     let bpm: Double?
     let adjustable: Bool
+    /// The speed against the song's original tempo, 1 when it plays at that tempo.
+    var speed: Double = 1
     /// The speed can go down or up from here: a song from another player can only be slowed down.
     var slower = true, faster = true
     /// The keys [ and ] work only while the pointer is over the HUD, so their keycaps show only then.
@@ -337,6 +344,7 @@ struct TempoPill: View {
     /// The extra lift of the text and the keycaps while a scroll changes the speed.
     var lift: CGFloat = 0
     let step: (Int) -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let caps = adjustable && keysShown
@@ -344,8 +352,10 @@ struct TempoPill: View {
             if caps, slower { cap("[", help: "Slower ([)", step: -1) }
             Text(bpm.map { "\(Int($0.rounded())) BPM" } ?? "Tempo")
                 .contentTransition(.numericText(value: bpm ?? 0))
+            if speed != 1 { speedChip.transition(.opacity.combined(with: .scale(scale: 0.6))) }
             if caps, faster { cap("]", help: "Faster (])", step: 1) }
         }
+        .animation(.snappy(duration: 0.2), value: speed != 1)
         .offset(y: lift)
         .font(.system(size: 11, weight: .bold, design: .rounded))
         .monospacedDigit()
@@ -357,43 +367,37 @@ struct TempoPill: View {
         .fixedSize()
     }
 
+    /// `0.9×` in blue for slower and in honey for faster, like the shift in the key pill beside it.
+    private var speedChip: some View {
+        let hue = speed < 1 ? StripColors.down : StripColors.up
+        return Button { step(0) } label: {
+            Text(Self.multiplier(speed))
+                .font(.system(size: 9.5, weight: .heavy, design: .rounded))
+                .contentTransition(.numericText(value: speed))
+                .foregroundStyle(StripColors.text(hue, colorScheme))
+                .padding(.horizontal, 5)
+                .frame(height: 13)
+                .background(Capsule().fill(StripColors.tint(hue, strong: true, colorScheme)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help("Original tempo (=)")
+    }
+
+    /// 0.85 as `0.85×`, 0.9 as `0.9×`: two decimals at most, since the speed changes in 1 % steps.
+    static func multiplier(_ speed: Double) -> String {
+        var text = String(format: "%.2f", speed)
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text + "×"
+    }
+
     private func cap(_ key: String, help: String, step value: Int) -> some View {
         Button { step(value) } label: { Keycap(text: key, palette: palette, small: true) }
             .buttonStyle(.plain)
             .focusable(false)
             .help(help)
-    }
-}
-
-/// The speed against the song's own tempo while it is changed: blue for slower, honey for faster. A click on it, or
-/// =, plays the song at its own tempo again.
-struct SpeedPill: View {
-    let speed: Double
-    let palette: Palette
-    let reset: () -> Void
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        let percent = Int(((speed - 1) * 100).rounded())
-        let hue = speed < 1 ? StripColors.down : StripColors.up
-        Button(action: reset) {
-            HStack(spacing: 5) {
-                Text("\(percent < 0 ? "−" : "+")\(abs(percent))% tempo")
-                    .contentTransition(.numericText(value: speed))
-                Keycap(text: "=", palette: palette, small: true)
-            }
-            .font(.system(size: 11, weight: .bold, design: .rounded))
-            .monospacedDigit()
-            .foregroundStyle(StripColors.text(hue, colorScheme))
-            .padding(.leading, 8)
-            .padding(.trailing, 4)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(StripColors.tint(hue, strong: true, colorScheme)))
-            .fixedSize()
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .help("Original tempo (=)")
     }
 }
 
