@@ -5901,8 +5901,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setInteraction(clickable: true, keyboard: true)
 
         keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
-            // A key that waits to tell a press from a hold acts when it comes back up, as a press, or at its first
-            // repeat, as a hold. Its other repeats do nothing.
+            // A key that can be held already acted when it went down. Its first repeat starts the hold, its other
+            // repeats do nothing, and its release ends the watch for the hold.
             if event.type == .keyUp {
                 self?.releaseKey(Int(event.keyCode))
                 return event
@@ -5982,35 +5982,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateHoverKeys()
     }
 
-    /// A number key of an instrument, or a letter of a key, that does one thing when pressed and another when held:
-    /// it waits for the key to come back up, or for as long as macOS waits before it repeats a key.
+    /// A number key of an instrument, a letter of a key, W or R, which do one thing when pressed and another when held.
+    /// The press acts as the key goes down, so that a tap never waits, and the hold takes its place, the way the accent
+    /// menu of macOS replaces a letter that was already typed.
     private struct HeldKey {
         let code: Int
-        let press: () -> Void
         let hold: () -> Void
         let timer: Timer
         var held = false
     }
 
     private var heldKey: HeldKey?
-    /// The key being handled was just pressed, by a person, so the keys that can be held wait for the hold.
+    /// The key being handled was just pressed, by a person, so the keys that can be held watch for the hold.
     private var holdable = false
 
     /// A key that a person pressed, as the HUD's key events and the keys over the HUD get it.
     @discardableResult private func pressKey(_ code: Int, shift: Bool, option: Bool) -> Bool {
-        // A key that still waits ends its wait as a press, since its release was lost or another key came first.
+        // Another key that came first ends the hold of the one before, as does a release that was lost.
         if let waiting = heldKey { releaseKey(waiting.code) }
         holdable = true
         defer { holdable = false }
         return handleKey(code, shift: shift, option: option)
     }
 
-    /// The hold starts after "Delay until repeat" in Keyboard settings, kept between 0.2 and 0.8 seconds.
-    private func waitForHold(_ code: Int, press: @escaping () -> Void, hold: @escaping () -> Void) {
-        let timer = Timer.scheduledTimer(withTimeInterval: min(0.8, max(0.2, NSEvent.keyRepeatDelay)), repeats: false) { [weak self] _ in
+    /// "Delay until repeat" in Keyboard settings, kept between 0.2 and 0.8 seconds.
+    private static var holdDelay: Double { min(0.8, max(0.2, NSEvent.keyRepeatDelay)) }
+
+    /// Runs `press` at once, and `hold` after the hold delay while the key is still down. `hold` starts from the state
+    /// that `press` left, so it puts back what it needs of the state before the press.
+    private func pressOrHold(_ code: Int, press: () -> Void, hold: @escaping () -> Void) {
+        press()
+        let timer = Timer.scheduledTimer(withTimeInterval: Self.holdDelay, repeats: false) { [weak self] _ in
             self?.holdKey()
         }
-        heldKey = HeldKey(code: code, press: press, hold: hold, timer: timer)
+        heldKey = HeldKey(code: code, hold: hold, timer: timer)
     }
 
     private func holdKey() {
@@ -6026,7 +6031,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let key = heldKey, key.code == code else { return }
         key.timer.invalidate()
         heldKey = nil
-        if !key.held { key.press() }
     }
 
     /// The keys with Command that the HUD uses, which a save in progress turns off.
@@ -6137,20 +6141,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if option {
                 toggleWaveformLanes()
             } else if holdable {
-                waitForHold(code, press: { [weak self] in self?.toggleWaveform() }, hold: { [weak self] in self?.holdWaveform() })
+                let shown = prefs.waveform
+                pressOrHold(code, press: toggleWaveform, hold: { [weak self] in self?.holdWaveform(shown: shown) })
             } else {
                 toggleWaveform()
             }
             return true
         }
         // R starts the region loop, ends it and clears it, in every layout. ⌥R doesn't snap the end, and holding R, or
-        // ⇧R, loops the whole song. A press acts when R comes back up, at the moment that R went down.
+        // ⇧R, loops the whole song.
         if code == kVK_ANSI_R {
             if shift {
                 toggleSongLoop()
             } else if holdable, !option {
-                let pressed = Date()
-                waitForHold(code, press: { [weak self] in self?.pressLoop(snapping: true, at: pressed) }, hold: { [weak self] in self?.toggleSongLoop() })
+                // The press clears a loop that is set, so a hold that finds the whole song looped leaves it cleared.
+                let songLooped = model.loop.map { loop in nowPlaying.track?.duration.map { loop.coversSong($0) } ?? false } ?? false
+                pressOrHold(code, press: { pressLoop(snapping: true) }, hold: { [weak self] in
+                    if !songLooped { self?.toggleSongLoop() }
+                })
             } else {
                 pressLoop(snapping: !option)
             }
@@ -6904,10 +6912,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case kVK_DownArrow, kVK_UpArrow: break
         default:
             guard let letter = Self.letters[code], model.key != nil else { return false }
-            // Holding a letter picks the key in the other mode, as Option does. A press waits for the release, since
-            // picking a key and then its other mode would change the pitch twice.
+            // Holding a letter picks the key in the other mode, as Option does, in place of the key that the press picked.
+            // A press keeps the mode that the keys are named in, so the hold finds the same mode as the press did.
             if holdable, !option {
-                waitForHold(code, press: { [weak self] in self?.pickLetter(letter, shift: shift, option: false) },
+                pressOrHold(code, press: { pickLetter(letter, shift: shift, option: false) },
                             hold: { [weak self] in self?.pickLetter(letter, shift: shift, option: true) })
             } else {
                 pickLetter(letter, shift: shift, option: option)
@@ -6968,11 +6976,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             toggleVocals()
         } else if let index = Self.stemKeys.firstIndex(of: code), index < Stem.shown.count {
             let stem = Stem.shown[index]
-            // A press mutes when the key comes back up, as a click does, so that a hold never mutes the stem first.
             if option {
                 toggleStem(stem, solo: true)
             } else if holdable {
-                waitForHold(code, press: { [weak self] in self?.pressStem(stem) }, hold: { [weak self] in self?.toggleStem(stem, solo: true) })
+                // A press fades a stem out over as long as V fades the vocals, so a hold that plays the stem alone
+                // catches it halfway down instead of after a gap.
+                let muted = model.stemsMuted
+                pressOrHold(code, press: { pressStem(stem, fade: true) }, hold: { [weak self] in
+                    self?.lastStemPress = nil
+                    self?.soloStem(stem, from: muted)
+                })
             } else {
                 pressStem(stem)
             }
@@ -6987,13 +7000,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A press of a stem's number key or a click on its circle mutes it or plays it again. A second one within the
     /// double-click interval of macOS plays it at 100%, as a double tap does on the phone.
-    private func pressStem(_ stem: Stem) {
+    private func pressStem(_ stem: Stem, fade: Bool = false) {
         if let last = lastStemPress, last.stem == stem, Date().timeIntervalSince(last.at) < NSEvent.doubleClickInterval {
             lastStemPress = nil
             return resetStem(stem)
         }
         lastStemPress = (stem, Date())
-        toggleStem(stem, solo: false)
+        var muted = model.stemsMuted
+        if muted.contains(stem) { muted.remove(stem) } else { muted.insert(stem) }
+        setStems(muted, fade: fade && muted.contains(stem))
+    }
+
+    /// The stem plays alone, or every stem plays again when it already played alone before the press of its key.
+    private func soloStem(_ stem: Stem, from muted: Set<Stem>) {
+        let others = Set(Stem.allCases).subtracting([stem])
+        setStems(muted == others ? [] : others)
     }
 
     /// A stem plays again at 100%, and the others stay as they are.
@@ -7156,10 +7177,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// whole lines: from the start of the line sung now to the end of the line sung at the second press. ⌥R sets an
     /// end exactly where it is pressed.
     /// `behind` is how much later than the Mac the press was heard, on a phone that plays the Mac's sound.
-    /// `at` is when R went down, for a press that acts when R comes back up.
-    private func pressLoop(snapping: Bool, behind: Double = 0, at pressed: Date = Date()) {
+    private func pressLoop(snapping: Bool, behind: Double = 0) {
         guard let track = nowPlaying.track, track.title?.isEmpty == false, let duration = track.duration, duration > 0,
-              let played = track.position(at: pressed) else { return log("region loop: the player gives no position for the song") }
+              let played = track.position(at: Date()) else { return log("region loop: the player gives no position for the song") }
         let now = max(0, played - behind)
         guard model.seekable else { return log("region loop: the song can't move at once now") }
         let lines = loopLines
@@ -7506,9 +7526,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("waveform \(prefs.waveform ? "on" : "off")")
     }
 
-    /// Holding W shows the lanes of the stems, and the waveform with them when it was hidden.
-    private func holdWaveform() {
-        if !prefs.waveform, !model.wave.lanes { toggleWaveform() }
+    /// Holding W shows the waveform again after the press hid it, and turns the lanes of the stems on or off, or only on
+    /// when the waveform was hidden before the press.
+    private func holdWaveform(shown: Bool) {
+        if !prefs.waveform { toggleWaveform() }
+        if !shown, model.wave.lanes { return }
         toggleWaveformLanes()
     }
 
